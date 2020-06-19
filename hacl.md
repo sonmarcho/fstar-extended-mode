@@ -1,0 +1,2 @@
+## Streaming functor
+It would be nice to have a *spec* functor and an *implementation* functor (containing the spec functor). It would make instanciation a lot simpler. The *implementation* functor could actually be a *properties and implementation* functor.
