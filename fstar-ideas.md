@@ -48,3 +48,8 @@ It would be nice to be able to:
 1. make every line of a proof independant of what is below
 2. have the possibility not to send the proof obligations monolitically to Z3
 We could then have a *one-line at a time* evaluation behaviour in interactive mode (which we mimic today with rolling admits).
+
+## Regular notes
+### 19/05/2020
+Finished working on son_blake2 (but still need to make HMAC and HKDF generic in the implementation choices). I'm trying to make the files pass the CI (some proofs are still not stable - hard debugging with Quake).
+Discussed with Jonathan about some ideas to generate proper asserts/assumes for pre/postconditions (he suggested using tactics), which lead me to the idea of using tactics to generate calcs, by applying rewritings in a HOL4 style.
