@@ -279,14 +279,14 @@
     (beginning-of-line)
     (looking-at-p "[[:space:]]*$")))
 
-(defun insert-newline-admit ()
-  "If the current line is not empty, insert a new line after the current one.
-   Then insert an 'admit()'"
+(defun insert-newline-term (TERM)
+  "If the current line is not empty, insert a new line after the current one,
+   then insert TERM"
   (interactive)
   (progn
    (if (current-line-is-whitespaces-p) () (progn (end-of-line) (newline)))
    (indent-according-to-mode)
-   (insert "admit()")))
+   (insert TERM)))
 
 (defun empty-line ()
   "Delete all the characters on the current line and returns the number of deleted caracters"
@@ -347,53 +347,64 @@
     (setq $f (defun find () (search-forward "assert" nil t)))
     (setq $r (funcall 'apply-in-current-paragraph $f t))
     ;; if there are, replace "assert" by "assume", otherwise replace "assume" by "admit"
-    (if $r (replace-in-current-paragraph "assert" "assume" t)
-           (replace-in-current-paragraph "assume" "assert" t))
-  )
-)
+    (if $r (replace-in-current-paragraph "assert_norm" "assume(*norm*)" t)
+            replace-in-current-paragraph "assert" "assume" t)
+           (replace-in-current-paragraph "assume(*norm*)" "assert_norm" t)
+            replace-in-current-paragraph "assume" "assert" t))
 
-(defun roll-delete-admit (FORWARD BEGIN END)
+(defun roll-delete-term (TERM FORWARD BEGIN END)
   (interactive)
-  "Looks for the last/first admit in the region and asks the user if he wants to delete it,
-   if there is any. Leaves the pointer at its original position."
-  (let ($p $s $f $r)
+  "Looks for the last/first occurence of TERM in the region and asks the user
+   if he wants to delete it, if there is any. Leaves the pointer at its original
+   position (before the command was called). Returns a pair:
+   (found term, optional shift if term was deleted)"
+  (let ($p $s $f $r $opt_shift)
     (setq $s 0)
     ;; Retrieve the original position
     (setq $p (point))
     ;; Look for an admit
-    (if FORWARD (setq $f (search-forward "admit()" END t))
-		(setq $f (search-backward "admit()" BEGIN t)))
-    ;; If there is an admit, ask for removal
+    (if FORWARD (setq $f (search-forward TERM END t))
+		(setq $f (search-backward TERM BEGIN t)))
+    ;; If there is an occurrence of TERM, ask for removal
     (when $f
-      (when (y-or-n-p "Remove this admit?")
+      (when (y-or-n-p (concat "Remove this '" (concat TERM "'?")))
 	(progn
 	  (replace-match "")
 	  (setq $r t)
 	  (when (current-line-is-whitespaces-p) (setq $s (delete-always-line)))
 	  ;; Compute the position shift
-	  (if FORWARD () (setq $s (+ 7 $s)))
+	  (if FORWARD () (setq $s (+ (length TERM) $s)))
 	  )))
     ;; Go to the original position
     (goto-char (- $p $s))
     ;; Return the shift if we deleted an admit
-    (if $r $s nil)))
+    (if $r (setq $opt_shift $s) (setq $opt_shift nil))
+    ;; Return
+    (cons $f $opt_shift)))
 
 (defun roll-admit ()
   (interactive)
-  "Facility function to ease the rolling admit technique: inserts an admit after the current
-   line and check for another admit to move."
-  (let ($p $p1 $p2 $s)
+  "Facility function to ease the rolling admit technique: inserts an admit
+   after the current line and check if there is another admit to move (and ask
+   for deletion if so). We start by looking for an admit after the cursor
+   position, then look before if there isn't."
+  (let ($p $p1 $p2 $s $b)
     ;; Save the current point
     (setq $p (point))
     ;; Find the region delimiters
     (progn (forward-paragraph) (setq $p2 (point))
 	   (backward-paragraph) (setq $p1 (point))
 	   (goto-char $p))
-    ;; Delete - forward first
-    (setq $s (roll-delete-admit t $p1 $p2))
-    (when (not $s) (setq $s (roll-delete-admit nil $p1 $p2)))
+    ;; Delete: forward, then backward, with an ';' then without
+    (setq $b nil)
+    (progn (setq $s (roll-delete-term "admit();" t $p1 $p2)) (when (cdr $s) (setq $b t)))
+    ;; We don't look for 'admit()' if we found an 'admit' but the user didn't want to delete it
+    (when (not (car $s)) (progn (setq $s (roll-delete-term "admit()" t $p1 $p2)) (when (cdr $s) (setq $b nil))))
+    ;; Backward: we look backward if nothing was deleted forward
+    (when (not (cdr $s)) (progn (setq $s (roll-delete-term "admit();" nil $p1 $p2)) (when (cdr $s) (setq $b t))))
+    (when (not (car $s)) (progn (setq $s (roll-delete-term "admit()" nil $p1 $p2)) (when (cdr $s) (setq $b nil))))
     ;; Insert the admit
-    (insert-newline-admit)))
+    (if $b (insert-newline-term "admit();") (insert-newline-term "admit()"))))
 
 ;; Actually already C-M-o
 (defun split-line-indent-is-cursor ()
