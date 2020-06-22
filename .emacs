@@ -339,7 +339,7 @@
   "Applies the action given as argument to the current line.
    It is the responsability of the ACTION function to move the pointer back to its
    (equivalent) original position."
-  (apply-in-current-region ACTION t nil nil)
+  (apply-in-current-region ACTION t nil nil))
 
 (defun replace-in-current-region (FROM TO INCLUDE_CURRENT_LINE ABOVE_PARAGRAPH BELOW_PARAGRAPH)
   (let ($p $r $length_dif)
@@ -438,7 +438,7 @@
     ;; Return the shift if we deleted a TERM
     (if $r (setq $opt_shift $s) (setq $opt_shift nil))
     ;; Return
-    (list (cons 'found $f) (cons 'opt_shift $opt_shift) (cons 'semicol $semicol))
+    (list (cons 'found $f) (cons 'opt_shift $opt_shift) (cons 'semicol $semicol))))
 
 (defun roll-admit ()
   (interactive)
