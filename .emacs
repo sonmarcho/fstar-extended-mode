@@ -311,23 +311,40 @@
 	(progn (setq $c (empty-line))
 	       (delete-backward-char 1) (+ $c 1)))))
 
-(defun apply-in-current-region (ACTION INCLUDE_CURRENT_LINE ABOVE_PARAGRAPH BELOW_PARAGRAPH)
+(defun find-region-delimiters (ALLOW_SELECTION INCLUDE_CURRENT_LINE
+                               ABOVE_PARAGRAPH BELOW_PARAGRAPH)
+ (let ($p $p1 $p2)
+   ;; Save the current point
+   (setq $p (point))
+   ;; Find the region delimiters (and move the pointer back to its original position):
+   ;; First check if we need to use the selected region
+   (if (and (use-region-p) (ALLOW_SELECTION))
+       ;; Use the selected region
+       (setq $p1 (region-beginning) $p2 (region-end))
+       ;; Compute a new region
+       (progn
+         ;; - beginning of region
+         (progn (if ABOVE_PARAGRAPH (backward-paragraph)
+                  (if INCLUDE_CURRENT_LINE (move-beginning-of-line ()) (move-end-of-line ())))
+                (setq $p1 (point)) (goto-char $p))
+         ;; - end of region
+         (progn (if BELOW_PARAGRAPH (forward-paragraph)
+                  (if INCLUDE_CURRENT_LINE (move-end-of-line ()) (move-beginning-of-line ())))
+                (setq $p2 (point)) (goto-char $p))))
+   (list $p1 $p2)))
+
+(defun apply-in-current-region (ACTION ALLOW_SELECTION INCLUDE_CURRENT_LINE
+                                ABOVE_PARAGRAPH BELOW_PARAGRAPH)
   "Applies the action given as argument to the current line and/or the current
    paragraph above the pointer.
    It is the responsability of the ACTION function to move the pointer back to its
    (equivalent) original position."
-  (let ($p $p1 $p2 $r)
-    ;; Save the current point
-    (setq $p (point))
-    ;; Find the region delimiters (and move the pointer back to its original position):
-    ;; - beginning of region
-    (progn (if ABOVE_PARAGRAPH (backward-paragraph)
-             (if INCLUDE_CURRENT_LINE (move-beginning-of-line ()) (move-end-of-line ())))
-           (setq $p1 (point)) (goto-char $p))
-    ;; - end of region
-    (progn (if BELOW_PARAGRAPH (forward-paragraph)
-             (if INCLUDE_CURRENT_LINE (move-end-of-line ()) (move-beginning-of-line ())))
-           (setq $p2 (point)) (goto-char $p))
+  (let ($delimiters $p1 $p2 $r)
+    ;; Find the region delimiters
+    (setq $delimiters (find-region-delimiters ALLOW_SELECTION INCLUDE_CURRENT_LINE
+                                              ABOVE_PARAGRAPH BELOW_PARAGRAPH))
+    (setq $p1 (car $delimiters) $p2 (car (cdr $delimiters)))
+    (message "DEBUG: delimiters %s %s" $p1 $p2)
     ;; Apply the action in the delimited region
     (save-restriction
       (narrow-to-region $p1 $p2)
@@ -335,21 +352,24 @@
     ;; return the result of performing the action
     $r))
 
+(setq debug-on-error t)
+
 (defun apply-in-current-line (ACTION)
   "Applies the action given as argument to the current line.
    It is the responsability of the ACTION function to move the pointer back to its
    (equivalent) original position."
-  (apply-in-current-region ACTION t nil nil))
+  (apply-in-current-region ACTION nil t nil nil))
 
-(defun replace-in-current-region (FROM TO INCLUDE_CURRENT_LINE ABOVE_PARAGRAPH BELOW_PARAGRAPH)
+(defun replace-in-current-region (FROM TO ALLOW_SELECTION INCLUDE_CURRENT_LINE
+                                  ABOVE_PARAGRAPH BELOW_PARAGRAPH)
   (let ($p $r $length_dif)
     ;; Define the replace function
-    (setq $p (point))
     (setq $length_dif (- (length TO) (length FROM)))
     (setq $r
       (defun replace ()
         (let ($p1 $shift)
           (progn
+            (setq $p (point))
             (setq $shift 0)
             ;; Replace all the occurrences of FROM
             (beginning-of-buffer)
@@ -363,10 +383,12 @@
             ;; Move to the (equivalent) original position and return the shift
             (goto-char (+ $shift $p))
             $shift))))
-    ;; Apply it
-    (apply-in-current-region $r INCLUDE_CURRENT_LINE ABOVE_PARAGRAPH BELOW_PARAGRAPH)))
+    ;; Apply the replace function
+    (apply-in-current-region $r ALLOW_SELECTION INCLUDE_CURRENT_LINE
+                             ABOVE_PARAGRAPH BELOW_PARAGRAPH)))
 
-(defun switch-assert-assume-in-current-region (INCLUDE_CURRENT_LINE ABOVE_PARAGRAPH BELOW_PARAGRAPH)
+(defun switch-assert-assume-in-current-region (ALLOW_SELECTION INCLUDE_CURRENT_LINE
+                                               ABOVE_PARAGRAPH BELOW_PARAGRAPH)
   (interactive)
   "Check if there are occurrences of 'assert' or 'assert_norm in the current region.
    If so, replace them with 'assume'. Ohterwise, replace all the 'assume' with 'assert'."
@@ -374,13 +396,13 @@
     ;; check if there are occurrences of "assert"
     (setq $p (point))
     (setq $f (defun find () (progn (beginning-of-buffer) (search-forward "assert" nil t))))
-    (setq $r (funcall 'apply-in-current-region $f INCLUDE_CURRENT_LINE
+    (setq $r (funcall 'apply-in-current-region $f ALLOW_SELECTION INCLUDE_CURRENT_LINE
                       ABOVE_PARAGRAPH BELOW_PARAGRAPH))
     (goto-char $p)
     ;; if there are, replace "assert" by "assume", otherwise replace "assume" by "admit"
     (setq $replace
           (lambda (FROM TO)
-            (replace-in-current-region FROM TO INCLUDE_CURRENT_LINE
+            (replace-in-current-region FROM TO ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                        ABOVE_PARAGRAPH BELOW_PARAGRAPH)))
     (if $r (progn
              (funcall $replace "assert_norm" "assume(*norm*)")
@@ -394,13 +416,13 @@
   "In the part of the current paragraph above the cursor and in the current line,
    check if there are occurrences of 'assert' or 'assert_norm'. If so, replace them
    with 'assume'. Otherwise, replace all the 'assume' with 'assert'."
-  (switch-assert-assume-in-current-region t t nil))
+  (switch-assert-assume-in-current-region t t t nil))
 
 (defun switch-assert-assume-in-current-line ()
   (interactive)
   "In the current line, check if there are occurrences of 'assert' or 'assert_norm'.
    If so, replace them with 'assume'. Otherwise, replace all the 'assume' with 'assert'."
-  (switch-assert-assume-in-current-region t nil nil))
+  (switch-assert-assume-in-current-region nil t nil nil))
 
 (defun roll-delete-term (TERM FORWARD BEGIN END)
   (interactive)
