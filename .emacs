@@ -311,48 +311,96 @@
 	(progn (setq $c (empty-line))
 	       (delete-backward-char 1) (+ $c 1)))))
 
-(defun apply-in-current-paragraph (ACTION STOPPOINTER)
-  "Applies the action given as argument in the active region if there is, in the
-   current paragraph otherwise"
+(defun apply-in-current-region (ACTION INCLUDE_CURRENT_LINE ABOVE_PARAGRAPH BELOW_PARAGRAPH)
+  "Applies the action given as argument to the current line and/or the current
+   paragraph above the pointer.
+   It is the responsability of the ACTION function to move the pointer back to its
+   (equivalent) original position."
   (let ($p $p1 $p2 $r)
     ;; Save the current point
     (setq $p (point))
-    ;; Find the region delimiters
-    (progn (if STOPPOINTER (move-beginning-of-line ()) (forward-paragraph)) (setq $p2 (point))
-	   (backward-paragraph) (setq $p1 (point)))
+    ;; Find the region delimiters (and move the pointer back to its original position):
+    ;; - beginning of region
+    (progn (if ABOVE_PARAGRAPH (backward-paragraph)
+             (if INCLUDE_CURRENT_LINE (move-beginning-of-line ()) (move-end-of-line ())))
+           (setq $p1 (point)) (goto-char $p))
+    ;; - end of region
+    (progn (if BELOW_PARAGRAPH (forward-paragraph)
+             (if INCLUDE_CURRENT_LINE (move-end-of-line ()) (move-beginning-of-line ())))
+           (setq $p2 (point)) (goto-char $p))
     ;; Apply the action in the delimited region
     (save-restriction
       (narrow-to-region $p1 $p2)
       (setq $r (funcall ACTION)))
-    ;; Move the point to the initial position
-    (goto-char $p)
     ;; return the result of performing the action
-    $r
-    ))
+    $r))
 
-(defun replace-in-current-paragraph (FROM TO STOPPOINTER)
-  (let ($r)
+(defun apply-in-current-line (ACTION)
+  "Applies the action given as argument to the current line.
+   It is the responsability of the ACTION function to move the pointer back to its
+   (equivalent) original position."
+  (apply-in-current-region ACTION t nil nil)
+
+(defun replace-in-current-region (FROM TO INCLUDE_CURRENT_LINE ABOVE_PARAGRAPH BELOW_PARAGRAPH)
+  (let ($p $r $length_dif)
     ;; Define the replace function
-    (setq $r (defun replace () (while (search-forward FROM nil t) (replace-match TO))))
+    (setq $p (point))
+    (setq $length_dif (- (length TO) (length FROM)))
+    (setq $r
+      (defun replace ()
+        (let ($p1 $shift)
+          (progn
+            (setq $shift 0)
+            ;; Replace all the occurrences of FROM
+            (beginning-of-buffer)
+            (while (search-forward FROM nil t)
+              (progn
+                ;; Compute the pointer shift
+                (setq $p1 (point))
+                (if (<= $p1 (+ $p $shift)) (setq $shift (+ $shift $length_dif)) ())
+                ;; Replace
+                (replace-match TO)))
+            ;; Move to the (equivalent) original position and return the shift
+            (goto-char (+ $shift $p))
+            $shift))))
     ;; Apply it
-    (apply-in-current-paragraph $r STOPPOINTER)))
+    (apply-in-current-region $r INCLUDE_CURRENT_LINE ABOVE_PARAGRAPH BELOW_PARAGRAPH)))
 
-(defun switch-assert-assume-in-paragraph ()
+(defun switch-assert-assume-in-current-region (INCLUDE_CURRENT_LINE ABOVE_PARAGRAPH BELOW_PARAGRAPH)
   (interactive)
-  "In the part of the current paragraph above the cursor, check if there are occurrences
-   of 'assert'. If so, replace them with 'assume'. Ohterwise, replace all the 'assume'
-   with 'assert'."
-  (let ($f $r)
+  "Check if there are occurrences of 'assert' or 'assert_norm in the current region.
+   If so, replace them with 'assume'. Ohterwise, replace all the 'assume' with 'assert'."
+  (let ($f $r $p $replace)
     ;; check if there are occurrences of "assert"
-    (setq $f (defun find () (search-forward "assert" nil t)))
-    (setq $r (funcall 'apply-in-current-paragraph $f t))
+    (setq $p (point))
+    (setq $f (defun find () (progn (beginning-of-buffer) (search-forward "assert" nil t))))
+    (setq $r (funcall 'apply-in-current-region $f INCLUDE_CURRENT_LINE
+                      ABOVE_PARAGRAPH BELOW_PARAGRAPH))
+    (goto-char $p)
     ;; if there are, replace "assert" by "assume", otherwise replace "assume" by "admit"
+    (setq $replace
+          (lambda (FROM TO)
+            (replace-in-current-region FROM TO INCLUDE_CURRENT_LINE
+                                       ABOVE_PARAGRAPH BELOW_PARAGRAPH)))
     (if $r (progn
-             (replace-in-current-paragraph "assert_norm" "assume(*norm*)" t)
-             (replace-in-current-paragraph "assert" "assume" t))
+             (funcall $replace "assert_norm" "assume(*norm*)")
+             (funcall $replace "assert" "assume"))
            (progn
-             (replace-in-current-paragraph "assume(*norm*)" "assert_norm" t)
-             (replace-in-current-paragraph "assume" "assert" t)))))
+             (funcall $replace "assume(*norm*)" "assert_norm")
+             (funcall $replace "assume" "assert")))))
+
+(defun switch-assert-assume-in-above-paragraph ()
+  (interactive)
+  "In the part of the current paragraph above the cursor and in the current line,
+   check if there are occurrences of 'assert' or 'assert_norm'. If so, replace them
+   with 'assume'. Otherwise, replace all the 'assume' with 'assert'."
+  (switch-assert-assume-in-current-region t t nil))
+
+(defun switch-assert-assume-in-current-line ()
+  (interactive)
+  "In the current line, check if there are occurrences of 'assert' or 'assert_norm'.
+   If so, replace them with 'assume'. Otherwise, replace all the 'assume' with 'assert'."
+  (switch-assert-assume-in-current-region t nil nil))
 
 (defun roll-delete-term (TERM FORWARD BEGIN END)
   (interactive)
@@ -387,7 +435,7 @@
 	  )))
     ;; Go to the original position
     (goto-char (- $p $s))
-    ;; Return the shift if we deleted an admit
+    ;; Return the shift if we deleted a TERM
     (if $r (setq $opt_shift $s) (setq $opt_shift nil))
     ;; Return
     (list (cons 'found $f) (cons 'opt_shift $opt_shift) (cons 'semicol $semicol))
@@ -452,4 +500,5 @@
 (global-set-key (kbd "C-M-j") 'newline-keep-indent)
 
 (global-set-key (kbd "C-x C-a") 'roll-admit)
-(global-set-key (kbd "C-c C-s C-a") 'switch-assert-assume-in-paragraph)
+(global-set-key (kbd "C-c C-s C-a") 'switch-assert-assume-in-above-paragraph)
+(global-set-key (kbd "C-S-a") 'switch-assert-assume-in-current-line)
