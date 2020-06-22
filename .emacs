@@ -17,6 +17,9 @@
  ;; If there is more than one, they won't work right.
  )
 
+;; Packages facility
+(require 'use-package)
+
 ;; disable this annoying bell sound
 (setq ring-bell-function 'ignore)
 
@@ -481,6 +484,131 @@
     (if (cdr (assoc 'semicol $s))
         (insert-newline-term "admit();")
         (insert-newline-term "admit()"))))
+
+(define-error 'fstar-meta-parsing "Error while parsing F*")
+
+;; TODO: comes from fstar-mode.el
+;;(defconst fstar--spaces "\t\n\r ")
+
+;; From now onwards we use functions from the F* mode
+(use-package fstar-mode
+  :demand)
+
+(defun skip-comment (FORWARD &optional LIMIT)
+  "Move the cursor forward or backward until we are out of a comment or we
+   reach the end of the buffer"
+  (let ($stop)
+    ;; Set the limit to the move
+    (if FORWARD (setq $stop (or LIMIT (point-max)))
+                (setq $stop (or LIMIT (point-min))))
+    (if (fstar-in-comment-p)
+        (if FORWARD
+            ;; Forward: go forward until we are out of the comment
+            (while (and (fstar-in-comment-p) (< (point) $stop)) (forward-char))
+            ;; Backward:
+            (goto-char (nth 8 (fstar--syntax-ppss (point))))))))
+
+(defun is-at-comment-limit (FORWARD &optional LIMIT)
+  (if FORWARD
+      ;; If forward: the comments delimiters are always made of two characters
+      ;; and we can't know if we are inside a comment unless we process those
+      ;; two characters
+      (progn
+        (if (> (+ (point) 2) (or LIMIT (point-max))) nil
+          (fstar-in-comment-p (+ (point) 2))))
+      ;; If backward: we just need to go one character back
+      (progn
+        (if (< (- (point) 1) (or LIMIT (point-min))) nil
+          (fstar-in-comment-p (- (point) 1))))))
+
+(defun skip-chars (FORWARD CHARS &optional LIMIT)
+  (if FORWARD
+      (skip-chars-forward CHARS LIMIT)
+      (skip-chars-backward CHARS LIMIT)))
+
+(defun skip-comments-and-spaces (FORWARD &optional LIMIT)
+  "Move the cursor forward or backward until we are out of a comment and there
+   are no spaces"
+  (let ($continue $p1 $p2 $limit $reached-limit)
+    (if FORWARD (setq $p1 (point) $p2 (or LIMIT (point-max)))
+                (setq $p2 (point) $p1 (or LIMIT (point-min))))
+    (if FORWARD (setq $limit $p2) (setq $limit $p1))
+    (save-restriction
+      (narrow-to-region $p1 $p2)
+      (setq $continue t)
+      (while $continue
+        (skip-comment FORWARD LIMIT)
+        (skip-chars FORWARD fstar--spaces)
+        (setq $reached-limit (= (point) $limit))
+        (if $reached-limit (setq $continue nil)
+          (if (is-at-comment-limit FORWARD)
+            (if FORWARD (forward-char 2) (backward-char 1))
+            (setq $continue nil)))))))
+
+(defun t4 ()
+  (interactive)
+  (if (fstar-in-comment-p (point))
+      (message "In comment") (message "Not in comment")))
+
+(defun t3 ()
+  (interactive)
+  (if (next-char-is-in-comment t) (message "Next in comment")
+    (message "Next not in comment")))
+
+(defun t2 ()
+  (interactive)
+  (skip-comments-and-spaces t))
+
+(defun t1 ()
+  (interactive)
+  (insert-assert-pre-post))
+
+(defun insert-assert-pre-post ()
+  (interactive)
+  "Inserts 'asserts' with appropriate pre and post-conditions around a function call"
+  (let ($p $delimiters $p1 $p2)
+    ;; Find in which region the term to process is
+    (setq $p (point))
+    (setq $delimiters (find-region-delimiters t t nil nil))
+    (setq $p1 (car $delimiters) $p2 (car (cdr $delimiters)))
+    ;; Parse: 3 cases:
+    ;; - let _ = _ in
+    ;; - _;
+    ;; - _
+    ;; Restrict to the term region
+    (save-restriction
+      (narrow-to-region $p1 $p2)
+      (let ($p1 $p2 $cp1 $cp2 $tmp $c $is-let-in $has-semicol)
+        (setq $p1 (point-min) $p2 (point-max))
+        (setq $has-let nil $has-semicol nil)
+        ;; Note that there may be a comment/spaces at the beginning and at the end
+        ;; of the processed region, so we need to narrow the region further
+        ;;
+        ;; Narrow the region to remove spaces/comments at the beginning and at the end
+        ;; - beginning
+        (goto-char $p1)
+        (skip-comments-and-spaces t)
+        (setq $cp1 (point))
+        ;; - end
+        (goto-char $p2)
+        (skip-comments-and-spaces nil $cp1)
+        (setq $cp2 (point))
+        (save-restriction
+          (narrow-to-region $cp1 $cp2)
+          ;; Check if the narrowed region matches: 'let _ = _ in'
+          (goto-char (point-min))
+          (setq $is-let-in
+                (re-search-forward
+                 "let[[:ascii:][:nonascii:]]+in" nil t 1))
+          (if $is-let-in (message "Is 'let _ = _ in'") (message "Not is 'let _ = _ in'"))
+          ;; Check if the narrowed region matches: '_ ;'
+          (goto-char (point-min))
+          (setq $is-let-in
+                (re-search-forward
+                 "[[:ascii:][:nonascii:]]+;" nil t 1))
+          (if $is-let-in (message "Is '_ ;'") (message "Not is '_ ;'")))
+        ;; Switch between cases (depending on the matched regexp)
+        ))))
 
 ;; Actually already C-M-o
 (defun split-line-indent-is-cursor ()
