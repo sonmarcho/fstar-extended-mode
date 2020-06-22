@@ -344,15 +344,12 @@
     (setq $delimiters (find-region-delimiters ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                               ABOVE_PARAGRAPH BELOW_PARAGRAPH))
     (setq $p1 (car $delimiters) $p2 (car (cdr $delimiters)))
-    (message "DEBUG: delimiters %s %s" $p1 $p2)
     ;; Apply the action in the delimited region
     (save-restriction
       (narrow-to-region $p1 $p2)
       (setq $r (funcall ACTION)))
     ;; return the result of performing the action
     $r))
-
-(setq debug-on-error t)
 
 (defun apply-in-current-line (ACTION)
   "Applies the action given as argument to the current line.
