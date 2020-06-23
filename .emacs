@@ -701,39 +701,33 @@
            (shift 0)
           (indent-str (make-string indent ? )))
       ;; Print the information
+      ;; - utilities
       (defun insert-update-shift (s)
         (insert s)
         (setq shift (+ shift (length s))))
-      (when pre
-        (goto-char p1)
-;;        (insert-update-shift indent-str)
-;;        (insert-update-shift "(* Precondition *)\n")
-        (insert-update-shift indent-str)
-        (insert-update-shift "assert(")
-        (when (> (nth 1 pre) 1) (insert-update-shift "\n"))
-        (insert-update-shift (nth 0 pre))
-        (insert-update-shift ");\n"))
-      (when post
-        (goto-char (+ p2 shift))
-        (insert-update-shift "\n")
-;;        (insert-update-shift indent-str)
-;;        (insert-update-shift "(* Postcondition *)\n")
-        (insert-update-shift indent-str)
-        (insert-update-shift "assert(")
-        (when (> (nth 1 post) 1) (insert-update-shift "\n"))
-        (insert-update-shift (nth 0 post))
-        (insert-update-shift ");"))
-      (when goal
-        (goto-char (+ p2 shift))
-        (insert-update-shift "\n")
-;;        (insert-update-shift indent-str)
-;;        (insert-update-shift "(* Goal *)\n")
-        (insert-update-shift indent-str)
-        (insert-update-shift "assert(")
-        (when (> (nth 1 goal) 1) (insert-update-shift "\n"))
-        (insert-update-shift (nth 0 goal))
-        (insert-update-shift ");"))
-      )))
+      (defun generate-info (p data &optional comment)
+        "Generates the appropriate assert at the proper position, preceded buy
+         an optional comment, while updating the shift."
+        (when data
+          (goto-char (+ p shift))
+          ;; If we are after the studied term: insert a newline
+          (when (>= p cp2) (insert-update-shift "\n"))
+          (when comment
+            (insert-update-shift indent-str)
+            (insert-update-shift comment)
+            (insert-update-shift "\n"))
+          (insert-update-shift indent-str)
+          (insert-update-shift "assert(")
+          (when (> (nth 1 data) 1) (insert-update-shift "\n"))
+          (insert-update-shift (nth 0 data))
+          (insert-update-shift ");")
+          ;; If we are before the studied term: insert a newline
+          (when (<= p cp1) (insert-update-shift "\n"))))
+      ;; - print
+      (generate-info p1 pre)
+      (generate-info p2 post)
+      (generate-info p2 goal)
+)))
 
 (defun insert-assert-pre-post--process
     ($indent $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)
