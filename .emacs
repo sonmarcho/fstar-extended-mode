@@ -545,24 +545,6 @@
             (if FORWARD (forward-char 2) (backward-char 1))
             (setq $continue nil)))))))
 
-(defun t4 ()
-  (interactive)
-  (if (fstar-in-comment-p (point))
-      (message "In comment") (message "Not in comment")))
-
-(defun t3 ()
-  (interactive)
-  (if (next-char-is-in-comment t) (message "Next in comment")
-    (message "Next not in comment")))
-
-(defun t2 ()
-  (interactive)
-  (skip-comments-and-spaces t))
-
-(defun t1 ()
-  (interactive)
-  (insert-assert-pre-post))
-
 (defun insert-assert-pre-post ()
   (interactive)
   "Inserts 'asserts' with appropriate pre and post-conditions around a function call"
@@ -609,6 +591,10 @@
           (if $is-let-in (message "Is '_ ;'") (message "Not is '_ ;'")))
         ;; Switch between cases (depending on the matched regexp)
         ))))
+
+;;(defun t1 ()
+;;  (interactive)
+;;  (insert-assert-pre-post))
 
 ;; Actually already C-M-o
 (defun split-line-indent-is-cursor ()
