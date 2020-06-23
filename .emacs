@@ -584,6 +584,20 @@
     ;; Return
     (list $cp1 $cp2 $is-let-in $has-semicol)))
 
+;; Define the continuation to call after F* typechecks the region
+(defun insert-assert-pre-post-continuation (overlay status response)
+  (unless (eq status 'interrupted)
+    (if (eq status 'success)
+        (progn
+          (message "F* succeeded")
+          ;; The sent query "counts for nothing" so we need to pop it
+          (fstar-subp--pop))
+      (progn
+        (error "F* processing failed")))
+    ;; Delete the overlay
+    (delete-overlay overlay)
+    ))
+
 (defun insert-assert-pre-post--process
     ($p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)
   (let ($beg $cbuffer $shift $lbeg $lp1 $lp2 $lcp1 $lcp2)
@@ -627,19 +641,24 @@
                (newline) (indent-according-to-mode) (insert "admit()"))
         )) ;; end of second case
      ) ;; end of cond
-    ;; Define the continuation to call after F* typechecks the region
-    (defun continuation-fun (status response)
-      (unless (eq status 'interrupted)
-        (if (eq status 'success) (message "F* succeeded") (error "F* process failed"))
-        ;; The sent query "counts for nothing" so we need to pop it
-        (fstar-subp--pop)))
-    ;; Query F* - TODO: not safe: the user can modify the buffer
-    (let* (($lend (point))
+    ;; Query F*
+    ;; TODO: I don't manage to make the overlay work if there is a tactic
+    ;; which fails (I can't delete the busy overlay and the user thus needs to
+    ;; restart F*)
+    (let* ((overlay (make-overlay $beg $p2 $cbuffer nil nil))
+           ($lend (point))
            ($payload (buffer-substring-no-properties $lbeg $lend)))
       (message "Payload: %s" $payload)
       ;; We need to swithch back to the original buffer to use the F* process
       (switch-to-buffer $cbuffer)
-      (fstar-subp--query (fstar-subp--push-query $beg `full $payload) 'continuation-fun))
+      ;; Overlay management
+      (fstar-subp-remove-orphaned-issue-overlays (point-min) (point-max))
+;;      (overlay-put overlay 'fstar-subp--lax nil)
+;;      (fstar-subp-set-status overlay 'busy)
+      ;; Query F*
+      (fstar-subp--query (fstar-subp--push-query $beg `full $payload)
+                         (apply-partially #'insert-assert-pre-post-continuation overlay))
+      )
     ) ;; end of outermost let
   ) ;; end of function
 
@@ -660,7 +679,7 @@
           $cp2 (nth 1 $parse-result)
           $is-let-in (nth 2 $parse-result)
           $has-semicol (nth 3 $parse-result))
-    ;; Call F* and process the result
+    ;; Process the term
     (insert-assert-pre-post--process $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)))
 
 (defun t1 ()
