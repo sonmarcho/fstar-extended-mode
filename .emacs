@@ -792,12 +792,28 @@
 (defun insert-assert-pre-post ()
   (interactive)
   "Inserts 'asserts' with appropriate pre and post-conditions around a function call"
-  (let ($p $delimiters $indent $p1 $p2 $parse-result $cp1 $cp2 $is-let-in $has-semicol
-        $current-buffer)
-    ;; F* mustn't be busy - because we won't push a query but directly process it
-    (when (fstar-subp--busy-p) (user-error "The F* process must be live and idle"))
-    ;; Find in which region the term to process is
+  (let ($next-point $p $delimiters $indent $p1 $p2 $parse-result $cp1 $cp2
+        $is-let-in $has-semicol $current-buffer)
     (setq $p (point))
+    ;; F* mustn't be busy as we won't push a query to the queue but will directly
+    ;; query the F* sub-process: if some processes are queued, we will mess up
+    ;; with the internal state
+    (when (fstar-subp--busy-p) (user-error "The F* process must be live and idle"))
+    ;; Check if the point is in a processed region: in this case retract
+    (when (fstar-subp--in-tracked-region-p) (fstar-subp-retract-until (point)))
+    ;; Check if the point is in the next block to process: if not, ask the user
+    ;; if he really wants to execute the command because we will need to parse
+    ;; all the definitions up to before the point, which may take time. Don't
+    ;; ask if we can't compute the next block (in which case it is indeed very
+    ;; likely that we are in the next block).
+    (setq $next-point (fstar-subp--find-point-to-process 1))
+    (when (and $next-point (< $next-point $p))
+      (unless (y-or-n-p (concat "There may be unprocessed definitions above the "
+                              "current position: are you sure you want to "
+                              "continue? We will need to process them, which "
+                              "may take time, and the result will be lost"))
+        (user-error "Aborted")))
+    ;; Find in which region the term to process is
     (setq $delimiters (find-region-delimiters t t nil nil))
     (setq $p1 (car $delimiters) $p2 (car (cdr $delimiters)))
     ;; Parse the term
@@ -815,6 +831,10 @@
 (defun t1 ()
   (interactive)
   (insert-assert-pre-post))
+
+(defun t2 ()
+  (interactive)
+  (message "Point: %s" (point)))
 
 (defun fstar-subp-advance-or-retract-to-point (&optional arg)
   "Advance or retract proof state to reach point.
