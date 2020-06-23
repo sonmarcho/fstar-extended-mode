@@ -559,7 +559,7 @@
     ;; - let _ = _ in
     ;; - _;
     ;; - _
-    (setq $has-let nil $has-semicol nil)
+    (setq $is-let-in nil $has-semicol nil)
     ;; Note that there may be a comment/spaces at the beginning and at the end
     ;; of the processed region, which we need to skip:
     ;; - beginning
@@ -575,16 +575,17 @@
       (narrow-to-region $cp1 $cp2)
       ;; Check if the narrowed region matches: 'let _ = _ in'
       (goto-char (point-min))
+      
       (setq $is-let-in
-            ;; TODO: for some reason, I don't manage to use the anchors '\`' and '\''
-            (looking-at "[:space:]*let[[:ascii:][:nonascii:]]+in[:space:]*"))
+            (re-search-forward "\\`let[[:ascii:][:nonascii:]]+in\\'" (point-max) t 1))
       (if $is-let-in (message "Is 'let _ = _ in'") (message "Not is 'let _ = _ in'"))
       ;; Check if the narrowed region matches: '_ ;'
       (goto-char (point-min))
       (setq $has-semicol
-            ;; TODO: for some reason, I don't manage to use the anchors '\`' and '\''
-            (looking-at "[[:ascii:][:nonascii:]]+;[:space:]*"))
-      (if $has-semicol (message "Is '_ ;'") (message "Not is '_ ;'")))
+            ;; We could just check if the character before last is ';'
+            (re-search-forward "\\`[[:ascii:][:nonascii:]]+;\\'" (point-max) t 1))
+      (if $has-semicol (message "Is '_ ;'") (message "Not is '_ ;'"))
+      ) ;; end of regexp matching
     ;; Switch between cases (depending on the matched regexp)
     (cond
      ($is-let-in (message "Switch: Is 'let _ = _ in'"))
