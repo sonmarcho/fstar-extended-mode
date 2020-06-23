@@ -586,11 +586,14 @@
     ;; Return
     (list $cp1 $cp2 $is-let-in $has-semicol)))
 
-(defun extract-info-from-messages (info-prefix attribute-name)
-  "Extracts meta data from the *Messages* buffer"
+(defun extract-info-from-messages (info-prefix attribute-name &optional post-process)
+  "Extracts meta data from the *Messages* buffer and optionally post-processes it.
+   If there is a post-process function, returns a pair:
+   [> (data, post-processing return value)
+   Otherwise, simply returns the extracted data"
   (let* ((full-name (concat info-prefix attribute-name))
          (full-name-length (length full-name))
-         p p1 p2 prev-buffer (res nil))
+         p p1 p2 prev-buffer (res nil) (pp-res nil))
     ;; Find the information name
     (setq prev-buffer (current-buffer))
     (switch-to-buffer messages-buffer)
@@ -628,6 +631,8 @@
               ;; Go to next line (if possible)
               (end-of-line)
               (if (< (point) (point-max)) (forward-char) (setq continue nil))))
+          ;; Post-process the data
+          (when post-process (setq pp-res (post-process)))
           ;; Save the content of the whole narrowed region
           (setq res (buffer-substring-no-properties (point-min) (point-max)))
           ) ;; end of save-restriction
@@ -636,7 +641,7 @@
     ;; Switch back to original buffer
     (switch-to-buffer prev-buffer)
     ;; Return
-    res)) ;; end of function
+    (if (and res post-process) (list res pp-res) res))) ;; end of function
 
 (defun insert-assert-pre-post-continuation (indent p1 p2 cp1 cp2 overlay status response)
   "The continuation function called once F* returns. If F* succeeded, extracts
@@ -654,29 +659,79 @@
         (error "F* meta processing failed")))
     ;; If we reach this point it means there was no error: we can extract
     ;; the generated information and add it to the code
-    (let ((etype (extract-info-from-messages fstar-info-prefix "etype:"))
-          (pre (extract-info-from-messages fstar-info-prefix "pre:"))
-          (post (extract-info-from-messages fstar-info-prefix "post:"))
-          (result (extract-info-from-messages fstar-info-prefix "result:"))
-          (ret (extract-info-from-messages fstar-info-prefix "ret:"))
-          (ret_refin (extract-info-from-messages fstar-info-prefix "ret_refin:"))
-          (shift 0))
+    ;;
+    ;; Data post-processing function: counts the number of lines. If there is
+    ;; more than one line, add indentation, otherwise leaves the data as it is.
+    (defun post-process ()
+      (goto-char (point-min))
+      (let ((num-lines 0) continue)
+        (setq continue (< (point) (point-max)))
+        ;; Count the lines
+        (while continue
+          (end-of-line)
+          (if (< (point) (point-max)) (forward-char) (setq continue nil))
+          (setq num-lines (+ num-lines 1)))
+        ;; If > 1 lines, indent them (note that we indent by 'indent + 2'
+        ;; because the data will be put inside an assert)
+        (when (> num-lines 1)
+          (let ((i 0) (indent-str (make-string (+ indent 2) ? )))
+            (goto-char (point-min))
+            (while (< i num-lines)
+              ;; Indent
+              (insert indent-str)
+              ;; Go to next line
+              (setq i (+ i 1))
+              (when (< i num-lines) (end-of-line) (forward-char)))))
+        ;; Return the number of lines
+        num-lines
+        )) ;; end of post-process fun
+    ;; Properly instantiated extraction functions
+    (defun extract (attribute-name &optional pp)
+      (extract-info-from-messages fstar-info-prefix attribute-name pp))
+    (defun extract-pp (attribute-name)
+      (extract attribute-name 'post-process))
+    ;; Extract the data and add information to the proof
+    (let* ((etype (extract "etype:"))
+           (pre (extract-pp "pre:"))
+           (post (extract-pp "post:"))
+           (result (extract-pp "result:"))
+           (ret (extract-pp "ret:"))
+           (ret_refin (extract-pp "ret_refin:"))
+           (goal (extract-pp "goal:"))
+           (shift 0)
+          (indent-str (make-string indent ? )))
       ;; Print the information
       (defun insert-update-shift (s)
         (insert s)
         (setq shift (+ shift (length s))))
       (when pre
         (goto-char p1)
-        (insert-update-shift (make-string indent ? ))
+;;        (insert-update-shift indent-str)
+;;        (insert-update-shift "(* Precondition *)\n")
+        (insert-update-shift indent-str)
         (insert-update-shift "assert(")
-        (insert-update-shift pre)
+        (when (> (nth 1 pre) 1) (insert-update-shift "\n"))
+        (insert-update-shift (nth 0 pre))
         (insert-update-shift ");\n"))
       (when post
         (goto-char (+ p2 shift))
         (insert-update-shift "\n")
-        (insert-update-shift (make-string indent ? ))
+;;        (insert-update-shift indent-str)
+;;        (insert-update-shift "(* Postcondition *)\n")
+        (insert-update-shift indent-str)
         (insert-update-shift "assert(")
-        (insert-update-shift post)
+        (when (> (nth 1 post) 1) (insert-update-shift "\n"))
+        (insert-update-shift (nth 0 post))
+        (insert-update-shift ");"))
+      (when goal
+        (goto-char (+ p2 shift))
+        (insert-update-shift "\n")
+;;        (insert-update-shift indent-str)
+;;        (insert-update-shift "(* Goal *)\n")
+        (insert-update-shift indent-str)
+        (insert-update-shift "assert(")
+        (when (> (nth 1 goal) 1) (insert-update-shift "\n"))
+        (insert-update-shift (nth 0 goal))
         (insert-update-shift ");"))
       )))
 
