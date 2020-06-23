@@ -545,22 +545,17 @@
             (if FORWARD (forward-char 2) (backward-char 1))
             (setq $continue nil)))))))
 
-(defun insert-assert-pre-post ()
-  (interactive)
-  "Inserts 'asserts' with appropriate pre and post-conditions around a function call"
-  (let ($p $delimiters $p1 $p2 $cp1 $cp2 $tmp $c $is-let-in $has-semicol)
-    ;; F* mustn't be busy - because we won't push a query but directly process it
-    (when (fstar-subp--busy-p) (user-error "The F* process must be live and idle"))
-    ;; Find in which region the term to process is
-    (setq $p (point))
-    (setq $delimiters (find-region-delimiters t t nil nil))
-    (setq $p1 (car $delimiters) $p2 (car (cdr $delimiters)))
+(defconst messages-buffer "*Messages*")
+(defconst fstar-edebug-buffer "*fstar-extended-debug*")
+
+(defun parse-sub-expression ($p1 $p2)
+  (let ($delimiters $cp1 $cp2 $is-let-in $has-semicol)
     ;; Parse: 3 cases:
     ;; - let _ = _ in
     ;; - _;
     ;; - _
     (setq $is-let-in nil $has-semicol nil)
-    ;; Note that there may be a comment/spaces at the beginning and at the end
+    ;; Note that there may be a comment/spaces at the beginning and/or at the end
     ;; of the processed region, which we need to skip:
     ;; - beginning
     (goto-char $p1)
@@ -574,8 +569,7 @@
     (save-restriction
       (narrow-to-region $cp1 $cp2)
       ;; Check if the narrowed region matches: 'let _ = _ in'
-      (goto-char (point-min))
-      
+      (goto-char (point-min))      
       (setq $is-let-in
             (re-search-forward "\\`let[[:ascii:][:nonascii:]]+in\\'" (point-max) t 1))
       (if $is-let-in (message "Is 'let _ = _ in'") (message "Not is 'let _ = _ in'"))
@@ -585,7 +579,14 @@
             ;; We could just check if the character before last is ';'
             (re-search-forward "\\`[[:ascii:][:nonascii:]]+;\\'" (point-max) t 1))
       (if $has-semicol (message "Is '_ ;'") (message "Not is '_ ;'"))
+      ;; Otherwise: it is a return value (end of function)
       ) ;; end of regexp matching
+    ;; Return
+    (list $cp1 $cp2 $is-let-in $has-semicol)))
+
+(defun insert-assert-pre-post--process
+    ($p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)
+  (let ($current-buffer)
     ;; Switch between cases (depending on the matched regexp)
     (cond
      ($is-let-in (message "Switch: Is 'let _ = _ in'"))
@@ -606,12 +607,42 @@
         ;; Insert an admit() at the end
         (goto-char (+ $p2 (+ $prefix-length $suffix-length)))
         (progn (end-of-line) (newline) (indent-according-to-mode) (insert "admit()"))
-        ;; Execute F*
-
+        ;; Define the continuation to call after F* typechecks the region
+        (defun continuation-fun (status response)
+          (unless (eq status 'interrupted)
+            (if (eq status 'success) (message "F* succeeded") (error "F* process failed"))
+            ;; The sent query "counts for nothing" so we need to pop it
+            (fstar-subp--pop)))
+        ;; Call F* - TODO: not safe: the user can modify the buffer
+        (let* (($beg (fstar-subp--untracked-beginning-position))
+               ($end (point))
+               ($payload (fstar-subp--clean-buffer-substring $beg $end)))
+          (message "Payload: %s" $payload)
+          (fstar-subp--query (fstar-subp--push-query $beg `full $payload) 'continuation-fun))
 ;;        (fstar-subp-advance-or-retract-to-point)
         ))) ;; end of cond
     ) ;; end of outmost let
   ) ;; end of function
+
+(defun insert-assert-pre-post ()
+  (interactive)
+  "Inserts 'asserts' with appropriate pre and post-conditions around a function call"
+  (let ($p $delimiters $p1 $p2 $parse-result $cp1 $cp2 $is-let-in $has-semicol
+        $current-buffer)
+    ;; F* mustn't be busy - because we won't push a query but directly process it
+    (when (fstar-subp--busy-p) (user-error "The F* process must be live and idle"))
+    ;; Find in which region the term to process is
+    (setq $p (point))
+    (setq $delimiters (find-region-delimiters t t nil nil))
+    (setq $p1 (car $delimiters) $p2 (car (cdr $delimiters)))
+    ;; Parse the term
+    (setq $parse-result (parse-sub-expression $p1 $p2))
+    (setq $cp1 (nth 0 $parse-result)
+          $cp2 (nth 1 $parse-result)
+          $is-let-in (nth 2 $parse-result)
+          $has-semicol (nth 3 $parse-result))
+    ;; Call F* and process the result
+    (insert-assert-pre-post--process $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)))
 
 (defun t1 ()
   (interactive)
