@@ -585,18 +585,18 @@
     (list $cp1 $cp2 $is-let-in $has-semicol)))
 
 ;; Define the continuation to call after F* typechecks the region
-(defun insert-assert-pre-post-continuation (overlay status response)
+(defun insert-assert-pre-post-continuation (buffer overlay status response)
   (unless (eq status 'interrupted)
+    ;; Delete the overlay
+    (delete-overlay overlay)
+    ;; Display the message
     (if (eq status 'success)
         (progn
           (message "F* succeeded")
           ;; The sent query "counts for nothing" so we need to pop it
           (fstar-subp--pop))
       (progn
-        (error "F* processing failed")))
-    ;; Delete the overlay
-    (delete-overlay overlay)
-    ))
+        (error "F* processing failed")))))
 
 (defun insert-assert-pre-post--process
     ($p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)
@@ -642,9 +642,6 @@
         )) ;; end of second case
      ) ;; end of cond
     ;; Query F*
-    ;; TODO: I don't manage to make the overlay work if there is a tactic
-    ;; which fails (I can't delete the busy overlay and the user thus needs to
-    ;; restart F*)
     (let* ((overlay (make-overlay $beg $p2 $cbuffer nil nil))
            ($lend (point))
            ($payload (buffer-substring-no-properties $lbeg $lend)))
@@ -653,14 +650,18 @@
       (switch-to-buffer $cbuffer)
       ;; Overlay management
       (fstar-subp-remove-orphaned-issue-overlays (point-min) (point-max))
-;;      (overlay-put overlay 'fstar-subp--lax nil)
-;;      (fstar-subp-set-status overlay 'busy)
+      (overlay-put overlay 'fstar-subp--lax nil)
+      (fstar-subp-set-status overlay 'busy)
       ;; Query F*
       (fstar-subp--query (fstar-subp--push-query $beg `full $payload)
-                         (apply-partially #'insert-assert-pre-post-continuation overlay))
+                         (apply-partially #'insert-assert-pre-post-continuation $cbuffer overlay))
       )
     ) ;; end of outermost let
   ) ;; end of function
+
+(defun t2 ()
+  (interactive)
+  (fstar-subp-remove-unprocessed))
 
 (defun insert-assert-pre-post ()
   (interactive)
@@ -685,15 +686,6 @@
 (defun t1 ()
   (interactive)
   (insert-assert-pre-post))
-
-;;(defun fstar-subp--pos-check-wrapper (pos continuation)
-;;(defun fstar-subp--query (query continuation)
-;;  "Send QUERY to F* subprocess; handle results with CONTINUATION."
-;;(defun fstar-subp-enqueue-until (end &optional no-error)
-;;  "Mark region up to END busy, and enqueue the newly created overlay.
-;;Report an error if the region is empty and NO-ERROR is nil."
-;; fstar-subp--untracked-beginning-position
-;; (defun fstar-subp-process-overlay (overlay)
 
 (defun fstar-subp-advance-or-retract-to-point (&optional arg)
   "Advance or retract proof state to reach point.
