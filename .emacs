@@ -548,7 +548,7 @@
 (defun insert-assert-pre-post ()
   (interactive)
   "Inserts 'asserts' with appropriate pre and post-conditions around a function call"
-  (let ($p $delimiters $p1 $p2)
+  (let ($p $delimiters $p1 $p2 $cp1 $cp2 $tmp $c $is-let-in $has-semicol)
     ;; F* mustn't be busy - because we won't push a query but directly process it
     (when (fstar-subp--busy-p) (user-error "The F* process must be live and idle"))
     ;; Find in which region the term to process is
@@ -559,66 +559,56 @@
     ;; - let _ = _ in
     ;; - _;
     ;; - _
-    ;; Restrict to the term region
+    (setq $has-let nil $has-semicol nil)
+    ;; Note that there may be a comment/spaces at the beginning and at the end
+    ;; of the processed region, which we need to skip:
+    ;; - beginning
+    (goto-char $p1)
+    (skip-comments-and-spaces t)
+    (setq $cp1 (point))
+    ;; - end
+    (goto-char $p2)
+    (skip-comments-and-spaces nil $cp1)
+    (setq $cp2 (point))
+    ;; We do the regexp matching in a narrowed region
     (save-restriction
-      (narrow-to-region $p1 $p2)
-      (let ($p1 $p2 $cp1 $cp2 $tmp $c $is-let-in $has-semicol)
-        (setq $p1 (point-min) $p2 (point-max))
-        (setq $has-let nil $has-semicol nil)
-        ;; Note that there may be a comment/spaces at the beginning and at the end
-        ;; of the processed region, so we need to narrow the region further
-        ;;
-        ;; Narrow the region to remove spaces/comments at the beginning and at the end
-        ;; - beginning
-        (goto-char $p1)
-        (skip-comments-and-spaces t)
-        (setq $cp1 (point))
-        ;; - end
-        (goto-char $p2)
-        (skip-comments-and-spaces nil $cp1)
-        (setq $cp2 (point))
-        (save-restriction
-          (narrow-to-region $cp1 $cp2)
-          ;; Check if the narrowed region matches: 'let _ = _ in'
-          (goto-char (point-min))
-          (setq $is-let-in
-                ;; TODO: for some reason, I don't manage to use the anchors '\`' and '\''
-                (looking-at "[:space:]*let[[:ascii:][:nonascii:]]+in[:space:]*"))
-          (if $is-let-in (message "Is 'let _ = _ in'") (message "Not is 'let _ = _ in'"))
-          ;; Check if the narrowed region matches: '_ ;'
-          (goto-char (point-min))
-          (setq $has-semicol
-                ;; TODO: for some reason, I don't manage to use the anchors '\`' and '\''
-                (looking-at "[[:ascii:][:nonascii:]]+;[:space:]*"))
-          (if $has-semicol (message "Is '_ ;'") (message "Not is '_ ;'")))
-        ;; Switch between cases (depending on the matched regexp)
-        (cond
-         ($is-let-in (message "Switch: Is 'let _ = _ in'"))
-         ($has-semicol (message "Switch: Is '_;'"))
-         (t (message "Switch: Is '_'")))
-        (cond
-         ($is-let-in (message "Not supported yet"))
-         ($has-semicol
-          (let ($prefix $prefix-length $suffix $suffix-length)
-            ;; Wrap the term in a tactic to generate the debugging information
-            (setq $prefix "run_tactic (fun _ -> dprint_eterm (quote (")
-            (setq $suffix ")) (`()) [`()])")
-            (setq $prefix-length (length $prefix) $suffix-length (length $suffix))
-            (goto-char $cp1)
-            (insert $prefix)
-            (goto-char (+ (- $cp2 1) $prefix-length))
-            (insert $suffix)
-            ;; Insert an admit() at the end
-            (goto-char (+ $p2 (+ $prefix-length $suffix-length)))
-            (progn (end-of-line) (newline) (indent-according-to-mode) (insert "admit()"))
-            ;; Execute F*
-            
-;;            (fstar-subp-advance-or-retract-to-point)
-            ;; 
-;;            (message "Executed F*")
-            ))) ;; end of cond
-        ) ;; end of let
-      ) ;; end of outmost save-restriction
+      (narrow-to-region $cp1 $cp2)
+      ;; Check if the narrowed region matches: 'let _ = _ in'
+      (goto-char (point-min))
+      (setq $is-let-in
+            ;; TODO: for some reason, I don't manage to use the anchors '\`' and '\''
+            (looking-at "[:space:]*let[[:ascii:][:nonascii:]]+in[:space:]*"))
+      (if $is-let-in (message "Is 'let _ = _ in'") (message "Not is 'let _ = _ in'"))
+      ;; Check if the narrowed region matches: '_ ;'
+      (goto-char (point-min))
+      (setq $has-semicol
+            ;; TODO: for some reason, I don't manage to use the anchors '\`' and '\''
+            (looking-at "[[:ascii:][:nonascii:]]+;[:space:]*"))
+      (if $has-semicol (message "Is '_ ;'") (message "Not is '_ ;'")))
+    ;; Switch between cases (depending on the matched regexp)
+    (cond
+     ($is-let-in (message "Switch: Is 'let _ = _ in'"))
+     ($has-semicol (message "Switch: Is '_;'"))
+     (t (message "Switch: Is '_'")))
+    (cond
+     ($is-let-in (message "Not supported yet"))
+     ($has-semicol
+      (let ($prefix $prefix-length $suffix $suffix-length)
+        ;; Wrap the term in a tactic to generate the debugging information
+        (setq $prefix "run_tactic (fun _ -> dprint_eterm (quote (")
+        (setq $suffix ")) (`()) [`()])")
+        (setq $prefix-length (length $prefix) $suffix-length (length $suffix))
+        (goto-char $cp1)
+        (insert $prefix)
+        (goto-char (+ (- $cp2 1) $prefix-length))
+        (insert $suffix)
+        ;; Insert an admit() at the end
+        (goto-char (+ $p2 (+ $prefix-length $suffix-length)))
+        (progn (end-of-line) (newline) (indent-according-to-mode) (insert "admit()"))
+        ;; Execute F*
+
+;;        (fstar-subp-advance-or-retract-to-point)
+        ))) ;; end of cond
     ) ;; end of outmost let
   ) ;; end of function
 
