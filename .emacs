@@ -586,42 +586,61 @@
 
 (defun insert-assert-pre-post--process
     ($p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)
-  (let ($current-buffer)
-    ;; Switch between cases (depending on the matched regexp)
+  (let ($beg $cbuffer $shift $lbeg $lp1 $lp2 $lcp1 $lcp2)
+    ;; Copy the relevant content of the buffer for modification
+    (setq $beg (fstar-subp--untracked-beginning-position))
+    ;; - copy and switch buffer
+    (setq $cbuffer (current-buffer))
+    (kill-ring-save $beg $p2)
+    (switch-to-buffer fstar-edebug-buffer)
+    ;; - change the reference position
+    (goto-char (point-max))
+    (insert "\n\n- Starting new processing:\n\n")
+    (setq $lbeg (point-max) $shift (- (point-max) $beg))
+    (setq $lp1 (+ $p1 $shift) $lp2 (+ $p2 $shift) $lcp1 (+ $cp1 $shift) $lcp2 (+ $cp2 $shift))
+    ;; - yank
+    (yank)
+    (message "p1 %s max-point %s shift %s" $p1 (point-max) $shift)
+    ;; Modify the copied content and leave the pointer at the end of the region
+    ;; to send to F*
     (cond
-     ($is-let-in (message "Switch: Is 'let _ = _ in'"))
-     ($has-semicol (message "Switch: Is '_;'"))
-     (t (message "Switch: Is '_'")))
-    (cond
+     ;; 'let _ = _ in'
      ($is-let-in (message "Not supported yet"))
-     ($has-semicol
+     ;; '_;' or '_'
+     (t
       (let ($prefix $prefix-length $suffix $suffix-length)
         ;; Wrap the term in a tactic to generate the debugging information
         (setq $prefix "run_tactic (fun _ -> dprint_eterm (quote (")
         (setq $suffix ")) (`()) [`()])")
         (setq $prefix-length (length $prefix) $suffix-length (length $suffix))
-        (goto-char $cp1)
+        (goto-char $lcp1)
         (insert $prefix)
-        (goto-char (+ (- $cp2 1) $prefix-length))
+        ;; We need to put the suffix before the ';', if there is
+        (let (($semicol-size (if $has-semicol 1 0)))
+          (goto-char (+ (- $lcp2 $semicol-size) $prefix-length)))
         (insert $suffix)
         ;; Insert an admit() at the end
-        (goto-char (+ $p2 (+ $prefix-length $suffix-length)))
-        (progn (end-of-line) (newline) (indent-according-to-mode) (insert "admit()"))
-        ;; Define the continuation to call after F* typechecks the region
-        (defun continuation-fun (status response)
-          (unless (eq status 'interrupted)
-            (if (eq status 'success) (message "F* succeeded") (error "F* process failed"))
-            ;; The sent query "counts for nothing" so we need to pop it
-            (fstar-subp--pop)))
-        ;; Call F* - TODO: not safe: the user can modify the buffer
-        (let* (($beg (fstar-subp--untracked-beginning-position))
-               ($end (point))
-               ($payload (fstar-subp--clean-buffer-substring $beg $end)))
-          (message "Payload: %s" $payload)
-          (fstar-subp--query (fstar-subp--push-query $beg `full $payload) 'continuation-fun))
-;;        (fstar-subp-advance-or-retract-to-point)
-        ))) ;; end of cond
-    ) ;; end of outmost let
+        (goto-char (+ $lp2 (+ $prefix-length $suffix-length)))
+        (progn (end-of-line)
+               ;; Insert a ';' if there isn't
+               (unless $has-semicol (insert ";"))
+               (newline) (indent-according-to-mode) (insert "admit()"))
+        )) ;; end of second case
+     ) ;; end of cond
+    ;; Define the continuation to call after F* typechecks the region
+    (defun continuation-fun (status response)
+      (unless (eq status 'interrupted)
+        (if (eq status 'success) (message "F* succeeded") (error "F* process failed"))
+        ;; The sent query "counts for nothing" so we need to pop it
+        (fstar-subp--pop)))
+    ;; Query F* - TODO: not safe: the user can modify the buffer
+    (let* (($lend (point))
+           ($payload (buffer-substring-no-properties $lbeg $lend)))
+      (message "Payload: %s" $payload)
+      ;; We need to swithch back to the original buffer to use the F* process
+      (switch-to-buffer $cbuffer)
+      (fstar-subp--query (fstar-subp--push-query $beg `full $payload) 'continuation-fun))
+    ) ;; end of outermost let
   ) ;; end of function
 
 (defun insert-assert-pre-post ()
