@@ -547,6 +547,8 @@
 
 (defconst messages-buffer "*Messages*")
 (defconst fstar-edebug-buffer "*fstar-extended-debug*")
+(defconst fstar-message-prefix "[F*] ")
+(defconst fstar-info-prefix "eterm_info:")
 
 (defun parse-sub-expression ($p1 $p2)
   (let ($delimiters $cp1 $cp2 $is-let-in $has-semicol)
@@ -584,22 +586,102 @@
     ;; Return
     (list $cp1 $cp2 $is-let-in $has-semicol)))
 
-;; Define the continuation to call after F* typechecks the region
-(defun insert-assert-pre-post-continuation (buffer overlay status response)
+(defun extract-info-from-messages (info-prefix attribute-name)
+  "Extracts meta data from the *Messages* buffer"
+  (let* ((full-name (concat info-prefix attribute-name))
+         (full-name-length (length full-name))
+         p p1 p2 prev-buffer (res nil))
+    ;; Find the information name
+    (setq prev-buffer (current-buffer))
+    (switch-to-buffer messages-buffer)
+    (goto-char (point-max))
+    (setq p (search-backward full-name (point-min) t))
+    (when p
+      (goto-char (+ p full-name-length))
+      ;; If the next character is '\n' it means there is information
+      (when (char-equal (char-after) ?\n)
+        ;; Retrieve the boundaries of the information sub-buffer
+        ;; - beginning:
+        (forward-char) ;; go to next line
+        (setq p1 (point))
+        ;; - end: we look for the next occurence of 'info-prefix' and ignore the
+        ;; line we reach
+        (search-forward info-prefix (point-max) t)
+        (beginning-of-line)
+        (backward-char) ;; go to previous line
+        (setq p2 (point))
+        ;; Copy the information to the debug buffer for processing
+        (kill-ring-save p1 p2)
+        (switch-to-buffer fstar-edebug-buffer)
+        (goto-char (point-max))
+        (insert "\n") ;; makes things easier to read (for debugging)
+        ;; Before yanking, narrow the region (so that we can do aggressive
+        ;; modifications without caring too much)
+        (save-restriction
+          (narrow-to-region (point) (point))
+          (yank)
+          ;; Every line starts with '[F*] ' (remove those occurrences)
+          (goto-char (point-min))
+          (let ((continue (< (point) (point-max))))
+            (while continue
+              (delete-forward-char (length fstar-message-prefix))
+              ;; Go to next line (if possible)
+              (end-of-line)
+              (if (< (point) (point-max)) (forward-char) (setq continue nil))))
+          ;; Save the content of the whole narrowed region
+          (setq res (buffer-substring-no-properties (point-min) (point-max)))
+          ) ;; end of save-restriction
+        ) ;; end of second when
+      ) ;; end of first when
+    ;; Switch back to original buffer
+    (switch-to-buffer prev-buffer)
+    ;; Return
+    res)) ;; end of function
+
+(defun insert-assert-pre-post-continuation (indent p1 p2 cp1 cp2 overlay status response)
+  "The continuation function called once F* returns. If F* succeeded, extracts
+   the information and adds it to the proof"
   (unless (eq status 'interrupted)
     ;; Delete the overlay
     (delete-overlay overlay)
-    ;; Display the message
+    ;; Display the message and exit if error
     (if (eq status 'success)
         (progn
           (message "F* succeeded")
           ;; The sent query "counts for nothing" so we need to pop it
           (fstar-subp--pop))
       (progn
-        (error "F* processing failed")))))
+        (error "F* meta processing failed")))
+    ;; If we reach this point it means there was no error: we can extract
+    ;; the generated information and add it to the code
+    (let ((etype (extract-info-from-messages fstar-info-prefix "etype:"))
+          (pre (extract-info-from-messages fstar-info-prefix "pre:"))
+          (post (extract-info-from-messages fstar-info-prefix "post:"))
+          (result (extract-info-from-messages fstar-info-prefix "result:"))
+          (ret (extract-info-from-messages fstar-info-prefix "ret:"))
+          (ret_refin (extract-info-from-messages fstar-info-prefix "ret_refin:"))
+          (shift 0))
+      ;; Print the information
+      (defun insert-update-shift (s)
+        (insert s)
+        (setq shift (+ shift (length s))))
+      (when pre
+        (goto-char p1)
+        (insert-update-shift (make-string indent ? ))
+        (insert-update-shift "assert(")
+        (insert-update-shift pre)
+        (insert-update-shift ");\n"))
+      (when post
+        (goto-char (+ p2 shift))
+        (insert-update-shift "\n")
+        (insert-update-shift (make-string indent ? ))
+        (insert-update-shift "assert(")
+        (insert-update-shift post)
+        (insert-update-shift ");"))
+      )))
 
 (defun insert-assert-pre-post--process
-    ($p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)
+    ($indent $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)
   (let ($beg $cbuffer $shift $lbeg $lp1 $lp2 $lcp1 $lcp2)
     ;; Copy the relevant content of the buffer for modification
     (setq $beg (fstar-subp--untracked-beginning-position))
@@ -614,7 +696,6 @@
     (setq $lp1 (+ $p1 $shift) $lp2 (+ $p2 $shift) $lcp1 (+ $cp1 $shift) $lcp2 (+ $cp2 $shift))
     ;; - yank
     (yank)
-    (message "p1 %s max-point %s shift %s" $p1 (point-max) $shift)
     ;; Modify the copied content and leave the pointer at the end of the region
     ;; to send to F*
     (cond
@@ -645,8 +726,7 @@
     (let* ((overlay (make-overlay $beg $p2 $cbuffer nil nil))
            ($lend (point))
            ($payload (buffer-substring-no-properties $lbeg $lend)))
-      (message "Payload: %s" $payload)
-      ;; We need to swithch back to the original buffer to use the F* process
+      ;; We need to swithch back to the original buffer to query the F* process
       (switch-to-buffer $cbuffer)
       ;; Overlay management
       (fstar-subp-remove-orphaned-issue-overlays (point-min) (point-max))
@@ -654,19 +734,16 @@
       (fstar-subp-set-status overlay 'busy)
       ;; Query F*
       (fstar-subp--query (fstar-subp--push-query $beg `full $payload)
-                         (apply-partially #'insert-assert-pre-post-continuation $cbuffer overlay))
+                         (apply-partially #'insert-assert-pre-post-continuation
+                                          $indent $p1 $p2 $cp1 $cp2 overlay))
       )
     ) ;; end of outermost let
   ) ;; end of function
 
-(defun t2 ()
-  (interactive)
-  (fstar-subp-remove-unprocessed))
-
 (defun insert-assert-pre-post ()
   (interactive)
   "Inserts 'asserts' with appropriate pre and post-conditions around a function call"
-  (let ($p $delimiters $p1 $p2 $parse-result $cp1 $cp2 $is-let-in $has-semicol
+  (let ($p $delimiters $indent $p1 $p2 $parse-result $cp1 $cp2 $is-let-in $has-semicol
         $current-buffer)
     ;; F* mustn't be busy - because we won't push a query but directly process it
     (when (fstar-subp--busy-p) (user-error "The F* process must be live and idle"))
@@ -680,8 +757,11 @@
           $cp2 (nth 1 $parse-result)
           $is-let-in (nth 2 $parse-result)
           $has-semicol (nth 3 $parse-result))
+    ;; Compute the indentation
+    (goto-char $cp1)
+    (setq $indent (- (point) (progn (beginning-of-line) (point))))
     ;; Process the term
-    (insert-assert-pre-post--process $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)))
+    (insert-assert-pre-post--process $indent $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)))
 
 (defun t1 ()
   (interactive)
