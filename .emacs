@@ -549,6 +549,8 @@
   (interactive)
   "Inserts 'asserts' with appropriate pre and post-conditions around a function call"
   (let ($p $delimiters $p1 $p2)
+    ;; F* mustn't be busy - because we won't push a query but directly process it
+    (when (fstar-subp--busy-p) (user-error "The F* process must be live and idle"))
     ;; Find in which region the term to process is
     (setq $p (point))
     (setq $delimiters (find-region-delimiters t t nil nil))
@@ -580,14 +582,14 @@
           ;; Check if the narrowed region matches: 'let _ = _ in'
           (goto-char (point-min))
           (setq $is-let-in
-                (re-search-forward
-                 "let[[:ascii:][:nonascii:]]+in" nil t 1))
+                ;; TODO: for some reason, I don't manage to use the anchors '\`' and '\''
+                (looking-at "[:space:]*let[[:ascii:][:nonascii:]]+in[:space:]*"))
           (if $is-let-in (message "Is 'let _ = _ in'") (message "Not is 'let _ = _ in'"))
           ;; Check if the narrowed region matches: '_ ;'
           (goto-char (point-min))
           (setq $has-semicol
-                (re-search-forward
-                 "[[:ascii:][:nonascii:]]+;" nil t 1))
+                ;; TODO: for some reason, I don't manage to use the anchors '\`' and '\''
+                (looking-at "[[:ascii:][:nonascii:]]+;[:space:]*"))
           (if $has-semicol (message "Is '_ ;'") (message "Not is '_ ;'")))
         ;; Switch between cases (depending on the matched regexp)
         (cond
@@ -600,7 +602,7 @@
           (let ($prefix $prefix-length $suffix $suffix-length)
             ;; Wrap the term in a tactic to generate the debugging information
             (setq $prefix "run_tactic (fun _ -> dprint_eterm (quote (")
-            (setq $suffix ") (`()) [`()])")
+            (setq $suffix ")) (`()) [`()])")
             (setq $prefix-length (length $prefix) $suffix-length (length $suffix))
             (goto-char $cp1)
             (insert $prefix)
@@ -608,15 +610,166 @@
             (insert $suffix)
             ;; Insert an admit() at the end
             (goto-char (+ $p2 (+ $prefix-length $suffix-length)))
+            (progn (end-of-line) (newline) (indent-according-to-mode) (insert "admit()"))
+            ;; Execute F*
+            
+;;            (fstar-subp-advance-or-retract-to-point)
+            ;; 
+;;            (message "Executed F*")
             ))) ;; end of cond
         ) ;; end of let
-      ) ;; end of save-restriction
+      ) ;; end of outmost save-restriction
     ) ;; end of outmost let
   ) ;; end of function
 
 (defun t1 ()
   (interactive)
   (insert-assert-pre-post))
+
+;;(defun fstar-subp--pos-check-wrapper (pos continuation)
+;;(defun fstar-subp--query (query continuation)
+;;  "Send QUERY to F* subprocess; handle results with CONTINUATION."
+;;(defun fstar-subp-enqueue-until (end &optional no-error)
+;;  "Mark region up to END busy, and enqueue the newly created overlay.
+;;Report an error if the region is empty and NO-ERROR is nil."
+;; fstar-subp--untracked-beginning-position
+;; (defun fstar-subp-process-overlay (overlay)
+
+(defun fstar-subp-advance-or-retract-to-point (&optional arg)
+  "Advance or retract proof state to reach point.
+
+With prefix argument ARG, when advancing, do not split region
+into blocks; process it as one large block instead."
+  (interactive "P")
+  (fstar-subp-start)
+  (fstar--widened
+    (cond
+     ((fstar-subp--in-tracked-region-p)
+      (fstar-subp-retract-until (point)))
+     ((consp arg)
+      (fstar-subp-enqueue-until (point)))
+     (t
+      (fstar-subp-advance-until (point))))))
+
+(defun fstar-subp-advance-until (pos)
+  "Submit or retract blocks to/from prover until POS (included)."
+  (fstar-subp-start)
+  (fstar--widened-excursion
+    (let ((found nil))
+      (fstar-subp--untracked-beginning)
+      (while (and (not (eobp)) ;; Don't loop at eob
+                  (fstar-subp--next-point-to-process)
+                  (<= (point) pos))
+        ;; ⚠ This fails when there's nothing left but blanks to process.
+        ;; (which in fact makes the (not (eobp)) check above redundant.)
+        (fstar-subp-enqueue-until (point))
+        (setq found t))
+      (fstar-subp-enqueue-until pos found))))
+
+(defun fstar-subp-enqueue-until (end &optional no-error)
+  "Mark region up to END busy, and enqueue the newly created overlay.
+Report an error if the region is empty and NO-ERROR is nil."
+  (fstar-subp-start)
+  (let ((beg (fstar-subp--untracked-beginning-position))
+        (end (save-excursion (goto-char end) (skip-chars-backward fstar--spaces) (point))))
+    (if (<= end beg)
+        (unless no-error
+          (user-error "Region up to point is empty: nothing to process!"))
+      (when (eq (char-after end) ?\n)
+        (cl-incf end))
+      (fstar-assert (cl-loop for overlay in (overlays-in beg end)
+                        never (fstar-subp-tracking-overlay-p overlay)))
+      (let ((overlay (make-overlay beg end (current-buffer) nil nil))
+            (fstar-subp--lax (or fstar-subp--lax fstar-subp-sloppy)))
+        (fstar-subp-remove-orphaned-issue-overlays (point-min) (point-max))
+        (overlay-put overlay 'fstar-subp--lax fstar-subp--lax)
+        (fstar-subp-set-status overlay 'pending)
+        (fstar-subp--set-queue-timer)))))
+
+(defun fstar-subp-process-overlay (overlay)
+  "Send the contents of OVERLAY to the underlying F* process."
+  (fstar-assert (not (fstar-subp--busy-p)))
+  (fstar-subp-start)
+  (fstar-subp-set-status overlay 'busy)
+  (let ((lax (overlay-get overlay 'fstar-subp--lax)))
+    (fstar-subp-push-region
+     (overlay-start overlay) (overlay-end overlay) (if lax 'lax 'full)
+     (apply-partially #'fstar-subp--overlay-continuation overlay))))
+
+(defun fstar-subp-push-region (beg end kind continuation)
+  "Push the region between BEG and END to the inferior F* process.
+KIND indicates how to check BEG..END (one of `lax', `full').
+Handle results with CONTINUATION."
+  (let* ((payload (fstar-subp--clean-buffer-substring beg end)))
+    (when (eq beg (point-min)) (fstar-subp--send-current-file-contents))
+    (fstar-subp--query (fstar-subp--push-query beg kind payload) continuation)))
+
+(defun fstar-subp--query (query continuation)
+  "Send QUERY to F* subprocess; handle results with CONTINUATION."
+  (let ((id nil))
+    (when (fstar-subp-query-p query)
+      (setq id (number-to-string (cl-incf fstar-subp--next-query-id)))
+      (setq query (fstar-subp--serialize-query query id)))
+    (fstar-log 'in "%s" query)
+    (if continuation
+        (fstar-subp-continuations--put id continuation)
+      (remhash id fstar-subp--continuations))
+    (fstar-subp-start)
+    (process-send-string fstar-subp--process (concat query "\n"))))
+
+(defun fstar-subp--push-query (pos kind code)
+  "Prepare a push query for a region starting at POS.
+KIND is one of `lax', `full'.  CODE is the code to push."
+  (if (fstar--has-feature 'json-subp)
+      (fstar-subp--push-peek-query-1 "push" pos kind code)
+    (format "#push %d %d%s\n%s%s"
+            (line-number-at-pos pos)
+            (fstar-subp--column-number-at-pos pos)
+            (pcase kind (`lax " #lax") (`full ""))
+            code
+            fstar-subp-legacy--footer)))
+
+(defun fstar-subp--push-peek-query-1 (query pos kind code)
+  "Helper for push/peek (QUERY) with POS KIND and CODE."
+  (make-fstar-subp-query
+   :query query
+   :args `(("kind" . ,(symbol-name kind))
+           ("code" . ,code)
+           ("line" . ,(line-number-at-pos pos))
+           ("column" . ,(fstar-subp--column-number-at-pos pos)))))
+
+(defun fstar-subp--peek-query (pos kind code)
+  "Prepare a peek query for a region starting at POS.
+KIND is one of `syntax' or `light'.  CODE is the code to
+push."
+  (fstar-assert (fstar--has-feature 'json-subp))
+  (fstar-subp--push-peek-query-1 "peek" pos kind code))
+
+
+(defun fstar-subp--query (query continuation)
+  "Send QUERY to F* subprocess; handle results with CONTINUATION."
+  (let ((id nil))
+    (when (fstar-subp-query-p query)
+      (setq id (number-to-string (cl-incf fstar-subp--next-query-id)))
+      (setq query (fstar-subp--serialize-query query id)))
+    (fstar-log 'in "%s" query)
+    (if continuation
+        (fstar-subp-continuations--put id continuation)
+      (remhash id fstar-subp--continuations))
+    (fstar-subp-start)
+    (process-send-string fstar-subp--process (concat query "\n"))))
+
+(defun fstar-subp--overlay-continuation (overlay status response)
+  "Handle the results (STATUS and RESPONSE) of processing OVERLAY."
+  (unless (eq status 'interrupted)
+    (fstar-subp-parse-and-highlight-issues status response overlay)
+    (if (eq status 'success)
+        (fstar-subp-set-status overlay 'processed)
+      (fstar-subp-remove-unprocessed)
+      ;; Legacy protocol requires a pop after failed pushes
+      (unless (fstar--has-feature 'json-subp)
+        (fstar-subp--pop))))
+  (run-hook-with-args 'fstar-subp-overlay-processed-hook overlay status response))
 
 ;; Actually already C-M-o
 (defun split-line-indent-is-cursor ()
