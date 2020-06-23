@@ -321,7 +321,7 @@
    (setq $p (point))
    ;; Find the region delimiters (and move the pointer back to its original position):
    ;; First check if we need to use the selected region
-   (if (and (use-region-p) (ALLOW_SELECTION))
+   (if (and (use-region-p) ALLOW_SELECTION)
        ;; Use the selected region
        (setq $p1 (region-beginning) $p2 (region-end))
        ;; Compute a new region
@@ -585,16 +585,38 @@
           (if $is-let-in (message "Is 'let _ = _ in'") (message "Not is 'let _ = _ in'"))
           ;; Check if the narrowed region matches: '_ ;'
           (goto-char (point-min))
-          (setq $is-let-in
+          (setq $has-semicol
                 (re-search-forward
                  "[[:ascii:][:nonascii:]]+;" nil t 1))
-          (if $is-let-in (message "Is '_ ;'") (message "Not is '_ ;'")))
+          (if $has-semicol (message "Is '_ ;'") (message "Not is '_ ;'")))
         ;; Switch between cases (depending on the matched regexp)
-        ))))
+        (cond
+         ($is-let-in (message "Switch: Is 'let _ = _ in'"))
+         ($has-semicol (message "Switch: Is '_;'"))
+         (t (message "Switch: Is '_'")))
+        (cond
+         ($is-let-in (message "Not supported yet"))
+         ($has-semicol
+          (let ($prefix $prefix-length $suffix $suffix-length)
+            ;; Wrap the term in a tactic to generate the debugging information
+            (setq $prefix "run_tactic (fun _ -> dprint_eterm (quote (")
+            (setq $suffix ") (`()) [`()])")
+            (setq $prefix-length (length $prefix) $suffix-length (length $suffix))
+            (goto-char $cp1)
+            (insert $prefix)
+            (goto-char (+ (- $cp2 1) $prefix-length))
+            (insert $suffix)
+            ;; Insert an admit() at the end
+            (goto-char (+ $p2 (+ $prefix-length $suffix-length)))
+            ))) ;; end of cond
+        ) ;; end of let
+      ) ;; end of save-restriction
+    ) ;; end of outmost let
+  ) ;; end of function
 
-;;(defun t1 ()
-;;  (interactive)
-;;  (insert-assert-pre-post))
+(defun t1 ()
+  (interactive)
+  (insert-assert-pre-post))
 
 ;; Actually already C-M-o
 (defun split-line-indent-is-cursor ()
