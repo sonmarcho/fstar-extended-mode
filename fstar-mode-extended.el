@@ -412,6 +412,7 @@ characters (if NO_NEWLINE is not nil) and comments."
     ;;
     ;; Data post-processing function: counts the number of lines. If there is
     ;; more than one line, add indentation, otherwise leaves the data as it is.
+    ;; Besides, greedily replace some identifiers (Prims.l_True -> True...)
     (defun post-process ()
       (goto-char (point-min))
       (let ((num-lines 0) continue)
@@ -432,6 +433,9 @@ characters (if NO_NEWLINE is not nil) and comments."
               ;; Go to next line
               (setq i (+ i 1))
               (when (< i num-lines) (end-of-line) (forward-char)))))
+        ;; Greedy replacements
+        (replace-all-in "Prims.l_True" "True")
+        (replace-all-in "Prims.l_False" "False")
         ;; Return the number of lines
         num-lines
         )) ;; end of post-process fun
