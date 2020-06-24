@@ -528,8 +528,9 @@ characters (if NO_NEWLINE is not nil) and comments."
                (newline) (indent-according-to-mode) (insert "admit()"))
         )) ;; end of second case
      ) ;; end of cond
-    ;; Do some greedy replacements: replace the asserts by assumes 
-    (goto-char (point-min))
+    ;; Do some greedy replacements: replace the assertions by assumptions
+    (replace-all-in "assert_norm" "assume(*norm*)")
+    (replace-all-in "assert" "assume"))
     (while 
     ;; Query F*
     (let* ((overlay (make-overlay $beg $p2 $cbuffer nil nil))
