@@ -11,6 +11,18 @@ open FStar.Mul
 
 #push-options "--z3rlimit 15 --fuel 0 --ifuel 0"
 
+(* TODO: move to FStar.Tactics.Util.fst *)
+#push-options "--ifuel 1"
+val iteri_aux: int -> (int -> 'a -> Tac unit) -> list 'a -> Tac unit
+let rec iteri_aux i f x = match x with
+  | [] -> ()
+  | a::tl -> f i a; iteri_aux (i+1) f tl
+
+val iteri: (int -> 'a -> Tac unit) -> list 'a -> Tac unit
+let iteri f x = iteri_aux 0 f x
+#pop-options
+
+
 let test_fun1 (n : nat) :
   Pure nat
   (requires (n >= 4))
@@ -36,6 +48,10 @@ let test_fun4 (n : nat{n >= 2}) :
 let test_fun5 (n : nat{n >= 2}) :
   Tot (p:(nat & int){let n1, n2 = p in n1 >= 8 /\ n2 >= 2}) =
   4 * n, 2
+
+let test_fun6 (n1 : nat{n1 >= 4}) (n2 : nat{n2 >= 8}) (n3 : nat{n3 >= 10}) :
+  Tot (n:int{n >= 80}) =
+  (n1 + n2) * n3
 
 let test_lemma1 (n : nat) :
   Lemma (n * n >= 0) = ()
@@ -352,6 +368,118 @@ let simplify_eterm_info e steps info =
   }
 #pop-options
 
+let printout_string (prefix data:string) : Tac unit =
+  print (prefix ^ ":\n" ^ data)
+
+let printout_term (prefix:string) (t:term) : Tac unit =
+  printout_string prefix (term_to_string t)
+
+let printout_opt_term (prefix:string) (t:option term) : Tac unit =
+  match t with
+  | Some t' -> printout_term prefix t'
+  | None -> print (prefix ^ ":NONE")
+
+let printout_opt_type (prefix:string) (ty:option type_info) : Tac unit =
+  let ty, rty_raw, rty_refin =
+    match ty with
+    | Some ty' ->
+      begin match ty'.rty with
+      | Some rty' -> Some ty'.ty, Some rty'.raw, Some rty'.refin
+      | _ -> Some ty'.ty, None, None
+      end
+    | _ -> None, None, None
+  in
+  printout_opt_term (prefix ^ ":ty") ty;
+  printout_opt_term (prefix ^ ":rty_raw") rty_raw;
+  printout_opt_term (prefix ^ ":rty_refin") rty_refin
+
+(*/// Compare the type of a parameter and its expected tyep
+let parameter_has_expected_type (p:param_info) : Tac bool =
+  match p.p_ty, exp_ty with
+  | Some info1, Some info2 ->
+    if term_eq info1.ty info2.ty then true
+    else begin match 
+      
+    end
+    match term_eq *)
+
+let printout_parameter (prefix:string) (index:int) (p:param_info) : Tac unit =
+  let p_prefix = prefix ^ ":param" ^ string_of_int index in
+  printout_term p_prefix p.t;
+  printout_opt_type (p_prefix ^ ":p_ty") p.p_ty;
+  printout_opt_type (p_prefix ^ ":e_ty") p.exp_ty
+
+let printout_parameters (prefix:string) (parameters:list param_info) : Tac unit =
+  printout_string (prefix ^ ":num") (string_of_int (List.length parameters));
+  iteri (printout_parameter prefix) parameters
+
+/// The type refinement in a ``type_info`` is initially lambda functions.
+/// Instantiate it with the appropriate term so as to generate a predicate.
+val instantiate_type_info_refin : term -> type_info -> Tac type_info
+
+let instantiate_type_info_refin t info =
+  match info.rty with
+  | Some rinfo ->
+    let refin' = mk_e_app rinfo.refin [t] in
+    let opt_rinfo' = Some ({rinfo with refin = refin'}) in
+    { info with rty = opt_rinfo' }
+  | _ -> info
+
+val instantiate_opt_type_info_refin : term -> option type_info -> Tac (option type_info)
+
+let instantiate_opt_type_info_refin t info =
+  match info with
+  | Some info' -> Some (instantiate_type_info_refin t info')
+  | _ -> None
+
+/// The type refinements in a ``eterm_info`` are initially lambda functions.
+/// Instantiate them with the appropriate terms so as to generate predicates.
+val instantiate_refinements : env -> eterm_info -> option string -> term -> list term ->
+  Tac (env & eterm_info)
+
+let instantiate_refinements e info ret_arg_name ret_arg post_args =
+  (* Instanciate the post-condition and simplify the information *)
+  let ipost =
+    match info.post with
+    | Some post -> Some (mk_e_app post post_args)
+    | None -> None
+  in
+  (* Retrieve the return type refinement and instanciate it*)
+  let (iret_type : option type_info), (e' : env) =
+    match info.ret_type with
+    | Some ret_type_info ->
+      begin match ret_type_info.rty with
+      | Some ret_type_rinfo ->
+        let ret_arg, e' =
+          match ret_arg_name with
+          | Some name ->
+            let fbv : bv = fresh_bv_named name ret_type_rinfo.raw in
+            let b : binder = pack_binder fbv Q_Explicit in
+            pack (Tv_Var fbv), push_binder e b
+          | None -> ret_arg, e
+        in
+        let refin' = mk_e_app ret_type_rinfo.refin [ret_arg] in
+        let ret_type_rinfo : rtype_info = { ret_type_rinfo with refin = refin' } in
+        let ret_type_info' = { ret_type_info with rty = Some ret_type_rinfo } in
+        Some ret_type_info', e'
+      | None -> None, e
+      end
+    | _ -> None, e
+  in
+  (* Instantiate the refinements in the parameters *)
+  let inst_param (p:param_info) : Tac param_info =
+    let p_ty' = instantiate_opt_type_info_refin p.t p.p_ty in
+    let exp_ty' = instantiate_opt_type_info_refin p.t p.exp_ty in
+    { p with p_ty = p_ty'; exp_ty = exp_ty' }
+  in
+  let iparameters = map inst_param info.parameters in
+  (* Return *)
+  e',
+  ({ info with
+    post = ipost;
+    ret_type = iret_type;
+    parameters = iparameters })
+
 /// Print the effectful information about a term in a format convenient to
 /// use for the emacs commands
 val print_eterm_info : env -> eterm_info -> option string -> term -> list term -> Tac unit
@@ -361,63 +489,15 @@ val print_eterm_info : env -> eterm_info -> option string -> term -> list term -
 #push-options "--ifuel 1"
 let print_eterm_info e info ret_arg_name ret_arg post_args =
     print ("ret_arg: " ^ term_to_string ret_arg);
-    (* Instanciate the post-condition and simplify the information *)
-    let spost =
-      match info.post with
-      | Some post -> Some (mk_e_app post post_args)
-      | None -> None
-    in
-    (* Retrieve the return type refinement and instanciate it*)
-    let (sret_type : option type_info), (e : env) =
-      match info.ret_type with
-      | Some ret_type_info ->
-        begin match ret_type_info.rty with
-        | Some ret_type_rinfo ->
-          let ret_arg, e' =
-            match ret_arg_name with
-            | Some name ->
-              let fbv : bv = fresh_bv_named name ret_type_rinfo.raw in
-              let b : binder = pack_binder fbv Q_Explicit in
-              pack (Tv_Var fbv), push_binder e b
-            | None -> ret_arg, e
-          in
-          let refin' = mk_e_app ret_type_rinfo.refin [ret_arg] in
-          let ret_type_rinfo : rtype_info = { ret_type_rinfo with refin = refin' } in
-          let ret_type_info' = { ret_type_info with rty = Some ret_type_rinfo } in
-          Some ret_type_info', e'
-        | None -> None, e
-        end
-      | _ -> None, e
-    in
-    let info' = { info with post = spost; ret_type = sret_type } in
-    let sinfo = simplify_eterm_info e [primops; simplify] info' in
+    let sinfo = simplify_eterm_info e [primops; simplify] info in
     (* Print the information *)
-    let print_opt_term name (t:option term) : Tac unit =
-      match t with
-      | Some t' ->
-        print ("eterm_info:" ^ name ^ ":\n" ^ (term_to_string t'))
-      | None -> print ("eterm_info:" ^ name ^ ":NONE")
-    in
-    let print_opt_type name (ty:option type_info) : Tac unit =
-      let ty, rty_raw, rty_refin =
-        match ty with
-        | Some ty' ->
-          begin match ty'.rty with
-          | Some rty' -> Some ty'.ty, Some rty'.raw, Some rty'.refin
-          | _ -> Some ty'.ty, None, None
-          end
-        | _ -> None, None, None
-      in
-      print_opt_term (name ^ ":ty") ty;
-      print_opt_term (name ^ ":rty_raw") rty_raw;
-      print_opt_term (name ^ ":rty_refin") rty_refin
-    in
     print ("eterm_info:BEGIN");
     print ("eterm_info:etype:" ^ (effect_type_to_string info.etype));
-    print_opt_term "pre" sinfo.pre;
-    print_opt_term "post" sinfo.post;
-    print_opt_type "ret_type" sinfo.ret_type;
-    print_opt_term "goal" sinfo.goal;
+    printout_opt_term "eterm_info:pre" sinfo.pre;
+    printout_opt_term "eterm_info:post" sinfo.post;
+    printout_opt_type "eterm_info:ret_type" sinfo.ret_type;
+    printout_parameters "eterm_info:parameters" sinfo.parameters;
+    printout_opt_term "eterm_info:goal" sinfo.goal;
     print ("eterm_info:END")
 #pop-options
 
@@ -438,7 +518,9 @@ let dprint_eterm t ret_arg_name ret_arg post_args =
     print ("dprint_eterm: could not retrieve effect information from: '" ^
            (term_to_string t) ^ "'")
   | Some info ->
-    print_eterm_info (top_env ()) info ret_arg_name ret_arg post_args
+    let e = top_env () in
+    let e', info' = instantiate_refinements e info ret_arg_name ret_arg post_args in
+    print_eterm_info e' info' ret_arg_name ret_arg post_args
 #pop-options
 
 let _debug_print_var (name : string) (t : term) : Tac unit =
@@ -458,16 +540,18 @@ let _debug_print_var (name : string) (t : term) : Tac unit =
   end;
   print "end of _debug_print_var"
 
-let test1 (x : nat{x >= 4}) : nat =
+let test1 (x : nat{x >= 4}) (y : nat{y >= 8}) (z : nat{z >= 10}) : nat =
   test_lemma1 x; (**)
 //  run_tactic (fun _ -> dprint_eterm (quote (test_lemma1 x)) (`()) [(`())]);
   (**) test_lemma1 x; (**)
   test_lemma1 (let y = x in y); (**)
-  let y = 3 in
-  test_lemma1 y;
+  let w = 3 in
+  test_lemma1 w;
   test_lemma3 x;
-  let y = test_fun4 x in
-  run_tactic (fun _ -> dprint_eterm (quote (test_fun4 x)) (Some "y") (quote y) [(`())]);
+  let w = test_fun4 x in
+//  run_tactic (fun _ -> dprint_eterm (quote (test_fun4 x)) (Some "w") (quote w) [(`())]);
+//  run_tactic (fun _ -> dprint_eterm (quote (test_fun6 x (2 * x) (3 * x))) (Some "a") (quote y) [(`())]);
+  run_tactic (fun _ -> dprint_eterm (quote (test_fun6 x y z)) (Some "a") (quote y) [(`())]);
   admit()
 
   let n1, n2 = test_fun5 x in
