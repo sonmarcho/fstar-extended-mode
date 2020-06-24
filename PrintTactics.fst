@@ -224,6 +224,9 @@ noeq type eterm_info = {
 let mk_eterm_info etype pre post ret_type head parameters goal : eterm_info =
   Mketerm_info etype pre post ret_type head parameters goal
 
+(*** Step 1 *)
+/// Analyze a term to retrieve its effectful information
+
 /// Decompose a function application between its body and parameters
 val decompose_application : env -> term -> Tac (term & list param_info)
 
@@ -315,6 +318,77 @@ let get_eterm_info (e:env) (t : term) =
     None
 #pop-options
 
+(*** Step 2 *)
+/// The retrieved type refinements and post-conditions are not instantiated (they
+/// are lambda functions): instantiate them to get propositions.
+
+val instantiate_type_info_refin : term -> type_info -> Tac type_info
+
+let instantiate_type_info_refin t info =
+  match info.rty with
+  | Some rinfo ->
+    let refin' = mk_e_app rinfo.refin [t] in
+    let opt_rinfo' = Some ({rinfo with refin = refin'}) in
+    { info with rty = opt_rinfo' }
+  | _ -> info
+
+val instantiate_opt_type_info_refin : term -> option type_info -> Tac (option type_info)
+
+let instantiate_opt_type_info_refin t info =
+  match info with
+  | Some info' -> Some (instantiate_type_info_refin t info')
+  | _ -> None
+
+val instantiate_refinements : env -> eterm_info -> option string -> term -> list term ->
+  Tac (env & eterm_info)
+
+let instantiate_refinements e info ret_arg_name ret_arg post_args =
+  (* Instanciate the post-condition and simplify the information *)
+  let ipost =
+    match info.post with
+    | Some post -> Some (mk_e_app post post_args)
+    | None -> None
+  in
+  (* Retrieve the return type refinement and instanciate it*)
+  let (iret_type : option type_info), (e' : env) =
+    match info.ret_type with
+    | Some ret_type_info ->
+      begin match ret_type_info.rty with
+      | Some ret_type_rinfo ->
+        let ret_arg, e' =
+          match ret_arg_name with
+          | Some name ->
+            let fbv : bv = fresh_bv_named name ret_type_rinfo.raw in
+            let b : binder = pack_binder fbv Q_Explicit in
+            pack (Tv_Var fbv), push_binder e b
+          | None -> ret_arg, e
+        in
+        let refin' = mk_e_app ret_type_rinfo.refin [ret_arg] in
+        let ret_type_rinfo : rtype_info = { ret_type_rinfo with refin = refin' } in
+        let ret_type_info' = { ret_type_info with rty = Some ret_type_rinfo } in
+        Some ret_type_info', e'
+      | None -> None, e
+      end
+    | _ -> None, e
+  in
+  (* Instantiate the refinements in the parameters *)
+  let inst_param (p:param_info) : Tac param_info =
+    let p_ty' = instantiate_opt_type_info_refin p.t p.p_ty in
+    let exp_ty' = instantiate_opt_type_info_refin p.t p.exp_ty in
+    { p with p_ty = p_ty'; exp_ty = exp_ty' }
+  in
+  let iparameters = map inst_param info.parameters in
+  (* Return *)
+  e',
+  ({ info with
+    post = ipost;
+    ret_type = iret_type;
+    parameters = iparameters })
+
+(*** Step 3 *)
+/// Simplify the information:
+/// - simplify the propositions and ignore them if they are trivial (i.e.: True)
+
 /// Check if a proposition is trivial (i.e.: is True)
 val is_trivial_proposition : term -> Tac bool
 
@@ -368,6 +442,9 @@ let simplify_eterm_info e steps info =
   }
 #pop-options
 
+(*** Step 4 *)
+/// Output the resulting information
+
 let printout_string (prefix data:string) : Tac unit =
   print (prefix ^ ":\n" ^ data)
 
@@ -413,73 +490,6 @@ let printout_parameters (prefix:string) (parameters:list param_info) : Tac unit 
   printout_string (prefix ^ ":num") (string_of_int (List.length parameters));
   iteri (printout_parameter prefix) parameters
 
-/// The type refinement in a ``type_info`` is initially lambda functions.
-/// Instantiate it with the appropriate term so as to generate a predicate.
-val instantiate_type_info_refin : term -> type_info -> Tac type_info
-
-let instantiate_type_info_refin t info =
-  match info.rty with
-  | Some rinfo ->
-    let refin' = mk_e_app rinfo.refin [t] in
-    let opt_rinfo' = Some ({rinfo with refin = refin'}) in
-    { info with rty = opt_rinfo' }
-  | _ -> info
-
-val instantiate_opt_type_info_refin : term -> option type_info -> Tac (option type_info)
-
-let instantiate_opt_type_info_refin t info =
-  match info with
-  | Some info' -> Some (instantiate_type_info_refin t info')
-  | _ -> None
-
-/// The type refinements in a ``eterm_info`` are initially lambda functions.
-/// Instantiate them with the appropriate terms so as to generate predicates.
-val instantiate_refinements : env -> eterm_info -> option string -> term -> list term ->
-  Tac (env & eterm_info)
-
-let instantiate_refinements e info ret_arg_name ret_arg post_args =
-  (* Instanciate the post-condition and simplify the information *)
-  let ipost =
-    match info.post with
-    | Some post -> Some (mk_e_app post post_args)
-    | None -> None
-  in
-  (* Retrieve the return type refinement and instanciate it*)
-  let (iret_type : option type_info), (e' : env) =
-    match info.ret_type with
-    | Some ret_type_info ->
-      begin match ret_type_info.rty with
-      | Some ret_type_rinfo ->
-        let ret_arg, e' =
-          match ret_arg_name with
-          | Some name ->
-            let fbv : bv = fresh_bv_named name ret_type_rinfo.raw in
-            let b : binder = pack_binder fbv Q_Explicit in
-            pack (Tv_Var fbv), push_binder e b
-          | None -> ret_arg, e
-        in
-        let refin' = mk_e_app ret_type_rinfo.refin [ret_arg] in
-        let ret_type_rinfo : rtype_info = { ret_type_rinfo with refin = refin' } in
-        let ret_type_info' = { ret_type_info with rty = Some ret_type_rinfo } in
-        Some ret_type_info', e'
-      | None -> None, e
-      end
-    | _ -> None, e
-  in
-  (* Instantiate the refinements in the parameters *)
-  let inst_param (p:param_info) : Tac param_info =
-    let p_ty' = instantiate_opt_type_info_refin p.t p.p_ty in
-    let exp_ty' = instantiate_opt_type_info_refin p.t p.exp_ty in
-    { p with p_ty = p_ty'; exp_ty = exp_ty' }
-  in
-  let iparameters = map inst_param info.parameters in
-  (* Return *)
-  e',
-  ({ info with
-    post = ipost;
-    ret_type = iret_type;
-    parameters = iparameters })
-
 /// Print the effectful information about a term in a format convenient to
 /// use for the emacs commands
 val print_eterm_info : env -> eterm_info -> option string -> term -> list term -> Tac unit
@@ -500,12 +510,6 @@ let print_eterm_info e info ret_arg_name ret_arg post_args =
     printout_opt_term "eterm_info:goal" sinfo.goal;
     print ("eterm_info:END")
 #pop-options
-
-//val get_eterm_info : term -> Tac (option eterm_info)
-(* Substitutions:
-Prims.l_True
-Prims.l_False
-*)
 
 /// The tactic to be called by the emacs commands
 val dprint_eterm : term -> option string -> term -> list term -> Tac unit
@@ -554,6 +558,7 @@ let test1 (x : nat{x >= 4}) (y : nat{y >= 8}) (z : nat{z >= 10}) : nat =
   run_tactic (fun _ -> dprint_eterm (quote (test_fun6 x y z)) (Some "a") (quote y) [(`())]);
   admit()
 
+(*
   let n1, n2 = test_fun5 x in
 //  run_tactic (fun _ -> print ("n1: " ^ term_to_string (quote n1)));
   run_tactic (fun _ -> _debug_print_var "n1" (quote n1));
