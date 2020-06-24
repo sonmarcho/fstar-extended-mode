@@ -225,7 +225,7 @@
 
 (defun skip-comment (FORWARD &optional LIMIT)
   "Move the cursor forward or backward until we are out of a comment or we
-   reach the end of the buffer"
+reach the end of the buffer"
   (let ($stop)
     ;; Set the limit to the move
     (if FORWARD (setq $stop (or LIMIT (point-max)))
@@ -257,7 +257,7 @@
 
 (defun skip-comments-and-spaces (FORWARD &optional LIMIT)
   "Move the cursor forward or backward until we are out of a comment and there
-   are no spaces"
+are no spaces"
   (let ($continue $p1 $p2 $limit $reached-limit)
     (if FORWARD (setq $p1 (point) $p2 (or LIMIT (point-max)))
                 (setq $p2 (point) $p1 (or LIMIT (point-min))))
@@ -273,6 +273,17 @@
           (if (is-at-comment-limit FORWARD)
             (if FORWARD (forward-char 2) (backward-char 1))
             (setq $continue nil)))))))
+
+(defun region-is-comments-and-spaces (BEG END &optional NO_NEWLINE)
+  "Return t if the region delimited by BEG and END is only made of spaces, new line
+characters (if NO_NEWLINE is not nil) and comments."
+  (let (($p (point)) ($continue t))
+    (goto-char BEG)
+    (skip-comments-and-spaces t END)
+    (if (< (point) END) nil
+      ;; If we reached the end: eventually check if there are new line characters
+      (goto-char BEG)
+      (if NO_NEWLINE (not (search-forward "\n" END t)) t))))
 
 (defconst messages-buffer "*Messages*")
 (defconst fstar-edebug-buffer "*fstar-extended-debug*")
@@ -372,7 +383,7 @@
     ;; Return
     (if (and res post-process) (list res pp-res) res))) ;; end of function
 
-(defun insert-assert-pre-post-continuation (indent p1 p2 cp1 cp2 overlay status response)
+(defun insert-assert-pre-post-continuation (indent-str p1 p2 cp1 cp2 overlay status response)
   "The continuation function called once F* returns. If F* succeeded, extracts
    the information and adds it to the proof"
   (unless (eq status 'interrupted)
@@ -400,14 +411,14 @@
           (end-of-line)
           (if (< (point) (point-max)) (forward-char) (setq continue nil))
           (setq num-lines (+ num-lines 1)))
-        ;; If > 1 lines, indent them (note that we indent by 'indent + 2'
-        ;; because the data will be put inside an assert)
+        ;; If > 1 lines, indent them (note that we add two spaces to the indentation
+        ;; string, because the data will be put inside an assert)
         (when (> num-lines 1)
-          (let ((i 0) (indent-str (make-string (+ indent 2) ? )))
+          (let ((i 0) (indent-str1 (concat indent-str "  ")))
             (goto-char (point-min))
             (while (< i num-lines)
               ;; Indent
-              (insert indent-str)
+              (insert indent-str1)
               ;; Go to next line
               (setq i (+ i 1))
               (when (< i num-lines) (end-of-line) (forward-char)))))
@@ -427,8 +438,7 @@
            (ret (extract-pp "ret:"))
            (ret_refin (extract-pp "ret_refin:"))
            (goal (extract-pp "goal:"))
-           (shift 0)
-          (indent-str (make-string indent ? )))
+           (shift 0))
       ;; Print the information
       ;; - utilities
       (defun insert-update-shift (s)
@@ -459,7 +469,7 @@
 )))
 
 (defun insert-assert-pre-post--process
-    ($indent $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)
+    ($indent-str $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)
   (let ($beg $cbuffer $shift $lbeg $lp1 $lp2 $lcp1 $lcp2)
     ;; Copy the relevant content of the buffer for modification
     (setq $beg (fstar-subp--untracked-beginning-position))
@@ -513,7 +523,7 @@
       ;; Query F*
       (fstar-subp--query (fstar-subp--push-query $beg `full $payload)
                          (apply-partially #'insert-assert-pre-post-continuation
-                                          $indent $p1 $p2 $cp1 $cp2 overlay))
+                                          $indent-str $p1 $p2 $cp1 $cp2 overlay))
       )
     ) ;; end of outermost let
   ) ;; end of function
@@ -525,7 +535,8 @@ function call.
 TODO: replace assertions by assumes
 TODO: take into account if/match branches
 TODO: add assertions for the parameters' refinements"
-  (let ($next-point $p $delimiters $indent $p1 $p2 $parse-result $cp1 $cp2
+  (let ($next-point $beg $p $delimiters $indent $indent-str
+        $p1 $p2 $parse-result $cp1 $cp2
         $is-let-in $has-semicol $current-buffer)
     (setq $p (point))
     ;; F* mustn't be busy as we won't push a query to the queue but will directly
@@ -546,22 +557,57 @@ TODO: add assertions for the parameters' refinements"
                                 "continue? We will need to process them, which "
                                 "may take time, and the result will be lost"))
         (user-error "Aborted")))
-    ;; Find in which region the term to process is
-    (setq $delimiters (find-region-delimiters t t nil nil))
-    (setq $p1 (car $delimiters) $p2 (car (cdr $delimiters)))
-    ;; TODO: Make sure the region extrema are not inside comments (expand the region)
-    ;; Parse the term
-    (setq $parse-result (parse-sub-expression $p1 $p2))
-    (setq $cp1 (nth 0 $parse-result)
-          $cp2 (nth 1 $parse-result)
-          $is-let-in (nth 2 $parse-result)
-          $has-semicol (nth 3 $parse-result))
-    ;; Compute the indentation - TODO: take into account '(**)' for ghost calls
-    (goto-char $cp1)
-    (setq $indent (- (point) (progn (beginning-of-line) (point))))
-
-    ;; Process the term
-    (insert-assert-pre-post--process $indent $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)))
+    ;; Restrict the region
+    (setq $beg (fstar-subp--untracked-beginning-position))
+    (setq $p (- $p $beg))
+    (save-restriction
+      (narrow-to-region $beg (point-max))
+      ;; Find in which region the term to process is
+      (setq $delimiters (find-region-delimiters t t nil nil))
+      (setq $p1 (car $delimiters) $p2 (car (cdr $delimiters)))
+      ;; Expand the region: ignore comments, and try to reach a beginning/end of
+      ;; line for the beginning/end of the region
+      ;; - beginning:
+      ;; -- if we are inside a comment, get out of it
+      (goto-char $p1)
+      (skip-comment nil)
+      (setq $p1 (point))
+      ;; -- then try to reach the beginning of the line
+      (let ($limit)
+        (beginning-of-line)
+        (setq $limit (point))
+        (goto-char $p1)
+        (skip-comments-and-spaces nil $limit)
+        (setq $p1 (point)))
+      ;; - end: same
+      ;; -- if we are inside a comment, get out of it
+      (goto-char $p2)
+      (skip-comment t)
+      (setq $p2 (point))
+      ;; -- then try to reach the beginning of the line
+      (let ($limit)
+        (end-of-line)
+        (setq $limit (point))
+        (goto-char $p2)
+        (skip-comments-and-spaces t $limit)
+        (setq $p2 (point)))
+      ;; Parse the term
+      (setq $parse-result (parse-sub-expression $p1 $p2))
+      (setq $cp1 (nth 0 $parse-result)
+            $cp2 (nth 1 $parse-result)
+            $is-let-in (nth 2 $parse-result)
+            $has-semicol (nth 3 $parse-result))
+      ;; Compute the indentation: if the area between the beginning of the focused
+      ;; term and the beginning of the line is made of spaces and comments, we copy
+      ;; it (allows to have a formatting consistent with ghosted code: "(**)",
+      ;; for example), otherwise we introduce spaces equal to the length of that area
+      (let (($ip1 (progn (beginning-of-line) (point))) ($ip2 $cp1))
+        (setq $indent (- $ip2 $ip1))
+        (if (region-is-comments-and-spaces $ip1 $ip2)
+            (setq $indent-str (buffer-substring-no-properties $ip1 $ip2))
+          (setq $indent-str (make-string $indent ? ))))
+      ;; Process the term
+      (insert-assert-pre-post--process $indent-str $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol))))
 
 (defun t1 ()
   (interactive)
