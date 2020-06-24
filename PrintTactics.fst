@@ -199,7 +199,7 @@ let get_type_info_from_type (e:env) (ty:term) : Tac type_info =
 
 /// Parameter information
 noeq type param_info = {
-  t : term;
+  term : term;
   qualif : aqualv;
   p_ty : option type_info; // The type of the term
   exp_ty : option type_info; // The type of the expected parameter
@@ -214,7 +214,7 @@ noeq type eterm_info = {
   pre : option term;
   post : option term;
   ret_type : option type_info;
-  (* If the term is a function: its head and parameters *)
+  (* Head and parameters of the decomposition of the term into a function application *)
   head : term;
   parameters : list param_info;
   (* ``goal`` is used when the term is the return result of a function:
@@ -375,8 +375,8 @@ let instantiate_refinements e info ret_arg_name ret_arg post_args =
   in
   (* Instantiate the refinements in the parameters *)
   let inst_param (p:param_info) : Tac param_info =
-    let p_ty' = instantiate_opt_type_info_refin p.t p.p_ty in
-    let exp_ty' = instantiate_opt_type_info_refin p.t p.exp_ty in
+    let p_ty' = instantiate_opt_type_info_refin p.term p.p_ty in
+    let exp_ty' = instantiate_opt_type_info_refin p.term p.exp_ty in
     { p with p_ty = p_ty'; exp_ty = exp_ty' }
   in
   let iparameters = map inst_param info.parameters in
@@ -482,7 +482,9 @@ let compare_param_types (p:param_info) : Tac type_comparison =
 /// Output the resulting information
 
 let printout_string (prefix data:string) : Tac unit =
-  print (prefix ^ ":\n" ^ data)
+  (* Export all at once - actually I'm not sure it is not possible for external
+   * output to be mixed here *)
+  print (prefix ^ ":\n" ^ data ^ "\n")
 
 let printout_term (prefix:string) (t:term) : Tac unit =
   printout_string prefix (term_to_string t)
@@ -490,7 +492,7 @@ let printout_term (prefix:string) (t:term) : Tac unit =
 let printout_opt_term (prefix:string) (t:option term) : Tac unit =
   match t with
   | Some t' -> printout_term prefix t'
-  | None -> print (prefix ^ ":NONE")
+  | None -> printout_string prefix ""
 
 let printout_opt_type (prefix:string) (ty:option type_info) : Tac unit =
   let ty, rty_raw, rty_refin =
@@ -508,7 +510,7 @@ let printout_opt_type (prefix:string) (ty:option type_info) : Tac unit =
 
 let printout_parameter (prefix:string) (index:int) (p:param_info) : Tac unit =
   let p_prefix = prefix ^ ":param" ^ string_of_int index in
-  printout_term p_prefix p.t;
+  printout_term (p_prefix ^ ":term") p.term;
   printout_opt_type (p_prefix ^ ":p_ty") p.p_ty;
   printout_opt_type (p_prefix ^ ":e_ty") p.exp_ty;
   printout_string (p_prefix ^ ":types_comparison")
@@ -530,7 +532,7 @@ let print_eterm_info e info ret_arg_name ret_arg post_args =
     let sinfo = simplify_eterm_info e [primops; simplify] info in
     (* Print the information *)
     print ("eterm_info:BEGIN");
-    print ("eterm_info:etype:" ^ (effect_type_to_string info.etype));
+    printout_string "eterm_info:etype" (effect_type_to_string info.etype);
     printout_opt_term "eterm_info:pre" sinfo.pre;
     printout_opt_term "eterm_info:post" sinfo.post;
     printout_opt_type "eterm_info:ret_type" sinfo.ret_type;
@@ -547,6 +549,7 @@ let dprint_eterm t ret_arg_name ret_arg post_args =
   let e = top_env () in
   match get_eterm_info e t with
   | None ->
+    (* TODO: fail *)
     print ("dprint_eterm: could not retrieve effect information from: '" ^
            (term_to_string t) ^ "'")
   | Some info ->
