@@ -89,29 +89,36 @@
    (equivalent) original position."
   (apply-in-current-region ACTION nil t nil nil))
 
+(defun replace-all-in (FROM TO &optional BEG END)
+  "Replace all the occurrences of FROM by TO and return the number of characters
+by which to shift the pointer, leaving the pointer at the shifted position.
+Takes optional region delimiters as arguments."
+  (let (($p0 (point)) ;; original position
+        ($p (point)) ;; current position
+        ($shift 0) ;; number of characters by which we shift the original position
+        ($length-dif (- (length TO) (length FROM))) ;; shift of one replacement
+        ($beg (or BEG (point-min)))
+        ($end (or END (point-max)))
+        )
+    ;; Replace all the occurrences of FROM
+    (goto-char $beg)
+    (while (search-forward FROM $end t)
+      (progn
+        ;; Compute the pointer shift: if the current position is smaller or equal
+        ;; than the original position with the current shift, add $length-dif
+        ;; to the shift
+        (setq $p (point))
+        (when (<= $p (+ $p0 $shift)) (setq $shift (+ $shift $length-dif)))
+        ;; Replace
+        (replace-match TO)))
+    ;; Move to the shifted position and return the shift
+    (goto-char (+ $p0 $shift))
+    $shift))
+
 (defun replace-in-current-region (FROM TO ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                   ABOVE_PARAGRAPH BELOW_PARAGRAPH)
-  (let ($p $r $length_dif)
-    ;; Define the replace function
-    (setq $length_dif (- (length TO) (length FROM)))
-    (setq $r
-      (defun replace ()
-        (let ($p1 $shift)
-          (progn
-            (setq $p (point))
-            (setq $shift 0)
-            ;; Replace all the occurrences of FROM
-            (beginning-of-buffer)
-            (while (search-forward FROM nil t)
-              (progn
-                ;; Compute the pointer shift
-                (setq $p1 (point))
-                (if (<= $p1 (+ $p $shift)) (setq $shift (+ $shift $length_dif)) ())
-                ;; Replace
-                (replace-match TO)))
-            ;; Move to the (equivalent) original position and return the shift
-            (goto-char (+ $shift $p))
-            $shift))))
+  ""
+  (let (($r (apply-partially 'replace-all-in FROM TO)))
     ;; Apply the replace function
     (apply-in-current-region $r ALLOW_SELECTION INCLUDE_CURRENT_LINE
                              ABOVE_PARAGRAPH BELOW_PARAGRAPH)))
@@ -486,6 +493,10 @@ characters (if NO_NEWLINE is not nil) and comments."
     (yank)
     ;; Modify the copied content and leave the pointer at the end of the region
     ;; to send to F*
+    ;;
+    ;; Insert the proper wrappers depending on the result of parsing to generate
+    ;; the proper information by running F*. Note that we don't need to keep
+    ;; track of the positions modifications: we will send the whole buffer to F*.
     (cond
      ;; 'let _ = _ in'
      ($is-let-in (message "Not supported yet"))
@@ -510,6 +521,9 @@ characters (if NO_NEWLINE is not nil) and comments."
                (newline) (indent-according-to-mode) (insert "admit()"))
         )) ;; end of second case
      ) ;; end of cond
+    ;; Do some greedy replacements: replace the asserts by assumes 
+    (goto-char (point-min))
+    (while 
     ;; Query F*
     (let* ((overlay (make-overlay $beg $p2 $cbuffer nil nil))
            ($lend (point))
