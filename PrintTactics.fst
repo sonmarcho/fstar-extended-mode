@@ -152,47 +152,50 @@ val safe_tcc (e:env) (t:term) : Tac (option comp)
 let safe_tcc e t =
   try Some (tcc e t) with | _ -> None
 
-val get_refin_from_type : typ -> Tac (option term)
+val get_rtype_info_from_type : typ -> Tac (option rtype_info)
 
-let get_refin_from_type t =
-  print ("get_refin_from_type: " ^ term_to_string t);
+let get_rtype_info_from_type t =
+  print ("get_rtype_info_from_type: " ^ term_to_string t);
   match inspect t with
   | Tv_Refine bv refin ->
     print ("Tv_Refine " ^ term_to_string refin);
+    let bview : bv_view = inspect_bv bv in
+    let raw_type : typ = bview.bv_sort in
     let b : binder = pack_binder bv Q_Explicit in
-    Some (pack (Tv_Abs b refin))
+    let refin = pack (Tv_Abs b refin) in
+    Some (mk_rtype_info raw_type refin)
   | _ -> None
 
-(*let compute_type_refinement
-
-let compute_type_info (e:env) (t:term) : Tac (option type_info) =
+#push-options "--ifuel 1"
+let get_type_info (e:env) (t:term) : Tac (option type_info) =
   match safe_tc e t with
   | None -> None
   | Some ty ->
-    match inspect ty with
-    | Tv_Refine bv ref ->
-      let b : binder = pack_binder bv Q_Explicit in
-      Some (pack (Tv_Abs b refin))
-  | Tv_Refine : bv:bv -> ref:term -> term_view *)
+    let refin = get_rtype_info_from_type ty in
+    Some (mk_type_info ty refin)
+#pop-options
+
+let get_type_info_from_type (e:env) (ty:term) : Tac type_info =
+  let refin = get_rtype_info_from_type ty in
+  mk_type_info ty refin
 
 /// Parameter information
 noeq type param_info = {
   t : term;
   qualif : aqualv;
-  ty : option type_info; // The type of the term
-  pty : option type_info; // The type of the expected parameter
+  p_ty : option type_info; // The type of the term
+  exp_ty : option type_info; // The type of the expected parameter
 }
 
-let mk_param_info t qualif ty pty : param_info =
-  Mkparam_info t qualif ty pty
+let mk_param_info t qualif p_ty exp_ty : param_info =
+  Mkparam_info t qualif p_ty exp_ty
 
 /// Effectful term information
 noeq type eterm_info = {
   etype : effect_type;
   pre : option term;
   post : option term;
-  ret : option typ;
-  ret_refin : option term;
+  ret_type : option type_info;
   (* If the term is a function: its head and parameters *)
   head : term;
   parameters : list param_info;
@@ -202,66 +205,89 @@ noeq type eterm_info = {
   goal : option term;
 }
 
-let mk_eterm_info etype pre post ret ret_refin head parameters goal : eterm_info =
-  Mketerm_info etype pre post ret ret_refin head parameters goal
+let mk_eterm_info etype pre post ret_type head parameters goal : eterm_info =
+  Mketerm_info etype pre post ret_type head parameters goal
 
 /// Decompose a function application between its body and parameters
 val decompose_application : env -> term -> Tac (term & list param_info)
 
-(* let rec decompose_application_aux (e : env) (t : term) :
+#push-options "--ifuel 1"
+let rec decompose_application_aux (e : env) (t : term) :
   Tac (term & list param_info) =
   match inspect t with
   | Tv_App hd (a, qualif) ->
     let hd0, params = decompose_application_aux e hd in
     (* Parameter type *)
-    let ty = safe_tc e a in
+    let a_type = get_type_info e a in
     (* Type expected by the function *)
     let hd_ty = safe_tc e hd in
+    let param_type =
+      match hd_ty with
+      | None -> None
+      | Some hd_ty' ->
+        match inspect hd_ty' with
+        | Tv_Arrow b c ->
+          let bv, _ = inspect_binder b in
+          let bview = inspect_bv bv in
+          let ty = bview.bv_sort in
+          let rty = get_rtype_info_from_type ty in
+          Some (mk_type_info ty rty)
+        | _ -> None
+    in
+    let param_info = mk_param_info a qualif a_type param_type in
+    hd0, param_info :: params
   | _ -> t, []
-Tv_App    : hd:term -> a:argv -> term_view*)
+#pop-options
+
+let decompose_application e t =
+  let hd, params = decompose_application_aux e t in
+  hd, List.Tot.rev params
 
 /// Returns the effectful information about a term
-val get_eterm_info : term -> Tac (option eterm_info)
+val get_eterm_info : env -> term -> Tac (option eterm_info)
 
 #push-options "--ifuel 1"
-let get_eterm_info (t : term) =
-  let e = top_env () in
+let get_eterm_info (e:env) (t : term) =
   (* Decompose the term if it is a function application *)
-  let hd, parameters = t, [] in // TODO
+  let hd, parameters = decompose_application e t in
   (* Note that the call to ``tcc`` might fail *)
   try
     begin
     let c : comp = tcc e t in
     let cv : comp_view = inspect_comp c in
     match cv with
-    | C_Total ret_type decr ->
-      print ("C_Total: " ^ (term_to_string ret_type));
-      Some (mk_eterm_info E_Total None None (Some ret_type) None hd parameters None)
-    | C_GTotal ret_type decr ->
-      print ("C_GTotal: " ^ (term_to_string ret_type));
-      Some (mk_eterm_info E_GTotal None None (Some ret_type) None hd parameters None)
+    | C_Total ret_ty decr ->
+      print ("C_Total: " ^ (term_to_string ret_ty));
+      let ret_type_info = Some (get_type_info_from_type e ret_ty) in
+      Some (mk_eterm_info E_Total None None ret_type_info hd parameters None)
+    | C_GTotal ret_ty decr ->
+      print ("C_GTotal: " ^ (term_to_string ret_ty));
+      let ret_type_info = Some (get_type_info_from_type e ret_ty) in
+      Some (mk_eterm_info E_GTotal None None ret_type_info hd parameters None)
     | C_Lemma pre post patterns ->
       print "C_Lemma:";
       print ("- pre:\n" ^ (term_to_string pre));
       print ("- post:\n" ^ (term_to_string post));
       print ("- patterns:\n" ^ (term_to_string patterns));
-      Some (mk_eterm_info E_Lemma (Some pre) (Some post) None None hd parameters None)
-    | C_Eff univs eff_name result eff_args ->
+      (* No return type information - we might put unit *)
+      Some (mk_eterm_info E_Lemma (Some pre) (Some post) None hd parameters None)
+    | C_Eff univs eff_name ret_ty eff_args ->
       print "C_Eff:";
       print ("- eff_name: " ^ (implode_qn eff_name));
-      print ("- result: " ^ (term_to_string result));
+      print ("- result: " ^ (term_to_string ret_ty));
       print "- eff_args:";
       iter (fun (a, _) -> print ("arg: " ^ (term_to_string a))) eff_args;
+      let ret_type_info = Some (get_type_info_from_type e ret_ty) in
       (* Handle the common effects *)
       begin match effect_name_to_type eff_name, eff_args with
       | Some E_PURE, [(pre, _)] ->
-        Some (mk_eterm_info E_PURE (Some pre) None (Some result) None hd parameters None)
+        Some (mk_eterm_info E_PURE (Some pre) None ret_type_info hd parameters None)
       | Some E_Pure, [(pre, _); (post, _)] ->
-        Some (mk_eterm_info E_Pure (Some pre) (Some post) (Some result) None hd parameters None)
+        Some (mk_eterm_info E_Pure (Some pre) (Some post) ret_type_info hd parameters None)
       | Some E_Stack, [(pre, _); (post, _)] ->
-        Some (mk_eterm_info E_Stack (Some pre) (Some post) (Some result) None hd parameters None)
+        Some (mk_eterm_info E_Stack (Some pre) (Some post) ret_type_info hd parameters None)
       | Some E_ST, [(pre, _); (post, _)] ->
-        Some (mk_eterm_info E_ST (Some pre) (Some post) (Some result) None hd parameters None)
+        Some (mk_eterm_info E_ST (Some pre) (Some post) ret_type_info hd parameters None)
       | _, _ ->
         print ("Unknown or inconsistant effect: " ^ (implode_qn eff_name));
         None
@@ -282,27 +308,47 @@ let is_trivial_proposition t =
     if implode_qn (inspect_fv fv) = prims_true_name then true else false
   | _ -> false
 
+/// Applies normalization steps to an optional proposition (term of type Type).
+/// If the proposition gets reduced to True, returns None.
+let simplify_opt_proposition (e:env) (steps:list norm_step) (p:option term) :
+  Tac (option term) =
+  match p with
+  | Some x ->
+    let x' = norm_term_env e steps x in
+    if is_trivial_proposition x' then None else Some x'
+  | _ -> None
+
+/// Simplify a type, and remove the refinement if it is trivial
+let simplify_type_info (e:env) (steps:list norm_step) (info:type_info) : Tac type_info =
+  match info.rty with
+  | Some rinfo ->
+    let refin' = norm_term_env e steps rinfo.refin in
+    if is_trivial_proposition refin' then mk_type_info rinfo.raw None
+    else ({ info with rty = Some ({ rinfo with refin = refin' })})
+  | _ -> info
+
+let simplify_opt_type_info e steps info : Tac (option type_info) =
+  match info with
+  | Some info' -> Some (simplify_type_info e steps info')
+  | _ -> None
+
 /// Simplify the fields of a term and remove the useless ones (i.e.: trivial conditions)
 val simplify_eterm_info : env -> list norm_step -> eterm_info -> Tac eterm_info
 
 #push-options "--ifuel 1"
 let simplify_eterm_info e steps info =
-  let opt_norm (x : option term) : Tac (option term) =
-    match x with
-    | Some x' -> Some (norm_term_env e steps x')
-    | None -> None
-  in
-  let opt_norm_simplify (x : option term) : Tac (option term) =
-    match opt_norm x with
-    | Some x' -> if is_trivial_proposition x' then None else Some x'
-    | None -> None
+  let simpl_prop = simplify_opt_proposition e steps in
+  let simpl_type = simplify_opt_type_info e steps in
+  let simpl_param (p:param_info) : Tac param_info =
+    { p with p_ty = simpl_type p.p_ty; exp_ty = simpl_type p.exp_ty; }
   in
   {
     info with
-    pre = opt_norm_simplify info.pre;
-    post = opt_norm_simplify info.post;
-    ret_refin = opt_norm_simplify info.ret_refin;
-    goal = opt_norm_simplify info.ret_refin;
+    pre = simpl_prop info.pre;
+    post = simpl_prop info.post;
+    ret_type = simpl_type info.ret_type;
+    parameters = map simpl_param info.parameters;
+    goal = simpl_prop info.goal;
   }
 #pop-options
 
@@ -311,6 +357,7 @@ let simplify_eterm_info e steps info =
 val print_eterm_info : env -> eterm_info -> option string -> term -> list term -> Tac unit
 
 (* TODO: ret_arg: the introduced variables get replaced... *)
+(* TODO: correct naming for variables derived from tuples *)
 #push-options "--ifuel 1"
 let print_eterm_info e info ret_arg_name ret_arg post_args =
     print ("ret_arg: " ^ term_to_string ret_arg);
@@ -320,42 +367,56 @@ let print_eterm_info e info ret_arg_name ret_arg post_args =
       | Some post -> Some (mk_e_app post post_args)
       | None -> None
     in
-    (* Retrieve the return type refinement, instanciate it and simplify it *)
-    let sret_refin, e =
-      match info.ret with
-      | Some ret_ty ->
-        (* TODO: get_refin_from_type should have been called before *)
-        begin match get_refin_from_type ret_ty with
-        | Some refin ->
-          let ret_arg, e =
+    (* Retrieve the return type refinement and instanciate it*)
+    let (sret_type : option type_info), (e : env) =
+      match info.ret_type with
+      | Some ret_type_info ->
+        begin match ret_type_info.rty with
+        | Some ret_type_rinfo ->
+          let ret_arg, e' =
             match ret_arg_name with
             | Some name ->
-              let fbv : bv = fresh_bv_named name ret_ty in
+              let fbv : bv = fresh_bv_named name ret_type_rinfo.raw in
               let b : binder = pack_binder fbv Q_Explicit in
               pack (Tv_Var fbv), push_binder e b
             | None -> ret_arg, e
           in
-          Some (mk_e_app refin [ret_arg]), e
+          let refin' = mk_e_app ret_type_rinfo.refin [ret_arg] in
+          let ret_type_rinfo : rtype_info = { ret_type_rinfo with refin = refin' } in
+          let ret_type_info' = { ret_type_info with rty = Some ret_type_rinfo } in
+          Some ret_type_info', e'
         | None -> None, e
         end
       | _ -> None, e
     in
-    let info' = { info with post = spost; ret_refin = sret_refin } in
+    let info' = { info with post = spost; ret_type = sret_type } in
     let sinfo = simplify_eterm_info e [primops; simplify] info' in
     (* Print the information *)
-    let print_opt_term name t : Tac unit =
+    let print_opt_term name (t:option term) : Tac unit =
       match t with
       | Some t' ->
         print ("eterm_info:" ^ name ^ ":\n" ^ (term_to_string t'))
-      | None -> print ("eterm_info:" ^ name ^ ":'NONE'")
+      | None -> print ("eterm_info:" ^ name ^ ":NONE")
+    in
+    let print_opt_type name (ty:option type_info) : Tac unit =
+      let ty, rty_raw, rty_refin =
+        match ty with
+        | Some ty' ->
+          begin match ty'.rty with
+          | Some rty' -> Some ty'.ty, Some rty'.raw, Some rty'.refin
+          | _ -> Some ty'.ty, None, None
+          end
+        | _ -> None, None, None
+      in
+      print_opt_term (name ^ ":ty") ty;
+      print_opt_term (name ^ ":rty_raw") rty_raw;
+      print_opt_term (name ^ ":rty_refin") rty_refin
     in
     print ("eterm_info:BEGIN");
     print ("eterm_info:etype:" ^ (effect_type_to_string info.etype));
     print_opt_term "pre" sinfo.pre;
     print_opt_term "post" sinfo.post;
-    print_opt_term "result" sinfo.ret;
-    print_opt_term "ret" sinfo.ret;
-    print_opt_term "ret_refin" sinfo.ret_refin;
+    print_opt_type "ret_type" sinfo.ret_type;
     print_opt_term "goal" sinfo.goal;
     print ("eterm_info:END")
 #pop-options
@@ -371,7 +432,8 @@ val dprint_eterm : term -> option string -> term -> list term -> Tac unit
 
 #push-options "--ifuel 1"
 let dprint_eterm t ret_arg_name ret_arg post_args =
-  match get_eterm_info t with
+  let e = top_env () in
+  match get_eterm_info e t with
   | None ->
     print ("dprint_eterm: could not retrieve effect information from: '" ^
            (term_to_string t) ^ "'")
@@ -407,6 +469,7 @@ let test1 (x : nat{x >= 4}) : nat =
   let y = test_fun4 x in
   run_tactic (fun _ -> dprint_eterm (quote (test_fun4 x)) (Some "y") (quote y) [(`())]);
   admit()
+
   let n1, n2 = test_fun5 x in
 //  run_tactic (fun _ -> print ("n1: " ^ term_to_string (quote n1)));
   run_tactic (fun _ -> _debug_print_var "n1" (quote n1));
