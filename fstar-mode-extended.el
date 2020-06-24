@@ -298,7 +298,7 @@ characters (if NO_NEWLINE is not nil) and comments."
 (defconst messages-buffer "*Messages*")
 (defconst fstar-edebug-buffer "*fstar-extended-debug*")
 (defconst fstar-message-prefix "[F*] ")
-(defconst fstar-info-prefix "eterm_info:")
+(defconst fstar-info-prefix "[F*] TAC>> eterm_info")
 
 (defun parse-sub-expression ($p1 $p2)
   (let ($delimiters $cp1 $cp2 $is-let-in $has-semicol)
@@ -355,17 +355,17 @@ as the result returned by the post-processing function called on the data."
 controls whether to leave the pointer where it is or backtrack to put it just
 before the delimiter. If the delimiter could not be found, raises an error if
 no-error is nil, returns nil otherwise."
-  (setq beg (or BEG (point-min)))
-  (setq end (or END (point-max)))
-  (if backward
-      (setq p (search-backward delimiter beg t))
-    (setq p (search-forward delimiter end t)))
+  (let ((beg (or BEG (point-min)))
+        (end (or END (point-max))))
+    (if backward
+        (setq p (search-backward delimiter beg t))
+      (setq p (search-forward delimiter end t)))
     (unless (or no-error p)
       (error (concat "Could not find the delimiter: " delimiter)))
     (when (and p (not consume-delimiter))
       (if backward (goto-char (+ p (length delimiter)))
         (goto-char (- p (length delimiter)))))
-    (if p (point) nil))
+    (if p (point) nil)))
 
 ;; TODO: remove
 (defun message-alt (msg)
@@ -387,13 +387,10 @@ no-error is nil, returns nil otherwise."
   "Extracts meta data from the *Messages* buffer and optionally post-processes it.
 Returns a ``meta-info`` structure (or nil if we we couldn't find the information)
 Leaves the pointer at the end of the parsed data (just before the next data)."
-  ;; TODO: remove
-  ;;(message-alt (concat "extract-info-from-messages: " prefix id))
-  ;; Region extrema
-  (setq beg (or BEG (point-min)))
-  (setq end (or END (point-max)))
   ;; Find where the data is
-  (let* ((full-id (concat prefix id ":\n"))
+  (let* ((beg (or BEG (point-min)))
+         (end (or END (point-max)))
+         (full-id (concat prefix id ":\n"))
          (full-id-length (length full-id))
          p p1 p2 prev-buffer (res nil) (pp-res nil))
     ;; Find the information name
@@ -447,22 +444,57 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
     ;; Return
     (if p (make-meta-info :data res :pp-res pp-res) nil))) ;; end of function
 
-(defun extract-type-info-from-messages (prefix id &optional backward no-error post-process
-                                        BEG END)
+(defun meta-info-post-process ()
+  "Data post-processing function: counts the number of lines. If there is
+more than one line, add indentation, otherwise leaves the data as it is.
+Besides, greedily replaces some identifiers (Prims.l_True -> True...)"
+  (goto-char (point-min))
+  (let ((num-lines 0) continue)
+    (setq continue (< (point) (point-max)))
+    ;; Count the lines
+    (while continue
+      (end-of-line)
+      (if (< (point) (point-max)) (forward-char) (setq continue nil))
+      (setq num-lines (+ num-lines 1)))
+    ;; If > 1 lines, indent them (note that we add two spaces to the indentation
+    ;; string, because the data will be put inside an assert)
+    (when (> num-lines 1)
+      (let ((i 0) (indent-str1 (concat indent-str "  ")))
+        (goto-char (point-min))
+        (while (< i num-lines)
+          ;; Indent
+          (insert indent-str1)
+          ;; Go to next line
+          (setq i (+ i 1))
+          (when (< i num-lines) (end-of-line) (forward-char)))))
+    ;; Greedy replacements
+    (replace-all-in "Prims.l_True" "True")
+    (replace-all-in "Prims.l_False" "False")
+    ;; Return the number of lines
+    num-lines
+    )) ;; end of post-process fun
+
+(defun extract-string-from-messages (prefix id &optional backward no-error BEG END)
+  (extract-info-from-messages prefix id backward no-error nil BEG END))
+
+(defun extract-term-from-messages (prefix id &optional backward no-error BEG END)
+  (extract-info-from-messages prefix id backward no-error meta-info-post-process BEG END))
+
+(defun extract-type-info-from-messages (prefix id &optional backward no-error BEG END)
   "Extracts type information from the *Messages* buffer. Returns a ``type-info``
 structure."
   (let ((id-ty (concat id ":ty"))
         (id-rty-raw (concat id ":rty_raw"))
         (id-rty-refin (concat id ":rty_refin")))
     (defun extract (id)
-      (extract-info-from-messages prefix id backward no-error post-process BEG END))
-    (setq ty (extract id-ty))
-    (setq rty-raw (extract id-rty-raw))
-    (setq rty-refin (extract id-rty-refin))
-    (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin)))
+      (extract-term-from-messages prefix id backward no-error BEG END))
+    (let ((ty (extract id-ty))
+          (rty-raw (extract id-rty-raw))
+          (rty-refin (extract id-rty-refin)))
+    (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin))))
 
 (defun extract-parameter-from-messages (prefix id index &optional backward no-error
-                                        post-process BEG END)
+                                        BEG END)
   "Extracts parameter information from the *Messages* buffer. Returns a ``param-info``
 structure."
   (let* ((pid (concat id ":param" (number-to-string index)))
@@ -470,55 +502,59 @@ structure."
          (id-p-ty (concat pid ":p_ty"))
          (id-e-ty (concat pid ":e_ty"))
          (id-types-comparison (concat pid ":types_comparison")))
-    (defun extract (id)
-      (extract-info-from-messages prefix id backward no-error post-process BEG END))
+    (defun extract-string (id)
+      (extract-info-from-messages prefix id backward no-error BEG END))
+    (defun extract-term (id)
+      (extract-info-from-messages prefix id backward no-error BEG END))
     (defun extract-type (id)
-      (extract-type-info-from-messages prefix id backward no-error post-process BEG END))
-    (setq term (extract id-term))
-    (setq p-ty (extract-type id-p-ty))
-    (setq e-ty (extract-type id-e-ty))
-    (setq types-comparison (extract id-types-comparison))
-    (make-param-info :term term :p-ty p-ty :e-ty e-ty :types-comparison types-comparison)))
+      (extract-type-info-from-messages prefix id backward no-error BEG END))
+    (let ((term (extract-term id-term))
+          (p-ty (extract-type id-p-ty))
+          (e-ty (extract-type id-e-ty))
+          (types-comparison (extract-string id-types-comparison)))
+    (make-param-info :term term :p-ty p-ty :e-ty e-ty :types-comparison types-comparison))))
 
 (defun extract-parameters-list-from-messages (prefix id index num &optional backward
-                                              no-error post-process BEG END)
+                                                     no-error BEG END)
   "Extract a given number of parameters as a list."
   (if (>= index num) nil
-    ;; Extract (forward) the parameter given by 'index'
-    (setq param
-          (extract-parameter-from-messages prefix id index backward no-error
-                                           post-process BEG END))
-    ;; Recursive call
-    (setq params
-          (extract-parameters-list-from-messages prefix id (+ index 1) num backward
-                                                 no-error post-process BEG END))
-    (cons param params)))
+    (let ((param nil) (params nil))
+      ;; Extract (forward) the parameter given by 'index'
+      (setq param
+            (extract-parameter-from-messages prefix id index backward no-error BEG END))
+      ;; Recursive call
+      (setq params
+            (extract-parameters-list-from-messages prefix id (+ index 1) num backward
+                                                   no-error BEG END))
+      (cons param params))))
 
 (defun extract-parameters-from-messages (prefix id &optional backward no-error
-                                         post-process BEG END)
+                                         BEG END)
   "Extracts parameters information from the *Messages* buffer. Returns a list of
 ``param-info``"
   ;; Extract the number of messages
   (let ((id-num (concat id ":num")))
-    (setq num-data (extract-info-from-messages prefix id-num backward no-error
-                                              post-process BEG END))
+    (setq num-data (extract-string-from-messages prefix id-num backward no-error
+                                                 BEG END))
     (setq num (string-to-number (meta-info-data num-data)))
     ;; Extract the proper number of parameters
     (extract-parameters-list-from-messages prefix id 0 num backward no-error
-                                           post-process BEG END)))
+                                           BEG END)))
 
-(defun extract-eterm-info-from-messages (prefix id &optional backward no-error post-process BEG END)
+(defun extract-eterm-info-from-messages (prefix id &optional backward no-error BEG END)
   "Extracts effectful term information from the *Messages* buffer. Returns a ``eterm-info``
 structure."
   ;; Switch buffers
   (setq prev-buffer (current-buffer))
   (switch-to-buffer messages-buffer)
   ;; Find the term delimiters and narrow the region
-  (let ((id-beg (concat prefix id ":BEGIN"))
+  (goto-char (point-max))
+  (let ((beg nil) (end nil)
+        (id-beg (concat prefix id ":BEGIN"))
         (id-end (concat prefix id ":END")))
-    (setq beg (search-data-delimiter id-beg backward nil no-error BEG END))
+    (setq beg (search-data-delimiter id-beg backward nil no-error))
     ;; From now onward, we only search forward
-    (setq end (search-data-delimiter id-end nil nil no-error BEG END))
+    (setq end (search-data-delimiter id-end nil nil no-error))
     ;; Extract the data
     (goto-char beg)
     (let* ((id-etype (concat id ":etype"))
@@ -528,11 +564,11 @@ structure."
            (id-parameters (concat id ":parameters"))
            (id-goal (concat id ":goal")))
       (defun extract-type (id)
-        (extract-type-info-from-messages prefix id nil no-error post-process beg end))
-      (defun extract-term (id)
-        (extract-info-from-messages prefix id nil no-error post-process beg end))
+        (extract-type-info-from-messages prefix id nil no-error beg end))
+      (defun extract-term-pp (id)
+        (extract-info-from-messages prefix id nil no-error beg end))
       (defun extract-parameters (id)
-        (extract-parameters-from-messages prefix id nil no-error post-process beg end))
+        (extract-parameters-from-messages prefix id nil no-error beg end))
       (let ((etype (extract-term ":etype"))
             (pre (extract-term ":pre"))
             (post (extract-term ":post"))
@@ -566,49 +602,19 @@ structure."
         (error "F* meta processing failed")))
     ;; If we reach this point it means there was no error: we can extract
     ;; the generated information and add it to the code
-    ;;
-    ;; Data post-processing function: counts the number of lines. If there is
-    ;; more than one line, add indentation, otherwise leaves the data as it is.
-    ;; Besides, greedily replace some identifiers (Prims.l_True -> True...)
-    (defun post-process ()
-      (goto-char (point-min))
-      (let ((num-lines 0) continue)
-        (setq continue (< (point) (point-max)))
-        ;; Count the lines
-        (while continue
-          (end-of-line)
-          (if (< (point) (point-max)) (forward-char) (setq continue nil))
-          (setq num-lines (+ num-lines 1)))
-        ;; If > 1 lines, indent them (note that we add two spaces to the indentation
-        ;; string, because the data will be put inside an assert)
-        (when (> num-lines 1)
-          (let ((i 0) (indent-str1 (concat indent-str "  ")))
-            (goto-char (point-min))
-            (while (< i num-lines)
-              ;; Indent
-              (insert indent-str1)
-              ;; Go to next line
-              (setq i (+ i 1))
-              (when (< i num-lines) (end-of-line) (forward-char)))))
-        ;; Greedy replacements
-        (replace-all-in "Prims.l_True" "True")
-        (replace-all-in "Prims.l_False" "False")
-        ;; Return the number of lines
-        num-lines
-        )) ;; end of post-process fun
-    ;; Properly instantiated extraction functions
-    (defun extract (attribute-name &optional pp)
-      (extract-info-from-messages fstar-info-prefix attribute-name pp))
-    (defun extract-pp (attribute-name)
-      (extract attribute-name 'post-process))
+    (setq info (extract-eterm-info-from-messages fstar-info-prefix "" t))
+))
+
+
+
     ;; Extract the data and add information to the proof
-    (let* ((etype (extract "etype:")) ;;
-           (pre (extract-pp "pre:"))
-           (post (extract-pp "post:"))
-           (result (extract-pp "result:")) ;;
-           (ret (extract-pp "ret:")) ;;
-           (ret_refin (extract-pp "ret_refin:")) ;;
-           (goal (extract-pp "goal:"))
+    (let* ((etype (extract "etype")) ;;
+           (pre (extract-pp "pre"))
+           (post (extract-pp "post"))
+           (result (extract-pp "result")) ;;
+           (ret (extract-pp "ret")) ;;
+           (ret_refin (extract-pp "ret_refin")) ;;
+           (goal (extract-pp "goal"))
            (shift 0))
       ;; Print the information
       ;; - utilities
@@ -628,8 +634,8 @@ structure."
             (insert-update-shift "\n"))
           (insert-update-shift indent-str)
           (insert-update-shift "assert(")
-          (when (> (nth 1 data) 1) (insert-update-shift "\n"))
-          (insert-update-shift (nth 0 data))
+          (when (> (meta-info-pp-res data) 1) (insert-update-shift "\n"))
+          (insert-update-shift (meta-info-data data))
           (insert-update-shift ");")
           ;; If we are before the studied term: insert a newline
           (when (<= p cp1) (insert-update-shift "\n"))))
@@ -663,13 +669,13 @@ structure."
     ;; track of the positions modifications: we will send the whole buffer to F*.
     (cond
      ;; 'let _ = _ in'
-     ($is-let-in (message "Not supported yet"))
+     ($is-let-in (error "Not supported yet: let _ = _ in"))
      ;; '_;' or '_'
-     (t
+     ($has-semicol
       (let ($prefix $prefix-length $suffix $suffix-length)
         ;; Wrap the term in a tactic to generate the debugging information
         (setq $prefix "run_tactic (fun _ -> dprint_eterm (quote (")
-        (setq $suffix ")) (`()) [`()])")
+        (setq $suffix ")) None (`()) [`()])")
         (setq $prefix-length (length $prefix) $suffix-length (length $suffix))
         (goto-char $lcp1)
         (insert $prefix)
@@ -684,11 +690,11 @@ structure."
                (unless $has-semicol (insert ";"))
                (newline) (indent-according-to-mode) (insert "admit()"))
         )) ;; end of second case
+     (t (error "Not supported yet: _"))
      ) ;; end of cond
     ;; Do some greedy replacements: replace the assertions by assumptions
     (replace-all-in "assert_norm" "assume(*norm*)")
-    (replace-all-in "assert" "assume"))
-    (while 
+    (replace-all-in "assert" "assume")
     ;; Query F*
     (let* ((overlay (make-overlay $beg $p2 $cbuffer nil nil))
            ($lend (point))
@@ -702,8 +708,7 @@ structure."
       ;; Query F*
       (fstar-subp--query (fstar-subp--push-query $beg `full $payload)
                          (apply-partially #'insert-assert-pre-post-continuation
-                                          $indent-str $p1 $p2 $cp1 $cp2 overlay))
-      )
+                                          $indent-str $p1 $p2 $cp1 $cp2 overlay)))    
     ) ;; end of outermost let
   ) ;; end of function
 
