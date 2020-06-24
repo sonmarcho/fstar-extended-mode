@@ -128,24 +128,27 @@ Takes optional region delimiters as arguments."
   (interactive)
   "Check if there are occurrences of 'assert' or 'assert_norm in the current region.
    If so, replace them with 'assume'. Ohterwise, replace all the 'assume' with 'assert'."
-  (let ($f $r $p $replace)
-    ;; check if there are occurrences of "assert"
-    (setq $p (point))
-    (setq $f (defun find () (progn (beginning-of-buffer) (search-forward "assert" nil t))))
-    (setq $r (funcall 'apply-in-current-region $f ALLOW_SELECTION INCLUDE_CURRENT_LINE
-                      ABOVE_PARAGRAPH BELOW_PARAGRAPH))
-    (goto-char $p)
-    ;; if there are, replace "assert" by "assume", otherwise replace "assume" by "admit"
-    (setq $replace
-          (lambda (FROM TO)
-            (replace-in-current-region FROM TO ALLOW_SELECTION INCLUDE_CURRENT_LINE
-                                       ABOVE_PARAGRAPH BELOW_PARAGRAPH)))
-    (if $r (progn
-             (funcall $replace "assert_norm" "assume(*norm*)")
-             (funcall $replace "assert" "assume"))
+  (let ($p $p1 $p2 $has-asserts $replace)
+    ;; Find the region delimiters and restrain the region
+    (setq $delimiters (find-region-delimiters ALLOW_SELECTION INCLUDE_CURRENT_LINE
+                                              ABOVE_PARAGRAPH BELOW_PARAGRAPH))
+    (setq $p1 (car $delimiters) $p2 (car (cdr $delimiters)))
+    (save-restriction
+      (narrow-to-region $p1 $p2)
+      (setq $p (point))
+      ;; Check if there are assertions to know whether to replace assertions
+      ;; by assumptions or the revert
+      (beginning-of-buffer)
+      (setq $has-asserts (search-forward "assert" nil t))
+      (goto-char $p)
+      ;; Replace
+      (if $has-asserts
+          (progn
+             (replace-all-in "assert_norm" "assume(*norm*)")
+             (replace-all-in "assert" "assume"))
            (progn
-             (funcall $replace "assume(*norm*)" "assert_norm")
-             (funcall $replace "assume" "assert")))))
+             (replace-all-in "assume(*norm*)" "assert_norm")
+             (replace-all-in "assume" "assert"))))))
 
 (defun switch-assert-assume-in-above-paragraph ()
   (interactive)
