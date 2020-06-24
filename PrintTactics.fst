@@ -73,11 +73,13 @@ let test_lemma3 (n : nat) :
 
 /// Some constants
 let prims_true_name = "Prims.l_True"
+let prims_true_term = `Prims.l_True
 
 let pure_effect_name = "Prims.PURE"
 let pure_hoare_effect_name = "Prims.Pure"
 let stack_effect_name = "FStar.HyperStack.ST.Stack"
 let st_effect_name = "FStar.HyperStack.ST.ST"
+
 
 /// Return the qualifier of a term as a string
 val term_qualifier (t : term) : Tac string
@@ -393,10 +395,7 @@ let instantiate_refinements e info ret_arg_name ret_arg post_args =
 val is_trivial_proposition : term -> Tac bool
 
 let is_trivial_proposition t =
-  match inspect t with
-  | Tv_FVar fv ->
-    if implode_qn (inspect_fv fv) = prims_true_name then true else false
-  | _ -> false
+  term_eq (`Prims.l_True) t
 
 /// Applies normalization steps to an optional proposition (term of type Type).
 /// If the proposition gets reduced to True, returns None.
@@ -442,6 +441,43 @@ let simplify_eterm_info e steps info =
   }
 #pop-options
 
+let get_rawest_type (ty:type_info) : Tac typ =
+  match ty.rty with
+  | Some rty -> rty.raw
+  | _ -> ty.ty
+
+let has_refinement (ty:type_info) : Tac bool =
+  Some? ty.rty
+
+/// Compare the type of a parameter and its expected type
+type type_comparison = | Refines | Same_raw_type | Unknown
+
+#push-options "--ifuel 1"
+let type_comparison_to_string c =
+  match c with
+  | Refines -> "Refines"
+  | Same_raw_type -> "Same_raw_type"
+  | Unknown -> "Unknown"
+#pop-options
+
+let compare_types (info1 info2 : type_info) : Tac type_comparison =
+  if term_eq info1.ty info2.ty
+  then Refines // The types are the same
+  else
+    let ty1 = get_rawest_type info1 in
+    let ty2 = get_rawest_type info2 in
+    if term_eq ty1 ty2 then
+      if has_refinement info2
+      then Same_raw_type // Same raw type but can't say anything about the expected refinement
+      else Refines // The first type is more precise than the second type
+    else
+      Unknown
+
+let compare_param_types (p:param_info) : Tac type_comparison =
+  match p.p_ty, p.exp_ty with
+  | Some info1, Some info2 -> compare_types info1 info2
+  | _ -> Unknown
+
 (*** Step 4 *)
 /// Output the resulting information
 
@@ -470,21 +506,13 @@ let printout_opt_type (prefix:string) (ty:option type_info) : Tac unit =
   printout_opt_term (prefix ^ ":rty_raw") rty_raw;
   printout_opt_term (prefix ^ ":rty_refin") rty_refin
 
-(*/// Compare the type of a parameter and its expected tyep
-let parameter_has_expected_type (p:param_info) : Tac bool =
-  match p.p_ty, exp_ty with
-  | Some info1, Some info2 ->
-    if term_eq info1.ty info2.ty then true
-    else begin match 
-      
-    end
-    match term_eq *)
-
 let printout_parameter (prefix:string) (index:int) (p:param_info) : Tac unit =
   let p_prefix = prefix ^ ":param" ^ string_of_int index in
   printout_term p_prefix p.t;
   printout_opt_type (p_prefix ^ ":p_ty") p.p_ty;
-  printout_opt_type (p_prefix ^ ":e_ty") p.exp_ty
+  printout_opt_type (p_prefix ^ ":e_ty") p.exp_ty;
+  printout_string (p_prefix ^ ":types_comparison")
+                  (type_comparison_to_string (compare_param_types p))
 
 let printout_parameters (prefix:string) (parameters:list param_info) : Tac unit =
   printout_string (prefix ^ ":num") (string_of_int (List.length parameters));
@@ -544,7 +572,7 @@ let _debug_print_var (name : string) (t : term) : Tac unit =
   end;
   print "end of _debug_print_var"
 
-let test1 (x : nat{x >= 4}) (y : nat{y >= 8}) (z : nat{z >= 10}) : nat =
+let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) : nat =
   test_lemma1 x; (**)
 //  run_tactic (fun _ -> dprint_eterm (quote (test_lemma1 x)) (`()) [(`())]);
   (**) test_lemma1 x; (**)
