@@ -437,12 +437,12 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
           ;; Save the content of the whole narrowed region
           (setq res (buffer-substring-no-properties (point-min) (point-max)))
           ) ;; end of save-restriction
-        ) ;; end of first when
+        ) ;; end of third when
       ) ;; end of first when
     ;; Switch back to original buffer
     (switch-to-buffer prev-buffer)
     ;; Return
-    (if p (make-meta-info :data res :pp-res pp-res) nil))) ;; end of function
+    (if (and p res) (make-meta-info :data res :pp-res pp-res) nil))) ;; end of function
 
 (defun meta-info-post-process ()
   "Data post-processing function: counts the number of lines. If there is
@@ -485,13 +485,14 @@ Besides, greedily replaces some identifiers (Prims.l_True -> True...)"
 structure."
   (let ((id-ty (concat id ":ty"))
         (id-rty-raw (concat id ":rty_raw"))
-        (id-rty-refin (concat id ":rty_refin")))
+        (id-rty-refin (concat id ":rty_refin"))
+        extract)
     (defun extract (id)
-      (extract-term-from-messages prefix id backward no-error BEG END))
+            (extract-term-from-messages prefix id backward no-error BEG END)))
     (let ((ty (extract id-ty))
           (rty-raw (extract id-rty-raw))
           (rty-refin (extract id-rty-refin)))
-    (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin))))
+    (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin)))
 
 (defun extract-parameter-from-messages (prefix id index &optional backward no-error
                                         BEG END)
@@ -501,18 +502,19 @@ structure."
          (id-term (concat pid ":term"))
          (id-p-ty (concat pid ":p_ty"))
          (id-e-ty (concat pid ":e_ty"))
-         (id-types-comparison (concat pid ":types_comparison")))
+         (id-types-comparison (concat pid ":types_comparison"))
+         extract-string extract-term extract-type)
     (defun extract-string (id)
-      (extract-info-from-messages prefix id backward no-error BEG END))
+      (extract-string-from-messages prefix id backward no-error BEG END)))
     (defun extract-term (id)
-      (extract-info-from-messages prefix id backward no-error BEG END))
+      (extract-term-from-messages prefix id backward no-error BEG END))
     (defun extract-type (id)
       (extract-type-info-from-messages prefix id backward no-error BEG END))
     (let ((term (extract-term id-term))
           (p-ty (extract-type id-p-ty))
           (e-ty (extract-type id-e-ty))
           (types-comparison (extract-string id-types-comparison)))
-    (make-param-info :term term :p-ty p-ty :e-ty e-ty :types-comparison types-comparison))))
+    (make-param-info :term term :p-ty p-ty :e-ty e-ty :types-comparison types-comparison)))
 
 (defun extract-parameters-list-from-messages (prefix id index num &optional backward
                                                      no-error BEG END)
@@ -562,11 +564,12 @@ structure."
            (id-post (concat id ":post"))
            (id-ret-type (concat id ":ret-type"))
            (id-parameters (concat id ":parameters"))
-           (id-goal (concat id ":goal")))
+           (id-goal (concat id ":goal"))
+           extract-type extrac-term extract-parameters)
       (defun extract-type (id)
         (extract-type-info-from-messages prefix id nil no-error beg end))
-      (defun extract-term-pp (id)
-        (extract-info-from-messages prefix id nil no-error beg end))
+      (defun extract-term (id)
+        (extract-term-from-messages prefix id nil no-error beg end))
       (defun extract-parameters (id)
         (extract-parameters-from-messages prefix id nil no-error beg end))
       (let ((etype (extract-term ":etype"))
@@ -581,6 +584,7 @@ structure."
         (make-eterm-info :etype etype :pre pre :post post :ret-type ret-type
                          :parameters parameters :goal goal)))))
 
+;; TODO: remove
 ;;(defun t2 ()
 ;;  (interactive)
 ;;  (extract-eterm-info-from-messages "[F*] TAC>> eterm_info" "" t nil))
@@ -602,22 +606,12 @@ structure."
         (error "F* meta processing failed")))
     ;; If we reach this point it means there was no error: we can extract
     ;; the generated information and add it to the code
+    ;;
+    ;; Extract the data
     (setq info (extract-eterm-info-from-messages fstar-info-prefix "" t))
-))
-
-
-
-    ;; Extract the data and add information to the proof
-    (let* ((etype (extract "etype")) ;;
-           (pre (extract-pp "pre"))
-           (post (extract-pp "post"))
-           (result (extract-pp "result")) ;;
-           (ret (extract-pp "ret")) ;;
-           (ret_refin (extract-pp "ret_refin")) ;;
-           (goal (extract-pp "goal"))
-           (shift 0))
-      ;; Print the information
-      ;; - utilities
+    ;; Print the information
+    ;; - utilities
+    (let ((shift 0))
       (defun insert-update-shift (s)
         (insert s)
         (setq shift (+ shift (length s))))
@@ -640,10 +634,10 @@ structure."
           ;; If we are before the studied term: insert a newline
           (when (<= p cp1) (insert-update-shift "\n"))))
       ;; - print
-      (generate-info p1 pre)
-      (generate-info p2 post)
-      (generate-info p2 goal)
-)))
+      (generate-info p1 (eterm-info-pre info))
+      (generate-info p2 (eterm-info-post info))
+      (generate-info p2 (eterm-info-goal info))
+      )))
 
 (defun insert-assert-pre-post--process
     ($indent-str $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)
