@@ -64,12 +64,17 @@ let test_lemma2 (n : nat) :
 let predicate_with_a_very_long_name_to_ensure_break_line (n : nat) : Type0 =
   n >= 4
 
-let test_lemma3 (n : nat) :
+let test_lemma3 (n : int{n >= 0}) :
   Lemma
   (requires (
     n >= 4 /\ n * n >= 0 /\ n >= 0 /\ n * n + n + 3 >= 0 /\
     predicate_with_a_very_long_name_to_ensure_break_line n))
   (ensures (2 * n >= 8)) = ()
+
+let test_lemma4 (n1 : nat{n1 >= 3}) (n2 : int{n2 >= 5}) (n3 n4 n5 : nat):
+  Lemma
+  (requires (n3 + n4 + n5 >= 1))
+  (ensures (n1 * n2 * (n3 + n4 + n5) >= 15)) = ()
 
 /// Some constants
 let prims_true_name = "Prims.l_True"
@@ -584,6 +589,14 @@ let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) : nat =
   test_lemma1 w;
   test_lemma3 x;
   (**) test_lemma3 x; (**)
+  (**) test_lemma3 y; (**)
+  assert(x + 1 + 2 >= 1);
+  assert(x >= 3);
+  assert(y >= 5);
+  assert(has_type (1) (Prims.nat));
+  assert(has_type (2) (Prims.nat));
+  test_lemma4 x y x 1 2;
+  assert((x * y) * (x + 1 + 2) >= 15);
   let w = test_fun4 x in
 //  run_tactic (fun _ -> dprint_eterm (quote (test_fun4 x)) (Some "w") (quote w) [(`())]);
 //  run_tactic (fun _ -> dprint_eterm (quote (test_fun6 x (2 * x) (3 * x))) (Some "a") (quote y) [(`())]);

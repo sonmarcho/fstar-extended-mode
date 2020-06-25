@@ -652,8 +652,8 @@ the raw data (*fstar-data1* by default)."
   (insert (replace-in-string "\n" (concat "\n" indent-str) txt)))
 
 (defun generate-assert-from-term (indent-str after-term data &optional comment)
-  "Generates the appropriate assert at the proper position, preceded by
-an optional comment"
+  "Inserts an assertion in the code. after-term must be t if the assert is
+after the focused term, nil otherwise. comment is an optional comment"
   (when data
     ;; If we are after the studied term: insert a newline
     (when after-term (insert "\n"))
@@ -672,20 +672,44 @@ an optional comment"
     ;; If we are before the studied term: insert a newline
     (when (not after-term) (insert "\n"))))
 
+;;(cl-defstruct param-info term p-ty e-ty types-comparison)
+
+;;     (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin))))
+
+;; TODO: move
+(defun type-info-rawest-type (ty)
+  "Returns the 'rawest' type from a type-info"
+  (or (type-info-rty-raw ty) (type-info-ty ty)))
+
+(defun param-info-requires-cast (param)
+  "Returns t if the types-comparison from param is 'Unknown'"
+  (string= (meta-info-data (param-info-types-comparison param)) "Unknown"))
+
+(defun param-info-requires-refinement (param)
+  "Returns t if the types-comparison from param is 'Same_raw_type' or 'Unknown'"
+  (or
+   (string= (meta-info-data (param-info-types-comparison param)) "Unknown")
+   (string= (meta-info-data (param-info-types-comparison param)) "Same_raw_type")))
+
+;;(cl-defstruct param-info term p-ty e-ty types-comparison)
+
+
 (defun generate-param-asserts (indent-str param)
+  "Generates the appropriate assertions for a parameter (type cast and type
+refinement)"
   (let* ((term (param-info-term param))
          (p-ty (param-info-p-ty param))
          (e-ty (param-info-e-ty param)))
     (when (and term p-ty e-ty)
       ;; Insert an assertion for the type cast
       (when (param-info-requires-cast param)
-        (let* (rawest-e-ty (type-info-rawest-type e-ty))
-          (several-lines
-           (or (> (meta-info-pp-res term) 1)
-               (> (meta-info-pp-res rawest-e-ty))))
+        (let* ((rawest-e-ty (type-info-rawest-type e-ty))
+               (several-lines
+                (or (> (meta-info-pp-res term) 1)
+                    (> (meta-info-pp-res rawest-e-ty) 1))))
           ;; Begin
           (insert indent-str)
-          (insert "assert( has_type")
+          (insert "assert(has_type")
           ;; Insert the term
           (if several-lines
               ;; Several lines
@@ -696,7 +720,7 @@ an optional comment"
                 (insert-with-indent (concat indent-str "   ") (meta-info-data term))
                 (insert ")"))
             ;; One line
-            (insert "(")
+            (insert " (")
             (insert (meta-info-data term))
             (insert ") "))
           ;; Insert the type
@@ -711,12 +735,13 @@ an optional comment"
             ;; One line
             (insert "(")
             (insert (meta-info-data rawest-e-ty))
-            (insert ") "))
+            (insert ")"))
           ;; Finish
-          (when several-lines (insert "\n"))
+          (when several-lines (insert "\n") (insert indent-str))
           (insert ");\n")))
       ;; Insert an assertion for the refinement
       (when (param-info-requires-refinement param)
+        (generate-assert-from-term indent-str nil (type-info-rty-refin e-ty))
         ))))
 
 (defun insert-assert-pre-post--continuation (indent-str p1 p2 cp1 cp2 overlay DEBUG
@@ -752,30 +777,13 @@ an optional comment"
       ;; -- before the focused term
       (goto-char p1)
       (generate-assert-from-term indent-str nil (eterm-info-pre info))
+      (dolist (param (eterm-info-parameters info))
+        (generate-param-asserts indent-str param))
       ;; -- and insert after the focused term
       (forward-char (- p2 p1))
       (generate-assert-from-term indent-str t (eterm-info-post info))
       (generate-assert-from-term indent-str t (eterm-info-goal info))
       )))
-
-;;     (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin))))
-
-;; TODO: move
-(defun type-info-rawest-type (ty)
-  "Returns the 'rawest' type from a type-info"
-  (or (type-info-rty-raw ty) (type-info-ty ty)))
-
-(defun param-info-requires-cast (param)
-  "Returns t if the types-comparison from param is 'Unknown'"
-  (string= (param-info-types-comparison param) "Unknown"))
-
-(defun param-info-requires-refinment (param)
-  "Returns t if the types-comparison from param is 'Same_raw_type' or 'Unknown'"
-  (or
-   (string= (param-info-types-comparison param) "Unknown")
-   (string= (param-info-types-comparison param) "Same_raw_type")))
-
-;;(cl-defstruct param-info term p-ty e-ty types-comparison)
 
 (defun insert-assert-pre-post--process
     ($indent-str $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol &optional $debug)
