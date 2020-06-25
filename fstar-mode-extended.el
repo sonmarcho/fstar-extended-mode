@@ -651,6 +651,73 @@ the raw data (*fstar-data1* by default)."
   (when indent-first-line (insert indent-str))
   (insert (replace-in-string "\n" (concat "\n" indent-str) txt)))
 
+(defun generate-assert-from-term (indent-str after-term data &optional comment)
+  "Generates the appropriate assert at the proper position, preceded by
+an optional comment"
+  (when data
+    ;; If we are after the studied term: insert a newline
+    (when after-term (insert "\n") (insert indent-str))
+    (when comment
+      (insert indent-str)
+      (insert comment)
+      (insert "\n"))
+    (insert "assert(")
+    (when (> (meta-info-pp-res data) 1)
+      (insert "\n")
+      (insert indent-str)
+      (insert "  "))
+    (insert-with-indent (concat indent-str "  ") (meta-info-data data))
+    (insert ");")
+    ;; If we are before the studied term: insert a newline
+    (when (not after-term) (insert "\n") (insert indent-str))))
+
+(defun generate-param-asserts (indent-str param)
+  (let* ((term (param-info-term param))
+         (p-ty (param-info-p-ty param))
+         (e-ty (param-info-e-ty param)))
+    (when (and term p-ty e-ty)
+      ;; Insert an assertion for the type cast
+      (when (param-info-requires-cast param)
+        (let* (rawest-e-ty (type-info-rawest-type e-ty))
+          (several-lines
+           (or (> (meta-info-pp-res term) 1)
+               (> (meta-info-pp-res rawest-e-ty))))
+          ;; Begin
+          (insert indent-str)
+          (insert "assert( has_type")
+          ;; Insert the term
+          (if several-lines
+              ;; Several lines
+              (progn
+                (insert "\n")
+                (insert indent-str)
+                (insert "  (")
+                (insert-with-indent (concat indent-str "   ") (meta-info-data term))
+                (insert ")"))
+            ;; One line
+            (insert "(")
+            (insert (meta-info-data term))
+            (insert ") "))
+          ;; Insert the type
+          (if several-lines
+              ;; Several lines
+              (progn
+                (insert "\n")
+                (insert indent-str)
+                (insert "  (")
+                (insert-with-indent (concat indent-str "   ") (meta-info-data rawest-e-ty))
+                (insert ")"))
+            ;; One line
+            (insert "(")
+            (insert (meta-info-data rawest-e-ty))
+            (insert ") "))
+          ;; Finish
+          (when several-lines (insert "\n"))
+          (insert ");\n")))
+      ;; Insert an assertion for the refinement
+      (when (param-info-requires-refinement param)
+        ))))
+
 (defun insert-assert-pre-post--continuation (indent-str p1 p2 cp1 cp2 overlay DEBUG
                                              status response)
   "The continuation function called once F* returns. If F* succeeded, extracts
@@ -676,89 +743,18 @@ the raw data (*fstar-data1* by default)."
                                                  fstar-process-buffer1 t t DEBUG))
     ;; Print the information
     ;; - utilities
-    (let* ((shift 0)
-           (indent2-str (concat indent-str "  "))
+    (let* ((indent2-str (concat indent-str "  "))
            (indent3-str (concat indent-str "   "))
            ;; TODO: check function names
            insert-update-shift generate-assert generate-param-assert)
-      (defun generate-assert-from-term (p data &optional comment)
-        "Generates the appropriate assert at the proper position, preceded by
-         an optional comment, while updating the shift."
-        (let ((p0 (point))) ;; To compute the new shift
-          (when data
-            (goto-char (+ p shift))
-            ;; If we are after the studied term: insert a newline
-            (when (>= p cp2) (insert "\n"))
-            (when comment
-              (insert indent-str)
-              (insert comment)
-              (insert "\n"))
-            (insert indent-str)
-            (insert "assert(")
-            (when (> (meta-info-pp-res data) 1)
-              (insert "\n")
-              (insert indent2-str))
-            (insert-with-indent indent2-str (meta-info-data data))
-            (insert ");")
-            ;; If we are before the studied term: insert a newline
-            (when (<= p cp1) (insert "\n")))
-          ;; Compute the new shift
-          (setq shift (+ shift (- (point) p0)))
-          ))
-      (defun generate-param-asserts (param)
-        (let* ((p0 (point)) ;; For the new shift computation
-               (term (param-info-term param))
-               (p-ty (param-info-p-ty param))
-               (e-ty (param-info-e-ty param)))
-          (when (and term p-ty e-ty)
-            ;; Insert an assertion for the type cast
-            (when (param-info-requires-cast param)
-              (let* (rawest-e-ty (type-info-rawest-type e-ty))
-                    (several-lines
-                     (or (> (meta-info-pp-res term) 1)
-                         (> (meta-info-pp-res rawest-e-ty))))
-                ;; Begin
-                (insert indent-str)
-                (insert "assert( has_type")
-                ;; Insert the term
-                (if several-lines
-                    ;; Several lines
-                    (progn
-                      (insert "\n")
-                      (insert indent-str2)
-                      (insert "(")
-                      (insert-with-indent indent3-str (meta-info-data term))
-                      (insert ")"))
-                  ;; One line
-                  (insert "(")
-                  (insert (meta-info-data term))
-                  (insert ") "))
-                ;; Insert the type
-                (if several-lines
-                    ;; Several lines
-                    (progn
-                      (insert "\n")
-                      (insert indent-str2)
-                      (insert "(")
-                      (insert-with-indent indent3-str (meta-info-data rawest-e-ty))
-                      (insert ")"))
-                  ;; One line
-                  (insert "(")
-                  (insert (meta-info-data rawest-e-ty))
-                  (insert ") "))
-                ;; Finish
-                (when several-lines (insert "\n"))
-                (insert ");\n")))
-            ;; Insert an assertion for the refinement
-            (when (param-info-requires-refinement param)
-              )
-            
-            ;; Compute the new shift
-            (setq shift (+ shift (- (point) p0))))))
       ;; - print
-      (generate-assert-from-term p1 (eterm-info-pre info))
-      (generate-assert-from-term p2 (eterm-info-post info))
-      (generate-assert-from-term p2 (eterm-info-goal info))
+      ;; -- before the focused term
+      (goto-char cp1)
+      (generate-assert-from-term indent-str nil (eterm-info-pre info))
+      ;; -- and insert after the focused term
+      (forward-char (- p2 cp1))
+      (generate-assert-from-term indent-str t (eterm-info-post info))
+      (generate-assert-from-term indent-str t (eterm-info-goal info))
       )))
 
 ;;     (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin))))
