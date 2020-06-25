@@ -1,6 +1,8 @@
 ;;
 ;; Custom commands and bindings for the F* mode
 ;;
+(cl-defstruct pair fst snd)
+
 (defun back-to-indentation-or-beginning () (interactive)
    (if (= (point) (progn (back-to-indentation) (point)))
        (beginning-of-line)))
@@ -45,6 +47,7 @@
 
 (defun find-region-delimiters (ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                ABOVE_PARAGRAPH BELOW_PARAGRAPH)
+  ""
  (let ($p $p1 $p2)
    ;; Save the current point
    (setq $p (point))
@@ -63,7 +66,7 @@
          (progn (if BELOW_PARAGRAPH (forward-paragraph)
                   (if INCLUDE_CURRENT_LINE (move-end-of-line ()) (move-beginning-of-line ())))
                 (setq $p2 (point)) (goto-char $p))))
-   (list $p1 $p2)))
+   (make-pair :fst $p1 :snd $p2)))
 
 (defun apply-in-current-region (ACTION ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                 ABOVE_PARAGRAPH BELOW_PARAGRAPH)
@@ -75,7 +78,7 @@
     ;; Find the region delimiters
     (setq $delimiters (find-region-delimiters ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                               ABOVE_PARAGRAPH BELOW_PARAGRAPH))
-    (setq $p1 (car $delimiters) $p2 (car (cdr $delimiters)))
+    (setq $p1 (pair-fst $delimiters) $p2 (pair-snd $delimiters))
     ;; Apply the action in the delimited region
     (save-restriction
       (narrow-to-region $p1 $p2)
@@ -132,7 +135,7 @@ Takes optional region delimiters as arguments."
     ;; Find the region delimiters and restrain the region
     (setq $delimiters (find-region-delimiters ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                               ABOVE_PARAGRAPH BELOW_PARAGRAPH))
-    (setq $p1 (car $delimiters) $p2 (car (cdr $delimiters)))
+    (setq $p1 (pair-fst $delimiters) $p2 (pair-snd $delimiters))
     (save-restriction
       (narrow-to-region $p1 $p2)
       (setq $p (point))
@@ -410,7 +413,7 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
                  prefix id res-str)))
     (if res (make-meta-info :data res :pp-res pp-res) nil))) ;; end of function
 
-(defun meta-info-post-process (indent-str)
+(defun meta-info-post-process ()
   "Data post-processing function: counts the number of lines. If there is
 more than one line, adds indentation, otherwise leaves the data as it is.
 Besides, greedily replaces some identifiers (Prims.l_True -> True...).
@@ -420,13 +423,6 @@ Returns the number of lines."
     ;; Count the lines
     (while (search-forward "\n" (point-max) t)
       (setq num-lines (+ num-lines 1)))
-    ;; If > 1 lines, indent them
-    (when (> num-lines 1)
-      (let ((i 0))
-        (goto-char (point-min))
-        (insert indent-str)
-        (while (search-forward "\n" (point-max) t)
-          (insert indent-str))))
     ;; Greedy replacements
     (replace-all-in "Prims.l_True" "True")
     (replace-all-in "Prims.l_False" "False")
@@ -438,13 +434,13 @@ Returns the number of lines."
   (when DEBUG (message "extract-string-from-buffer:\n- prefix: %s\n- id: %s" prefix id)) 
   (extract-info-from-buffer prefix id no-error nil DEBUG LIMIT))
 
-(defun extract-term-from-buffer (prefix id indent-str &optional no-error DEBUG LIMIT)
+(defun extract-term-from-buffer (prefix id &optional no-error DEBUG LIMIT)
   (when DEBUG (message "extract-term-from-buffer:\n- prefix: %s\n- id: %s" prefix id)) 
   (extract-info-from-buffer prefix id no-error
-                            (apply-partially 'meta-info-post-process indent-str)
+                            (apply-partially 'meta-info-post-process)
                             DEBUG LIMIT))
 
-(defun extract-type-info-from-buffer (prefix id indent-str &optional no-error DEBUG LIMIT)
+(defun extract-type-info-from-buffer (prefix id &optional no-error DEBUG LIMIT)
   "Extracts type information from the *Messages* buffer. Returns a ``type-info``
 structure."
   (when DEBUG (message "extract-type-info-from-buffer:\n- prefix: %s\n- id: %s" prefix id)) 
@@ -453,13 +449,13 @@ structure."
         (id-rty-refin (concat id ":rty_refin"))
         extract)
     (defun extract (id)
-            (extract-term-from-buffer prefix id indent-str no-error DEBUG LIMIT))
+            (extract-term-from-buffer prefix id no-error DEBUG LIMIT))
     (let ((ty (extract id-ty))
           (rty-raw (extract id-rty-raw))
           (rty-refin (extract id-rty-refin)))
     (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin))))
 
-(defun extract-param-info-from-buffer (prefix id index indent-str
+(defun extract-param-info-from-buffer (prefix id index
                                        &optional no-error DEBUG LIMIT)
   "Extracts parameter information from the *Messages* buffer. Returns a param-info
 structure."
@@ -474,16 +470,16 @@ structure."
     (defun extract-string (id)
       (extract-string-from-buffer prefix id no-error DEBUG LIMIT))
     (defun extract-term (id)
-      (extract-term-from-buffer prefix id indent-str no-error DEBUG LIMIT))
+      (extract-term-from-buffer prefix id no-error DEBUG LIMIT))
     (defun extract-type (id)
-      (extract-type-info-from-buffer prefix id indent-str no-error DEBUG LIMIT))
+      (extract-type-info-from-buffer prefix id no-error DEBUG LIMIT))
     (let ((term (extract-term id-term))
           (p-ty (extract-type id-p-ty))
           (e-ty (extract-type id-e-ty))
           (types-comparison (extract-string id-types-comparison)))
     (make-param-info :term term :p-ty p-ty :e-ty e-ty :types-comparison types-comparison))))
 
-(defun extract-param-info-list-from-buffer (prefix id index num indent-str
+(defun extract-param-info-list-from-buffer (prefix id index num
                                                  &optional no-error DEBUG LIMIT)
   "Extract a given number of parameters as a list of param-info."
   (when DEBUG (message "extract-param-info-list-from-buffer:\n\
@@ -493,14 +489,14 @@ structure."
     (let ((param nil) (params nil))
       ;; Extract (forward) the parameter given by 'index'
       (setq param
-            (extract-param-info-from-buffer prefix id index indent-str no-error DEBUG LIMIT))
+            (extract-param-info-from-buffer prefix id index no-error DEBUG LIMIT))
       ;; Recursive call
       (setq params
             (extract-param-info-list-from-buffer prefix id (+ index 1) num
-                                                 indent-str no-error DEBUG LIMIT))
+                                                 no-error DEBUG LIMIT))
       (cons param params))))
 
-(defun extract-parameters-from-buffer (prefix id indent-str
+(defun extract-parameters-from-buffer (prefix id
                                        &optional no-error DEBUG LIMIT)
   (when DEBUG (message "extract-parameters-from-buffer:\n\
 - prefix: %s\n- id: %s" prefix id))
@@ -511,25 +507,21 @@ param-info"
     (setq num-data (extract-string-from-buffer prefix id-num no-error DEBUG LIMIT))
     (setq num (string-to-number (meta-info-data num-data)))
     ;; Extract the proper number of parameters
-    (extract-param-info-list-from-buffer prefix id 0 num indent-str no-error
+    (extract-param-info-list-from-buffer prefix id 0 num no-error
                                          DEBUG LIMIT)))
 
-;; TODO: move
-(cl-defstruct pair fst snd)
-
-(defun extract-eterm-info-from-buffer (prefix id indent-str &optional no-error
-                                              DEBUG LIMIT)
+(defun extract-eterm-info-from-buffer (prefix id &optional no-error DEBUG LIMIT)
   "Extracts effectful term information from the current buffer and returns a
 eterm-info structure."
   (when DEBUG (message "extract-eterm-info-from-buffer:\n\
 - prefix: %s\n- id: %s" prefix id))
   (let (extract-type extrac-term extract-parameters)
     (defun extract-type (id)
-      (extract-type-info-from-buffer prefix id indent-str no-error DEBUG LIMIT))
+      (extract-type-info-from-buffer prefix id no-error DEBUG LIMIT))
     (defun extract-term (id)
-      (extract-term-from-buffer prefix id indent-str no-error DEBUG LIMIT))
+      (extract-term-from-buffer prefix id no-error DEBUG LIMIT))
     (defun extract-parameters (id)
-      (extract-parameters-from-buffer prefix id indent-str no-error DEBUG LIMIT))
+      (extract-parameters-from-buffer prefix id no-error DEBUG LIMIT))
     (let ((etype (extract-term (concat id ":etype")))
           (pre (extract-term (concat id ":pre")))
           (post (extract-term (concat id ":post")))
@@ -613,7 +605,7 @@ buffer."
       ;; Return the new end of the region
       (+ (point) new-end)))
 
-(defun extract-eterm-info-from-messages (prefix id indent-str &optional process-buffer no-error
+(defun extract-eterm-info-from-messages (prefix id &optional process-buffer no-error
                                          clear-process-buffer DEBUG)
   "Extracts effectful term information from the *Messages* buffer. Returns an
 eterm-info structure. process-buffer is the buffer to use to copy and process
@@ -646,13 +638,21 @@ the raw data (*fstar-data1* by default)."
         ;; Clean
         (clean-data-from-messages)
         ;; Extract the eterm-info
-        (setq result (extract-eterm-info-from-buffer prefix id indent-str no-error DEBUG)))
+        (setq result (extract-eterm-info-from-buffer prefix id no-error DEBUG)))
       ;; Switch back to the original buffer
       (switch-to-buffer prev-buffer)
       ;; Return
       result)))
 
-(defun insert-assert-pre-post-continuation (indent-str p1 p2 cp1 cp2 overlay DEBUG status response)
+(defun replace-in-string (FROM TO STR)
+  (replace-regexp-in-string (regexp-quote FROM) TO STR nil 'literal))
+
+(defun insert-with-indent (indent-str txt &optional indent-first-line)
+  (when indent-first-line (insert indent-str))
+  (insert (replace-in-string "\n" (concat "\n" indent-str) txt)))
+
+(defun insert-assert-pre-post--continuation (indent-str p1 p2 cp1 cp2 overlay DEBUG
+                                             status response)
   "The continuation function called once F* returns. If F* succeeded, extracts
    the information and adds it to the proof"
   (unless (eq status 'interrupted)
@@ -672,37 +672,113 @@ the raw data (*fstar-data1* by default)."
     ;;
     ;; Extract the data. Note that we add two spaces to the indentation, because
     ;; if we need to indent the data, it is because it will be in an assertion.
-    (setq info (extract-eterm-info-from-messages "eterm_info" "" (concat indent-str "  ")
+    (setq info (extract-eterm-info-from-messages "eterm_info" ""
                                                  fstar-process-buffer1 t t DEBUG))
     ;; Print the information
     ;; - utilities
-    (let ((shift 0))
-      (defun insert-update-shift (s)
-        (insert s)
-        (setq shift (+ shift (length s))))
-      (defun generate-info (p data &optional comment)
-        "Generates the appropriate assert at the proper position, preceded buy
+    (let* ((shift 0)
+           (indent2-str (concat indent-str "  "))
+           (indent3-str (concat indent-str "   "))
+           ;; TODO: check function names
+           insert-update-shift generate-assert generate-param-assert)
+      (defun generate-assert-from-term (p data &optional comment)
+        "Generates the appropriate assert at the proper position, preceded by
          an optional comment, while updating the shift."
-        (when data
-          (goto-char (+ p shift))
-          ;; If we are after the studied term: insert a newline
-          (when (>= p cp2) (insert-update-shift "\n"))
-          (when comment
-            (insert-update-shift indent-str)
-            (insert-update-shift comment)
-            (insert-update-shift "\n"))
-          (insert-update-shift indent-str)
-          (insert-update-shift "assert(")
-          (when (> (meta-info-pp-res data) 1) (insert-update-shift "\n"))
-          (insert-update-shift (meta-info-data data))
-          (insert-update-shift ");")
-          ;; If we are before the studied term: insert a newline
-          (when (<= p cp1) (insert-update-shift "\n"))))
+        (let ((p0 (point))) ;; To compute the new shift
+          (when data
+            (goto-char (+ p shift))
+            ;; If we are after the studied term: insert a newline
+            (when (>= p cp2) (insert "\n"))
+            (when comment
+              (insert indent-str)
+              (insert comment)
+              (insert "\n"))
+            (insert indent-str)
+            (insert "assert(")
+            (when (> (meta-info-pp-res data) 1)
+              (insert "\n")
+              (insert indent2-str))
+            (insert-with-indent indent2-str (meta-info-data data))
+            (insert ");")
+            ;; If we are before the studied term: insert a newline
+            (when (<= p cp1) (insert "\n")))
+          ;; Compute the new shift
+          (setq shift (+ shift (- (point) p0)))
+          ))
+      (defun generate-param-asserts (param)
+        (let* ((p0 (point)) ;; For the new shift computation
+               (term (param-info-term param))
+               (p-ty (param-info-p-ty param))
+               (e-ty (param-info-e-ty param)))
+          (when (and term p-ty e-ty)
+            ;; Insert an assertion for the type cast
+            (when (param-info-requires-cast param)
+              (let* (rawest-e-ty (type-info-rawest-type e-ty))
+                    (several-lines
+                     (or (> (meta-info-pp-res term) 1)
+                         (> (meta-info-pp-res rawest-e-ty))))
+                ;; Begin
+                (insert indent-str)
+                (insert "assert( has_type")
+                ;; Insert the term
+                (if several-lines
+                    ;; Several lines
+                    (progn
+                      (insert "\n")
+                      (insert indent-str2)
+                      (insert "(")
+                      (insert-with-indent indent3-str (meta-info-data term))
+                      (insert ")"))
+                  ;; One line
+                  (insert "(")
+                  (insert (meta-info-data term))
+                  (insert ") "))
+                ;; Insert the type
+                (if several-lines
+                    ;; Several lines
+                    (progn
+                      (insert "\n")
+                      (insert indent-str2)
+                      (insert "(")
+                      (insert-with-indent indent3-str (meta-info-data rawest-e-ty))
+                      (insert ")"))
+                  ;; One line
+                  (insert "(")
+                  (insert (meta-info-data rawest-e-ty))
+                  (insert ") "))
+                ;; Finish
+                (when several-lines (insert "\n"))
+                (insert ");\n")))
+            ;; Insert an assertion for the refinement
+            (when (param-info-requires-refinement param)
+              )
+            
+            ;; Compute the new shift
+            (setq shift (+ shift (- (point) p0))))))
       ;; - print
-      (generate-info p1 (eterm-info-pre info))
-      (generate-info p2 (eterm-info-post info))
-      (generate-info p2 (eterm-info-goal info))
+      (generate-assert-from-term p1 (eterm-info-pre info))
+      (generate-assert-from-term p2 (eterm-info-post info))
+      (generate-assert-from-term p2 (eterm-info-goal info))
       )))
+
+;;     (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin))))
+
+;; TODO: move
+(defun type-info-rawest-type (ty)
+  "Returns the 'rawest' type from a type-info"
+  (or (type-info-rty-raw ty) (type-info-ty ty)))
+
+(defun param-info-requires-cast (param)
+  "Returns t if the types-comparison from param is 'Unknown'"
+  (string= (param-info-types-comparison param) "Unknown"))
+
+(defun param-info-requires-refinment (param)
+  "Returns t if the types-comparison from param is 'Same_raw_type' or 'Unknown'"
+  (or
+   (string= (param-info-types-comparison param) "Unknown")
+   (string= (param-info-types-comparison param) "Same_raw_type")))
+
+;;(cl-defstruct param-info term p-ty e-ty types-comparison)
 
 (defun insert-assert-pre-post--process
     ($indent-str $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol &optional $debug)
@@ -766,9 +842,10 @@ the raw data (*fstar-data1* by default)."
       (fstar-subp-set-status overlay 'busy)
       ;; Query F*
       (fstar-subp--query (fstar-subp--push-query $beg `full $payload)
-                         (apply-partially #'insert-assert-pre-post-continuation
+                         (apply-partially #'insert-assert-pre-post--continuation
                                           $indent-str $p1 $p2 $cp1 $cp2 overlay
-                                          $debug)))    
+                                          $debug))
+      )
     ) ;; end of outermost let
   ) ;; end of function
 
@@ -807,7 +884,7 @@ TODO: add assertions for the parameters' refinements"
       (narrow-to-region $beg (point-max))
       ;; Find in which region the term to process is
       (setq $delimiters (find-region-delimiters t t nil nil))
-      (setq $p1 (car $delimiters) $p2 (car (cdr $delimiters)))
+      (setq $p1 (pair-fst $delimiters) $p2 (pair-snd $delimiters))
       ;; Expand the region: ignore comments, and try to reach a beginning/end of
       ;; line for the beginning/end of the region
       ;; - beginning:
@@ -892,6 +969,8 @@ TODO: add assertions for the parameters' refinements"
 (global-set-key (kbd "C-c C-s C-a") 'switch-assert-assume-in-above-paragraph)
 (global-set-key (kbd "C-S-a") 'switch-assert-assume-in-current-line)
 
-;;(defun t1 ()
-;;  (interactive)
-;;  (insert-assert-pre-post t))
+(global-set-key (kbd "C-c C-e") 'insert-assert-pre-post)
+
+(defun t1 ()
+  (interactive)
+  (insert-assert-pre-post t))

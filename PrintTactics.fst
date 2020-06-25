@@ -591,6 +591,8 @@ let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) : nat =
   admit()
 
 (*
+   (setq debug-on-error t)
+
   let n1, n2 = test_fun5 x in
 //  run_tactic (fun _ -> print ("n1: " ^ term_to_string (quote n1)));
   run_tactic (fun _ -> _debug_print_var "n1" (quote n1));
