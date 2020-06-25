@@ -6,12 +6,17 @@
 ### Checking why a precondition/goal fails (and unfolding correctly terms in a general manner)
 ### Arithmetic proofs
 ### Dealing with if/match one branch at a time to keep precision in the F* error messages
+### Using tactics to know what is in your context, deal with implicits
 ### Make tests with your functions before proving anything about them
 Example of the *check_well_formed_pattern* for Noise which caused me headaches because I had made a mistake and had trouble fixing it because I was basically blind (it would have been super simple to solve this problem in HOL4 or Coq).
 
 ### Dealing with tedious functors instanciations
 
 ## Ideas
+### General ideas for tactics
+* a tactic which explores a term (with controled exploration) while carrying around an accumulator. Note that we might need a tactic which allows the user to play with ALL the subterms (including meta sub-terms for example).
+* make sure the variables in the proof context have the same names as defined by the user (otherwise very confusing and prevents the generation of tactics to help writing proofs!) 
+
 ### Tactics for instanciating and showing pre/postconditions/goals or for unfolding functions
 It often happens that F* can't prove a precondition and we don't know why, or we call a theorem but this doesn't allow the proof to succeed and we want to check that calling this theorem gives us what we expect/need, we don't know what the current goal is (a big problem of instanciating functors, but not limited to that) or we need to unfold some function (and potentially several terms inside) to check what it is equal to.
 In those situations, my current way of doing is to copy-paste the appropriate precondition/postcondition/goal/definition and put it in an assert/assume preceded by the appropriate let-binding to instanciate the function parameters with the proper variables. This can be very tedious, especially if we need later to remove those let-bindings to see better what's going on, or if we need to unfold some subterms (in which case I basically redo the same).
@@ -36,6 +41,7 @@ Note that one subtelty to take into account would be the fact that we may have t
 
 ### Ad-hoc tactic calls
 In order to make the use of tactics to help *writing* proofs (by generating proof scripts which would be copy-pasted by the user) easier, it would be nice to be able to call tactics without the *assert(...) by ...* construct.
+Actually: there is a *run_tactic* function which does exactly that.
 
 ### Make a library of emacs commands to help generating proofs in emacs
 I already have a *rolling-admit* command as well as a command to switch between *assert* and *assume*. Even though they are very rudimentary and could be improved, they are super useful.
