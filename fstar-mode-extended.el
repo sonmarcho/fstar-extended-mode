@@ -3,6 +3,9 @@
 ;;
 (cl-defstruct pair fst snd)
 
+(defun replace-in-string (FROM TO STR)
+  (replace-regexp-in-string (regexp-quote FROM) TO STR nil 'literal))
+
 (defun back-to-indentation-or-beginning () (interactive)
    (if (= (point) (progn (back-to-indentation) (point)))
        (beginning-of-line)))
@@ -350,6 +353,20 @@ as the result returned by the post-processing function called on the data."
 (cl-defstruct param-info term p-ty e-ty types-comparison)
 (cl-defstruct eterm-info etype pre post ret-type head parameters goal)
 
+(defun type-info-rawest-type (ty)
+  "Returns the 'rawest' type from a type-info"
+  (or (type-info-rty-raw ty) (type-info-ty ty)))
+
+(defun param-info-requires-cast (param)
+  "Returns t if the types-comparison from param is 'Unknown'"
+  (string= (meta-info-data (param-info-types-comparison param)) "Unknown"))
+
+(defun param-info-requires-refinement (param)
+  "Returns t if the types-comparison from param is 'Same_raw_type' or 'Unknown'"
+  (or
+   (string= (meta-info-data (param-info-types-comparison param)) "Unknown")
+   (string= (meta-info-data (param-info-types-comparison param)) "Same_raw_type")))
+
 (defun search-data-delimiter (delimiter backward consume-delimiter no-error
                               &optional BEG END)
   "Searchs for delimiter in the direction given by backward. consume-delimiter
@@ -644,9 +661,6 @@ the raw data (*fstar-data1* by default)."
       ;; Return
       result)))
 
-(defun replace-in-string (FROM TO STR)
-  (replace-regexp-in-string (regexp-quote FROM) TO STR nil 'literal))
-
 (defun insert-with-indent (indent-str txt &optional indent-first-line)
   (when indent-first-line (insert indent-str))
   (insert (replace-in-string "\n" (concat "\n" indent-str) txt)))
@@ -671,28 +685,6 @@ after the focused term, nil otherwise. comment is an optional comment"
     (insert ");")
     ;; If we are before the studied term: insert a newline
     (when (not after-term) (insert "\n"))))
-
-;;(cl-defstruct param-info term p-ty e-ty types-comparison)
-
-;;     (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin))))
-
-;; TODO: move
-(defun type-info-rawest-type (ty)
-  "Returns the 'rawest' type from a type-info"
-  (or (type-info-rty-raw ty) (type-info-ty ty)))
-
-(defun param-info-requires-cast (param)
-  "Returns t if the types-comparison from param is 'Unknown'"
-  (string= (meta-info-data (param-info-types-comparison param)) "Unknown"))
-
-(defun param-info-requires-refinement (param)
-  "Returns t if the types-comparison from param is 'Same_raw_type' or 'Unknown'"
-  (or
-   (string= (meta-info-data (param-info-types-comparison param)) "Unknown")
-   (string= (meta-info-data (param-info-types-comparison param)) "Same_raw_type")))
-
-;;(cl-defstruct param-info term p-ty e-ty types-comparison)
-
 
 (defun generate-param-asserts (indent-str param)
   "Generates the appropriate assertions for a parameter (type cast and type
