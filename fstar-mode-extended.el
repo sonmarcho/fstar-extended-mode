@@ -433,7 +433,7 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
               (end-of-line)
               (if (< (point) (point-max)) (forward-char) (setq continue nil))))
           ;; Post-process the data
-          (when post-process (setq pp-res (post-process)))
+          (when post-process (setq pp-res (funcall post-process)))
           ;; Save the content of the whole narrowed region
           (setq res (buffer-substring-no-properties (point-min) (point-max)))
           ) ;; end of save-restriction
@@ -478,7 +478,7 @@ Besides, greedily replaces some identifiers (Prims.l_True -> True...)"
   (extract-info-from-messages prefix id backward no-error nil BEG END))
 
 (defun extract-term-from-messages (prefix id &optional backward no-error BEG END)
-  (extract-info-from-messages prefix id backward no-error meta-info-post-process BEG END))
+  (extract-info-from-messages prefix id backward no-error 'meta-info-post-process BEG END))
 
 (defun extract-type-info-from-messages (prefix id &optional backward no-error BEG END)
   "Extracts type information from the *Messages* buffer. Returns a ``type-info``
@@ -488,11 +488,11 @@ structure."
         (id-rty-refin (concat id ":rty_refin"))
         extract)
     (defun extract (id)
-            (extract-term-from-messages prefix id backward no-error BEG END)))
+            (extract-term-from-messages prefix id backward no-error BEG END))
     (let ((ty (extract id-ty))
           (rty-raw (extract id-rty-raw))
           (rty-refin (extract id-rty-refin)))
-    (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin)))
+    (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin))))
 
 (defun extract-parameter-from-messages (prefix id index &optional backward no-error
                                         BEG END)
@@ -505,7 +505,7 @@ structure."
          (id-types-comparison (concat pid ":types_comparison"))
          extract-string extract-term extract-type)
     (defun extract-string (id)
-      (extract-string-from-messages prefix id backward no-error BEG END)))
+      (extract-string-from-messages prefix id backward no-error BEG END))
     (defun extract-term (id)
       (extract-term-from-messages prefix id backward no-error BEG END))
     (defun extract-type (id)
@@ -514,7 +514,7 @@ structure."
           (p-ty (extract-type id-p-ty))
           (e-ty (extract-type id-e-ty))
           (types-comparison (extract-string id-types-comparison)))
-    (make-param-info :term term :p-ty p-ty :e-ty e-ty :types-comparison types-comparison)))
+    (make-param-info :term term :p-ty p-ty :e-ty e-ty :types-comparison types-comparison))))
 
 (defun extract-parameters-list-from-messages (prefix id index num &optional backward
                                                      no-error BEG END)
@@ -555,8 +555,10 @@ structure."
         (id-beg (concat prefix id ":BEGIN"))
         (id-end (concat prefix id ":END")))
     (setq beg (search-data-delimiter id-beg backward nil no-error))
-    ;; From now onward, we only search forward
-    (setq end (search-data-delimiter id-end nil nil no-error))
+    ;; From now onward, we only search forward. Note that we include the end
+    ;; delimiter in the region we study (it will be necessary to parse the last
+    ;; data)
+    (setq end (search-data-delimiter id-end nil t no-error))
     ;; Extract the data
     (goto-char beg)
     (let* ((id-etype (concat id ":etype"))
@@ -787,13 +789,13 @@ TODO: add assertions for the parameters' refinements"
       ;; Process the term
       (insert-assert-pre-post--process $indent-str $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol))))
 
-(defun t1 ()
-  (interactive)
-  (insert-assert-pre-post))
+;;(defun t1 ()
+;;  (interactive)
+;;  (insert-assert-pre-post))
 
-(defun t2 ()
-  (interactive)
-  (message "Point: %s" (point)))
+;;(defun t2 ()
+;;  (interactive)
+;;  (message "Point: %s" (point)))
 
 (defun fstar-subp-advance-or-retract-to-point (&optional arg)
   "Advance or retract proof state to reach point.
