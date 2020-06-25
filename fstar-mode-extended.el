@@ -226,9 +226,6 @@ Takes optional region delimiters as arguments."
 
 (define-error 'fstar-meta-parsing "Error while parsing F*")
 
-;; TODO: comes from fstar-mode.el
-;;(defconst fstar--spaces "\t\n\r ")
-
 ;; From now onwards we use functions from the F* mode
 (use-package fstar-mode
   :demand)
@@ -297,10 +294,9 @@ characters (if NO_NEWLINE is not nil) and comments."
 
 (defconst messages-buffer "*Messages*")
 (defconst fstar-edebug-buffer "*fstar-extended-debug*")
-(defconst fstar-data-buffer1 "*fstar-data1*")
+(defconst fstar-process-buffer1 "*fstar-process-buffer*")
 (defconst fstar-message-prefix "[F*] ")
 (defconst fstar-tactic-message-prefix "[F*] TAC>> ")
-(defconst fstar-info-prefix "[F*] TAC>> eterm_info")
 
 (defun parse-sub-expression ($p1 $p2)
   (let ($delimiters $cp1 $cp2 $is-let-in $has-semicol)
@@ -622,7 +618,7 @@ buffer."
   "Extracts effectful term information from the *Messages* buffer. Returns an
 eterm-info structure. process-buffer is the buffer to use to copy and process
 the raw data (*fstar-data1* by default)."
-  (setq-default process-buffer fstar-data-buffer1)
+  (setq-default process-buffer fstar-process-buffer1)
   (when DEBUG (message "extract-eterm-info-from-messages:\n\
 - prefix: %s\n- id: %s\n- process buffer: %s\n" prefix id process-buffer))
   (let ((prev-buffer (current-buffer))
@@ -677,7 +673,7 @@ the raw data (*fstar-data1* by default)."
     ;; Extract the data. Note that we add two spaces to the indentation, because
     ;; if we need to indent the data, it is because it will be in an assertion.
     (setq info (extract-eterm-info-from-messages "eterm_info" "" (concat indent-str "  ")
-                                                 fstar-data-buffer1 t t DEBUG))
+                                                 fstar-process-buffer1 t t DEBUG))
     ;; Print the information
     ;; - utilities
     (let ((shift 0))
@@ -776,7 +772,6 @@ the raw data (*fstar-data1* by default)."
     ) ;; end of outermost let
   ) ;; end of function
 
-
 (defun insert-assert-pre-post (&optional DEBUG)
   (interactive)
   "Inserts assertions with the instanciated pre and post-conditions around a
@@ -857,10 +852,6 @@ TODO: add assertions for the parameters' refinements"
       ;; Process the term
       (insert-assert-pre-post--process $indent-str $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol DEBUG))))
 
-;; (defun t1 ()
-;;  (interactive)
-;;  (insert-assert-pre-post t))
-
 ;; Actually already C-M-o
 (defun split-line-indent-is-cursor ()
   (interactive)
@@ -900,3 +891,7 @@ TODO: add assertions for the parameters' refinements"
 (global-set-key (kbd "C-x C-a") 'roll-admit)
 (global-set-key (kbd "C-c C-s C-a") 'switch-assert-assume-in-above-paragraph)
 (global-set-key (kbd "C-S-a") 'switch-assert-assume-in-current-line)
+
+;;(defun t1 ()
+;;  (interactive)
+;;  (insert-assert-pre-post t))
