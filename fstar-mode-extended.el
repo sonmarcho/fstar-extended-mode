@@ -789,60 +789,69 @@ refinement)"
     ;; - change the reference position
     (goto-char (point-max))
     (insert "\n\n- Starting new processing:\n\n")
-    (setq $lbeg (point-max) $shift (- (point-max) $beg))
-    (setq $lp1 (+ $p1 $shift) $lp2 (+ $p2 $shift) $lcp1 (+ $cp1 $shift) $lcp2 (+ $cp2 $shift))
-    ;; - yank
-    (yank)
-    ;; Modify the copied content and leave the pointer at the end of the region
-    ;; to send to F*
-    ;;
-    ;; Insert the proper wrappers depending on the result of parsing to generate
-    ;; the proper information by running F*. Note that we don't need to keep
-    ;; track of the positions modifications: we will send the whole buffer to F*.
-    (cond
-     ;; 'let _ = _ in'
-     ($is-let-in (error "Not supported yet: let _ = _ in"))
-     ;; '_;' or '_'
-     ($has-semicol
-      (let ($prefix $prefix-length $suffix $suffix-length)
-        ;; Wrap the term in a tactic to generate the debugging information
-        (setq $prefix "run_tactic (fun _ -> dprint_eterm (quote (")
-        (setq $suffix ")) None (`()) [`()])")
-        (setq $prefix-length (length $prefix) $suffix-length (length $suffix))
-        (goto-char $lcp1)
-        (insert $prefix)
-        ;; We need to put the suffix before the ';', if there is
-        (let (($semicol-size (if $has-semicol 1 0)))
-          (goto-char (+ (- $lcp2 $semicol-size) $prefix-length)))
-        (insert $suffix)
-        ;; Insert an admit() at the end
-        (goto-char (+ $lp2 (+ $prefix-length $suffix-length)))
-        (progn (end-of-line)
-               ;; Insert a ';' if there isn't
-               (unless $has-semicol (insert ";"))
-               (newline) (indent-according-to-mode) (insert "admit()"))
-        )) ;; end of second case
-     (t (error "Not supported yet: _"))
-     ) ;; end of cond
-    ;; Do some greedy replacements: replace the assertions by assumptions
-    (replace-all-in "assert_norm" "assume(*norm*)")
-    (replace-all-in "assert" "assume")
-    ;; Query F*
-    (let* ((overlay (make-overlay $beg $p2 $cbuffer nil nil))
-           ($lend (point))
-           ($payload (buffer-substring-no-properties $lbeg $lend)))
-      ;; We need to swithch back to the original buffer to query the F* process
-      (switch-to-buffer $cbuffer)
-      ;; Overlay management
-      (fstar-subp-remove-orphaned-issue-overlays (point-min) (point-max))
-      (overlay-put overlay 'fstar-subp--lax nil)
-      (fstar-subp-set-status overlay 'busy)
+    (save-restriction
+      (narrow-to-region (point) (point))
+      ;; TODO: cleanup the mess with the different position pointers
+      (setq $lbeg (point-max) $shift (- (point-max) $beg))
+      (setq $lp1 (+ $p1 $shift) $lp2 (+ $p2 $shift) $lcp1 (+ $cp1 $shift) $lcp2 (+ $cp2 $shift))
+      ;; - yank
+      (yank)
+      ;; Modify the copied content and leave the pointer at the end of the region
+      ;; to send to F*
+      ;;
+      ;; Insert the proper wrappers depending on the result of parsing to generate
+      ;; the proper information by running F*. Note that we don't need to keep
+      ;; track of the positions modifications: we will send the whole buffer to F*.
+      (cond
+       ;; 'let _ = _ in'
+       ($is-let-in (error "Not supported yet: let _ = _ in"))
+       ;; '_;' or '_'
+       ($has-semicol
+        (let ($prefix $prefix-length $suffix $suffix-length)
+          ;; Wrap the term in a tactic to generate the debugging information
+          (setq $prefix "run_tactic (fun _ -> dprint_eterm (quote (")
+          (setq $suffix ")) None (`()) [`()])")
+          (setq $prefix-length (length $prefix) $suffix-length (length $suffix))
+          (goto-char $lcp1)
+          (insert $prefix)
+          ;; We need to put the suffix before the ';', if there is
+          (let (($semicol-size (if $has-semicol 1 0)))
+            (goto-char (+ (- $lcp2 $semicol-size) $prefix-length)))
+          (insert $suffix)
+          ;; Insert an admit() at the end
+          (goto-char (+ $lp2 (+ $prefix-length $suffix-length)))
+          (progn (end-of-line)
+                 ;; Insert a ';' if there isn't
+                 (unless $has-semicol (insert ";"))
+                 (newline) (indent-according-to-mode) (insert "admit()"))
+          )) ;; end of second case
+       (t (error "Not supported yet: _"))
+       ) ;; end of cond
+      ;; TODO: the following is not necessary anymore, but I keep it in comments
+      ;; just in case
+      ;; Do some greedy replacements: replace the assertions by assumptions
+      ;;    (replace-all-in "assert_norm" "assume(*norm*)")
+      ;;    (replace-all-in "assert" "assume")
+      ;; Insert an option to deactivate the proof obligations
+      (goto-char (point-min))
+      (insert "#push-options \"--admit_smt_queries true\"\n")
       ;; Query F*
-      (fstar-subp--query (fstar-subp--push-query $beg `full $payload)
-                         (apply-partially #'insert-assert-pre-post--continuation
-                                          $indent-str $p1 $p2 $cp1 $cp2 overlay
-                                          $debug))
-      )
+      (let* ((overlay (make-overlay $beg $p2 $cbuffer nil nil))
+             ($lend (point))
+             ($payload (buffer-substring-no-properties $lbeg $lend)))
+        ;; We need to swithch back to the original buffer to query the F* process
+        (switch-to-buffer $cbuffer)
+        ;; Overlay management
+        (fstar-subp-remove-orphaned-issue-overlays (point-min) (point-max))
+        (overlay-put overlay 'fstar-subp--lax nil)
+        (fstar-subp-set-status overlay 'busy)
+        ;; Query F*
+        (fstar-subp--query (fstar-subp--push-query $beg `full $payload)
+                           (apply-partially #'insert-assert-pre-post--continuation
+                                            $indent-str $p1 $p2 $cp1 $cp2 overlay
+                                            $debug))
+        )
+      ) ;; end of restriction
     ) ;; end of outermost let
   ) ;; end of function
 
@@ -924,7 +933,8 @@ TODO: add assertions for the parameters' refinements"
             (setq $indent-str (buffer-substring-no-properties $ip1 $ip2))
           (setq $indent-str (make-string $indent ? ))))
       ;; Process the term
-      (insert-assert-pre-post--process $indent-str $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol DEBUG))))
+      (insert-assert-pre-post--process $indent-str $p1 $p2 $cp1 $cp2 $is-let-in
+                                       $has-semicol DEBUG))))
 
 ;; Actually already C-M-o
 (defun split-line-indent-is-cursor ()

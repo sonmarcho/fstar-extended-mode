@@ -580,7 +580,6 @@ let _debug_print_var (name : string) (t : term) : Tac unit =
   end;
   print "end of _debug_print_var"
 
-//#push-options "--admit_smt_queries true"
 let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) : nat =
   test_lemma1 x; (**)
 //  run_tactic (fun _ -> dprint_eterm (quote (test_lemma1 x)) (`()) [(`())]);
@@ -591,13 +590,7 @@ let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) : nat =
   test_lemma3 x;
   (**) test_lemma3 x; (**)
   (**) test_lemma3 y; (**)
-  assert(x + 1 + 2 >= 1);
-  assert(x >= 3);
-  assert(y >= 5);
-  assert(has_type (1) (Prims.nat));
-  assert(has_type (2) (Prims.nat));
   test_lemma4 x y x 1 2;
-  assert((x * y) * (x + 1 + 2) >= 15);
   let w = test_fun4 x in
 //  run_tactic (fun _ -> dprint_eterm (quote (test_fun4 x)) (Some "w") (quote w) [(`())]);
 //  run_tactic (fun _ -> dprint_eterm (quote (test_fun6 x (2 * x) (3 * x))) (Some "a") (quote y) [(`())]);
