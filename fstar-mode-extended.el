@@ -656,11 +656,12 @@ the raw data (*fstar-data1* by default)."
 an optional comment"
   (when data
     ;; If we are after the studied term: insert a newline
-    (when after-term (insert "\n") (insert indent-str))
+    (when after-term (insert "\n"))
     (when comment
       (insert indent-str)
       (insert comment)
       (insert "\n"))
+    (insert indent-str)
     (insert "assert(")
     (when (> (meta-info-pp-res data) 1)
       (insert "\n")
@@ -669,7 +670,7 @@ an optional comment"
     (insert-with-indent (concat indent-str "  ") (meta-info-data data))
     (insert ");")
     ;; If we are before the studied term: insert a newline
-    (when (not after-term) (insert "\n") (insert indent-str))))
+    (when (not after-term) (insert "\n"))))
 
 (defun generate-param-asserts (indent-str param)
   (let* ((term (param-info-term param))
@@ -749,10 +750,10 @@ an optional comment"
            insert-update-shift generate-assert generate-param-assert)
       ;; - print
       ;; -- before the focused term
-      (goto-char cp1)
+      (goto-char p1)
       (generate-assert-from-term indent-str nil (eterm-info-pre info))
       ;; -- and insert after the focused term
-      (forward-char (- p2 cp1))
+      (forward-char (- p2 p1))
       (generate-assert-from-term indent-str t (eterm-info-post info))
       (generate-assert-from-term indent-str t (eterm-info-goal info))
       )))
