@@ -46,6 +46,9 @@ Actually: there is a *run_tactic* function which does exactly that.
 ### Make a library of emacs commands to help generating proofs in emacs
 I already have a *rolling-admit* command as well as a command to switch between *assert* and *assume*. Even though they are very rudimentary and could be improved, they are super useful.
 
+### Quake & co
+Whenever a proof succeed, launch proofs with *quake > 1* to check if it is stable
+
 ### Identify the failing proof obligations more precisely
 ### Make the interactive proofs more deterministic
 Solve the problem of: *adding lines at the end of the proof have the side effect of changing the behaviour of the prover on the preceding lines of the proof*, which basically means: *it is not because checking parts of the proof independently from each other succeeded that the full proof will succeed, and in a reasonable time (in the worst case it might even loop)*.
