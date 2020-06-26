@@ -178,10 +178,8 @@ let safe_tcc e t =
 val get_rtype_info_from_type : typ -> Tac (option rtype_info)
 
 let get_rtype_info_from_type t =
-  print ("get_rtype_info_from_type: " ^ term_to_string t);
   match inspect t with
   | Tv_Refine bv refin ->
-    print ("Tv_Refine " ^ term_to_string refin);
     let bview : bv_view = inspect_bv bv in
     let raw_type : typ = bview.bv_sort in
     let b : binder = pack_binder bv Q_Explicit in

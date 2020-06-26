@@ -570,10 +570,6 @@ like narrow-to-region. Moreover, it makes debugging easier. The function returns
 the pair of point coordinates delimiting the copied data in the destination
 buffer.
 include-delimiters controls whether to copy the delimiters or not"
-    (when DEBUG (message (concat "copy-data-from-messages-to-buffer "
-                                 "(beg-delimiter: '%s') (end-delimiter: '%s') "
-                                 "(include-delimiters: '%s') (dest-buffer: '%s')")
-                         beg-delimiter end-delimiter include-delimiters dest-buffer))
     ;; This command MUST NOT send any message to the *Messages* buffer
     (let ((prev-buffer (current-buffer))
           (backward t)
@@ -850,8 +846,7 @@ refinement)"
       (insert "#push-options \"--admit_smt_queries true\"\n")
       ;; Query F*
       (let* ((overlay (make-overlay $beg $p2 $cbuffer nil nil))
-             ($lend (point))
-             ($payload (buffer-substring-no-properties $lbeg $lend)))
+             ($payload (buffer-substring-no-properties (point-min) (point-max))))
         ;; We need to swithch back to the original buffer to query the F* process
         (switch-to-buffer $cbuffer)
         ;; Overlay management
@@ -859,6 +854,7 @@ refinement)"
         (overlay-put overlay 'fstar-subp--lax nil)
         (fstar-subp-set-status overlay 'busy)
         ;; Query F*
+        (when DEBUG (message "sending query to F*:[\n%s\n]" $payload))
         (fstar-subp--query (fstar-subp--push-query $beg `full $payload)
                            (apply-partially #'insert-assert-pre-post--continuation
                                             $indent-str $p1 $p2 $cp1 $cp2 overlay
