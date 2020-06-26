@@ -6,6 +6,11 @@
 ;; if it is linked to a key binding). Some very good explanations are provided
 ;; in the link below:
 ;; https://stackoverflow.com/questions/15097012/how-to-prevent-emacs-from-setting-an-undo-boundary
+;; My current fix is to use temporary buffers which names start with a space.
+;; Note that for now I don't want to use functions like to-switch-buffer because
+;; I want to keep a trace of the data processing for debugging
+
+;; TODO: use a global variable for DEBUG
 
 ;;
 ;; Custom commands and bindings for the F* mode
@@ -308,8 +313,8 @@ characters (if NO_NEWLINE is not nil) and comments."
       (if NO_NEWLINE (not (search-forward "\n" END t)) t))))
 
 (defconst messages-buffer "*Messages*")
-(defconst fstar-temp-buffer1 "*fstar-temp-buffer1*")
-(defconst fstar-temp-buffer2 "*fstar-temp-buffer2*")
+(defconst fstar-temp-buffer1 " *fstar-temp-buffer1*")
+(defconst fstar-temp-buffer2 " *fstar-temp-buffer2*")
 (defconst fstar-message-prefix "[F*] ")
 (defconst fstar-tactic-message-prefix "[F*] TAC>> ")
 
@@ -795,6 +800,7 @@ refinement)"
     (setq $cbuffer (current-buffer))
     (kill-ring-save $beg $p2)
     (switch-to-buffer fstar-temp-buffer1)
+    (erase-buffer)
     ;; - change the reference position
     (goto-char (point-max))
     (insert "\n\n- Starting new processing:\n\n")
