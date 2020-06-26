@@ -339,9 +339,9 @@ characters (if NO_NEWLINE is not nil) and comments."
 (cl-defstruct letb-term
   "A parsed let binded term of the form: 'let b = exp in'"
   beg end ;; delimiters for the whole expression
-  bind ;; the binding
+  bind ;; the binding (as a meta-info)
   b-beg b-end ;; delimiters
-  exp ;; the expression
+  exp ;; the expression (as a meta-info)
   e-beg e-end ;; delimiters
   is-var ;; nil if tuple
   )
@@ -427,12 +427,18 @@ aside potential whitespaces and comments."
                            (buffer-substring-no-properties BEG END)
                            $error-msg)))
         ;; Success
-        (make-letb-term :beg $beg :end $end
-                        :bind (buffer-substring-no-properties $b-beg $b-end)
-                        :b-beg $b-beg :b-end $b-end
-                        :exp (buffer-substring-no-properties $e-beg $e-end)
-                        :e-beg $e-beg :e-end $e-end
-                        :is-var $is-var)
+        (let* ((bind (buffer-substring-no-properties $b-beg $b-end))
+               (bind-mi (make-meta-info :data bind
+                                        :pp-res (count-lines-in-string bind)))
+               (exp (buffer-substring-no-properties $e-beg $e-end))
+               (exp-mi (make-meta-info :data exp
+                                       :pp-res (count-lines-in-string exp))))
+          (make-letb-term :beg $beg :end $end
+                          :bind bind-mi
+                          :b-beg $b-beg :b-end $b-end
+                          :exp exp-mi
+                          :e-beg $e-beg :e-end $e-end
+                          :is-var $is-var))
         ))))
 
 (cl-defstruct subexpr
@@ -571,22 +577,37 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
                  prefix id res-str)))
     (if res (make-meta-info :data res :pp-res pp-res) nil))) ;; end of function
 
+(defun count-lines (&optional POS LIMIT)
+  "Returns the number of lines in the buffer, starting at POS"
+  (save-excursion
+    (save-match-data
+      (when POS (goto-char POS))
+      (let (($num-lines 1))
+        ;; Count the lines
+        (while (search-forward "\n" (or LIMIT (point-max)) t)
+          (setq $num-lines (+ $num-lines 1)))
+        $num-lines))))
+
+(defun count-lines-in-string (STR)
+  "Count the number of lines in a string"
+  (save-match-data
+    (let (($num-lines 1))
+      (while (string-match (regexp-quote "\n") STR)
+        (setq $num-lines (+ $num-lines 1)))
+      $num-lines)))
+
 (defun meta-info-post-process ()
-  "Data post-processing function: counts the number of lines. If there is
-more than one line, adds indentation, otherwise leaves the data as it is.
-Besides, greedily replaces some identifiers (Prims.l_True -> True...).
+  "Data post-processing function: counts the number of lines.
+Also greedily replaces some identifiers (Prims.l_True -> True...).
 Returns the number of lines."
-  (goto-char (point-min))
-  (let ((num-lines 1))
-    ;; Count the lines
-    (while (search-forward "\n" (point-max) t)
-      (setq num-lines (+ num-lines 1)))
+  ;; Count the lines
+  (let ((num-lines (count-lines (point-min))))
     ;; Greedy replacements
     (replace-all-in "Prims.l_True" "True")
     (replace-all-in "Prims.l_False" "False")
     ;; Return the number of lines
     num-lines
-    )) ;; end of post-process fun
+    )) ;; end of post-process fun  
 
 (defun extract-string-from-buffer (prefix id &optional no-error LIMIT)
   (log-dbg "extract-string-from-buffer:\n- prefix: %s\n- id: %s" prefix id)
@@ -829,7 +850,8 @@ after the focused term, nil otherwise. comment is an optional comment"
     (when (not after-term) (insert "\n"))))
 
 (defun generate-has-type-assert (indent-str after-term term type-term)
-  "Generates an assertion of the form 'has_type term type'"
+  "Generates an assertion of the form 'has_type term type'. type-term must
+be a term (meta-info), not a type-info."
   (when (and term type-term)
     (let ((several-lines
            (or (> (meta-info-pp-res term) 1)
@@ -868,23 +890,31 @@ after the focused term, nil otherwise. comment is an optional comment"
       (insert ");")
       (when (not after-term) (insert "\n")))))
 
+(defun generate-has-rawest-type-assert (indent-str after-term term type)
+  "Generates an assertion of the form 'has_type term type'. type-term must
+be a type-info, and the type used in the assertion is the type without
+refinement."
+  (when (and term type)
+    (let ((rawest-ty (type-info-rawest-type type)))
+      (generate-has-type-assert indent-str after-term term rawest-ty))))
+
 (defun generate-param-asserts (indent-str param)
   "Generates the appropriate assertions for a parameter (type cast and type
-refinement)"
+refinement), if necessary."
   (let* ((term (param-info-term param))
          (p-ty (param-info-p-ty param))
          (e-ty (param-info-e-ty param)))
     (when (and term p-ty e-ty)
       ;; Insert an assertion for the type cast
       (when (param-info-requires-cast param)
-        (let* ((rawest-e-ty (type-info-rawest-type e-ty)))
-          (generate-has-type-assert indent-str nil term rawest-e-ty)))
+        (generate-has-rawest-type-assert indent-str nil term e-ty))
       ;; Insert an assertion for the refinement
       (when (param-info-requires-refinement param)
         (generate-assert-from-term indent-str nil (type-info-rty-refin e-ty))
         ))))
 
-(defun insert-assert-pre-post--continuation (indent-str p1 p2 cp1 cp2 overlay
+;; TODO HERE
+(defun insert-assert-pre-post--continuation (indent-str p1 p2 PARSE_RESULT overlay
                                              status response)
   "The continuation function called once F* returns. If F* succeeded, extracts
    the information and adds it to the proof"
@@ -911,6 +941,7 @@ refinement)"
     ;; - utilities
     (let* ((indent2-str (concat indent-str "  "))
            (indent3-str (concat indent-str "   "))
+           (bterm (subexpr-bterm PARSE_RESULT))
            ;; TODO: check function names
            insert-update-shift generate-assert generate-param-assert)
       ;; - print
@@ -922,6 +953,12 @@ refinement)"
       ;; -- and insert after the focused term
       (forward-char (- p2 p1))
       ;; TODO: refinement for the returned value
+      (when bterm
+        (let ((ret-type (eterm-info-ret-type info)))
+          (when ret-type
+            (generate-has-rawest-type-assert indent-str t (letb-term-bind bterm)
+                                             ret-type))
+          (generate-assert-from-term indent-str t (type-info-rty-refin ret-type))))
       (generate-assert-from-term indent-str t (eterm-info-post info))
       (generate-assert-from-term indent-str t (eterm-info-goal info))
       )))
@@ -966,17 +1003,17 @@ refinement)"
           (insert "FStar.Tactics.Derived.run_tactic (fun _ \n-> PrintTactics.dprint_eterm")
           ;; Quoted expression
           (insert " (quote (")
-          (insert (letb-term-exp bterm))
+          (insert (meta-info-data (letb-term-exp bterm)))
           (insert "))")
           ;; The optional string
           (if (not (letb-term-is-var bterm))
               (insert " None")
             (insert " (Some (\"")
-            (insert (letb-term-bind bterm))
+            (insert (meta-info-data (letb-term-bind bterm)))
             (insert "\"))"))
           ;; Quoted binding
           (insert " (quote (")
-          (insert (letb-term-bind bterm))
+          (insert (meta-info-data (letb-term-bind bterm)))
           (insert "))")
           ;; Quoted binding for the post
           ;; Finish
@@ -1026,7 +1063,7 @@ refinement)"
         (log-dbg "sending query to F*:[\n%s\n]" $payload)
         (fstar-subp--query (fstar-subp--push-query $beg `full $payload)
                            (apply-partially #'insert-assert-pre-post--continuation
-                                            INDENT_STR P1 P2 $cp1 $cp2 overlay))
+                                            INDENT_STR P1 P2 PARSE_RESULT overlay))
         )
       ) ;; end of restriction
     ) ;; end of outermost let
