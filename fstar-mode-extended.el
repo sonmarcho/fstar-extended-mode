@@ -1,3 +1,7 @@
+;;
+;; Custom commands and bindings for the F* mode
+;;
+
 ;; TODO: many manipulations in the below functions can be simplified by using:
 ;; - save-current-buffer, with-current-buffer (to switch buffer), with-temp-buffer
 
@@ -10,12 +14,16 @@
 ;; Note that for now I don't want to use functions like to-switch-buffer because
 ;; I want to keep a trace of the data processing for debugging
 
-;; TODO: use a global variable for DEBUG
-
-;;
-;; Custom commands and bindings for the F* mode
-;;
 (cl-defstruct pair fst snd)
+(defvar fstar-extended-debug t)
+(defconst fstar-extended-log-buffer "*fstar-extended-debug*")
+(defun log-msg (format-string &rest format-params)
+  "Log a message in the log buffer. TODO: for now just calls message"
+  (apply #'message format-string format-params))
+(defun log-dbg (format-string &rest format-params)
+  "Log a message in the log buffer if fstar-extended-debug is t.
+TODO: for now just calls message"
+  (when fstar-extended-debug (apply #'message format-string format-params)))
 
 (defun replace-in-string (FROM TO STR)
   (replace-regexp-in-string (regexp-quote FROM) TO STR nil 'literal))
@@ -397,7 +405,7 @@ no-error is nil, returns nil otherwise."
         (goto-char (- p (length delimiter)))))
     (if p (point) nil)))
 
-(defun extract-info-from-buffer (prefix id &optional no-error post-process DEBUG LIMIT)
+(defun extract-info-from-buffer (prefix id &optional no-error post-process LIMIT)
   "Extracts meta data from the current buffer and optionally post-processes it.
 Returns a meta-info structure (or nil if we we couldn't find the information)
 Leaves the pointer at the end of the parsed data (just before the next data)."
@@ -436,9 +444,9 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
         ;; Update the end of the region
         (setq p2 (point))))
     ;; Return
-    (when DEBUG
+    (when fstar-extended-debug
       (let ((res-str (if res (concat "[" res "]") "nil")))
-        (message "extract-info-from-messages:\n- prefix: %s\n- id: %s\n- res: %s "
+        (log-dbg "extract-info-from-messages:\n- prefix: %s\n- id: %s\n- res: %s "
                  prefix id res-str)))
     (if res (make-meta-info :data res :pp-res pp-res) nil))) ;; end of function
 
@@ -459,37 +467,37 @@ Returns the number of lines."
     num-lines
     )) ;; end of post-process fun
 
-(defun extract-string-from-buffer (prefix id &optional no-error DEBUG LIMIT)
-  (when DEBUG (message "extract-string-from-buffer:\n- prefix: %s\n- id: %s" prefix id)) 
-  (extract-info-from-buffer prefix id no-error nil DEBUG LIMIT))
+(defun extract-string-from-buffer (prefix id &optional no-error LIMIT)
+  (log-dbg "extract-string-from-buffer:\n- prefix: %s\n- id: %s" prefix id)
+  (extract-info-from-buffer prefix id no-error nil LIMIT))
 
-(defun extract-term-from-buffer (prefix id &optional no-error DEBUG LIMIT)
-  (when DEBUG (message "extract-term-from-buffer:\n- prefix: %s\n- id: %s" prefix id)) 
+(defun extract-term-from-buffer (prefix id &optional no-error LIMIT)
+  (log-dbg "extract-term-from-buffer:\n- prefix: %s\n- id: %s" prefix id)
   (extract-info-from-buffer prefix id no-error
                             (apply-partially 'meta-info-post-process)
-                            DEBUG LIMIT))
+                            LIMIT))
 
-(defun extract-type-info-from-buffer (prefix id &optional no-error DEBUG LIMIT)
+(defun extract-type-info-from-buffer (prefix id &optional no-error LIMIT)
   "Extracts type information from the *Messages* buffer. Returns a ``type-info``
 structure."
-  (when DEBUG (message "extract-type-info-from-buffer:\n- prefix: %s\n- id: %s" prefix id)) 
+  (log-dbg "extract-type-info-from-buffer:\n- prefix: %s\n- id: %s" prefix id)
   (let ((id-ty (concat id ":ty"))
         (id-rty-raw (concat id ":rty_raw"))
         (id-rty-refin (concat id ":rty_refin"))
         extract)
     (defun extract (id)
-            (extract-term-from-buffer prefix id no-error DEBUG LIMIT))
+            (extract-term-from-buffer prefix id no-error LIMIT))
     (let ((ty (extract id-ty))
           (rty-raw (extract id-rty-raw))
           (rty-refin (extract id-rty-refin)))
     (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin))))
 
 (defun extract-param-info-from-buffer (prefix id index
-                                       &optional no-error DEBUG LIMIT)
+                                       &optional no-error LIMIT)
   "Extracts parameter information from the *Messages* buffer. Returns a param-info
 structure."
-  (when DEBUG (message "extract-param-info-from-buffer:\n- prefix: %s\n- id: %s\n- index: %s"
-                       prefix id (number-to-string index))) 
+  (log-dbg "extract-param-info-from-buffer:\n- prefix: %s\n- id: %s\n- index: %s"
+                       prefix id (number-to-string index))
   (let* ((pid (concat id ":param" (number-to-string index)))
          (id-term (concat pid ":term"))
          (id-p-ty (concat pid ":p_ty"))
@@ -497,11 +505,11 @@ structure."
          (id-types-comparison (concat pid ":types_comparison"))
          extract-string extract-term extract-type)
     (defun extract-string (id)
-      (extract-string-from-buffer prefix id no-error DEBUG LIMIT))
+      (extract-string-from-buffer prefix id no-error LIMIT))
     (defun extract-term (id)
-      (extract-term-from-buffer prefix id no-error DEBUG LIMIT))
+      (extract-term-from-buffer prefix id no-error LIMIT))
     (defun extract-type (id)
-      (extract-type-info-from-buffer prefix id no-error DEBUG LIMIT))
+      (extract-type-info-from-buffer prefix id no-error LIMIT))
     (let ((term (extract-term id-term))
           (p-ty (extract-type id-p-ty))
           (e-ty (extract-type id-e-ty))
@@ -509,49 +517,49 @@ structure."
     (make-param-info :term term :p-ty p-ty :e-ty e-ty :types-comparison types-comparison))))
 
 (defun extract-param-info-list-from-buffer (prefix id index num
-                                                 &optional no-error DEBUG LIMIT)
+                                                 &optional no-error LIMIT)
   "Extract a given number of parameters as a list of param-info."
-  (when DEBUG (message "extract-param-info-list-from-buffer:\n\
+  (log-dbg "extract-param-info-list-from-buffer:\n\
 - prefix: %s\n- id: %s\n- index: %s\n- num: "
-                       prefix id (number-to-string index) (number-to-string num)))
+           prefix id (number-to-string index) (number-to-string num))
   (if (>= index num) nil
     (let ((param nil) (params nil))
       ;; Extract (forward) the parameter given by 'index'
       (setq param
-            (extract-param-info-from-buffer prefix id index no-error DEBUG LIMIT))
+            (extract-param-info-from-buffer prefix id index no-error LIMIT))
       ;; Recursive call
       (setq params
             (extract-param-info-list-from-buffer prefix id (+ index 1) num
-                                                 no-error DEBUG LIMIT))
+                                                 no-error LIMIT))
       (cons param params))))
 
 (defun extract-parameters-from-buffer (prefix id
-                                       &optional no-error DEBUG LIMIT)
+                                       &optional no-error LIMIT)
   "Extracts parameters information from the *Messages* buffer. Returns a list of
 param-info"
-  (when DEBUG (message "extract-parameters-from-buffer:\n\
-- prefix: %s\n- id: %s" prefix id))
+  (log-dbg "extract-parameters-from-buffer:\n\
+- prefix: %s\n- id: %s" prefix id)
   ;; Extract the number of messages
   (let ((id-num (concat id ":num")))
-    (setq num-data (extract-string-from-buffer prefix id-num no-error DEBUG LIMIT))
+    (setq num-data (extract-string-from-buffer prefix id-num no-error LIMIT))
     (setq num (string-to-number (meta-info-data num-data)))
-    (when DEBUG (message "> extracting %s parameters" num))
+    (log-dbg "> extracting %s parameters" num)
     ;; Extract the proper number of parameters
     (extract-param-info-list-from-buffer prefix id 0 num no-error
-                                         DEBUG LIMIT)))
+                                         LIMIT)))
 
-(defun extract-eterm-info-from-buffer (prefix id &optional no-error DEBUG LIMIT)
+(defun extract-eterm-info-from-buffer (prefix id &optional no-error LIMIT)
   "Extracts effectful term information from the current buffer and returns a
 eterm-info structure."
-  (when DEBUG (message "extract-eterm-info-from-buffer:\n\
-- prefix: %s\n- id: %s" prefix id))
+  (log-dbg "extract-eterm-info-from-buffer:\n\
+- prefix: %s\n- id: %s" prefix id)
   (let (extract-type extrac-term extract-parameters)
     (defun extract-type (id)
-      (extract-type-info-from-buffer prefix id no-error DEBUG LIMIT))
+      (extract-type-info-from-buffer prefix id no-error LIMIT))
     (defun extract-term (id)
-      (extract-term-from-buffer prefix id no-error DEBUG LIMIT))
+      (extract-term-from-buffer prefix id no-error LIMIT))
     (defun extract-parameters (id)
-      (extract-parameters-from-buffer prefix id no-error DEBUG LIMIT))
+      (extract-parameters-from-buffer prefix id no-error LIMIT))
     (let ((etype (extract-term (concat id ":etype")))
           (pre (extract-term (concat id ":pre")))
           (post (extract-term (concat id ":post")))
@@ -564,7 +572,7 @@ eterm-info structure."
 
 (defun copy-data-from-messages-to-buffer (beg-delimiter end-delimiter
                                           include-delimiters dest-buffer
-                                          &optional no-error clear-dest-buffer DEBUG)
+                                          &optional no-error clear-dest-buffer)
     "When extracting information from the *Messages* buffer, we start by locating
 it by finding its begin and end delimiters, then copy it to another buffer where
 we can parse/modify it. The reasons are that it is easier to modify the data in
@@ -636,13 +644,13 @@ buffer."
       (+ (point) new-end)))
 
 (defun extract-eterm-info-from-messages (prefix id &optional process-buffer no-error
-                                         clear-process-buffer DEBUG)
+                                         clear-process-buffer)
   "Extracts effectful term information from the *Messages* buffer. Returns an
 eterm-info structure. process-buffer is the buffer to use to copy and process
 the raw data (*fstar-data1* by default)."
   (setq-default process-buffer fstar-temp-buffer2)
-  (when DEBUG (message "extract-eterm-info-from-messages:\n\
-- prefix: %s\n- id: %s\n- process buffer: '%s'\n" prefix id process-buffer))
+  (log-dbg "extract-eterm-info-from-messages:\n\
+- prefix: %s\n- id: %s\n- process buffer: '%s'\n" prefix id process-buffer)
   (let ((prev-buffer (current-buffer))
         (region nil)
         (result nil)
@@ -651,8 +659,7 @@ the raw data (*fstar-data1* by default)."
     ;; Copy the data
     (setq region (copy-data-from-messages-to-buffer beg-delimiter end-delimiter
                                                     t process-buffer no-error
-                                                    clear-process-buffer
-                                                    DEBUG))
+                                                    clear-process-buffer))
     (if (not region)
         (progn
           (when (not no-error)
@@ -669,7 +676,7 @@ the raw data (*fstar-data1* by default)."
         ;; Clean
         (clean-data-from-messages)
         ;; Extract the eterm-info
-        (setq result (extract-eterm-info-from-buffer prefix id no-error DEBUG)))
+        (setq result (extract-eterm-info-from-buffer prefix id no-error)))
       ;; Switch back to the original buffer
       (switch-to-buffer prev-buffer)
       ;; Return
@@ -750,7 +757,7 @@ refinement)"
         (generate-assert-from-term indent-str nil (type-info-rty-refin e-ty))
         ))))
 
-(defun insert-assert-pre-post--continuation (indent-str p1 p2 cp1 cp2 overlay DEBUG
+(defun insert-assert-pre-post--continuation (indent-str p1 p2 cp1 cp2 overlay
                                              status response)
   "The continuation function called once F* returns. If F* succeeded, extracts
    the information and adds it to the proof"
@@ -760,7 +767,7 @@ refinement)"
     ;; Display the message and exit if error
     (if (eq status 'success)
         (progn
-          (message "F* succeeded")
+          (log-dbg "F* succeeded")
           ;; The sent query "counts for nothing" so we need to pop it to reset
           ;; F* to its previous state
           (fstar-subp--pop))
@@ -772,7 +779,7 @@ refinement)"
     ;; Extract the data. Note that we add two spaces to the indentation, because
     ;; if we need to indent the data, it is because it will be in an assertion.
     (setq info (extract-eterm-info-from-messages "eterm_info" ""
-                                                 fstar-temp-buffer2 t t DEBUG))
+                                                 fstar-temp-buffer2 t t))
     ;; Print the information
     ;; - utilities
     (let* ((indent2-str (concat indent-str "  "))
@@ -792,7 +799,7 @@ refinement)"
       )))
 
 (defun insert-assert-pre-post--process
-    ($indent-str $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol &optional $debug)
+    ($indent-str $p1 $p2 $cp1 $cp2 $is-let-in $has-semicol)
   (let ($beg $cbuffer $shift $lbeg $lp1 $lp2 $lcp1 $lcp2)
     ;; Copy the relevant content of the buffer for modification
     (setq $beg (fstar-subp--untracked-beginning-position))
@@ -860,23 +867,22 @@ refinement)"
         (overlay-put overlay 'fstar-subp--lax nil)
         (fstar-subp-set-status overlay 'busy)
         ;; Query F*
-        (when DEBUG (message "sending query to F*:[\n%s\n]" $payload))
+        (log-dbg "sending query to F*:[\n%s\n]" $payload)
         (fstar-subp--query (fstar-subp--push-query $beg `full $payload)
                            (apply-partially #'insert-assert-pre-post--continuation
-                                            $indent-str $p1 $p2 $cp1 $cp2 overlay
-                                            $debug))
+                                            $indent-str $p1 $p2 $cp1 $cp2 overlay))
         )
       ) ;; end of restriction
     ) ;; end of outermost let
   ) ;; end of function
 
-(defun insert-assert-pre-post (&optional DEBUG)
+(defun insert-assert-pre-post ()
   (interactive)
   "Inserts assertions with the instanciated pre and post-conditions around a
 function call.
 TODO: take into account if/match branches
 TODO: add assertions for the parameters' refinements"
-  (when DEBUG (message "insert-assert-pre-post"))
+  (log-dbg "insert-assert-pre-post")
   (let ($next-point $beg $p $delimiters $indent $indent-str
         $p1 $p2 $parse-result $cp1 $cp2
         $is-let-in $has-semicol $current-buffer)
@@ -940,10 +946,9 @@ TODO: add assertions for the parameters' refinements"
             $is-let-in (nth 2 $parse-result)
             $has-semicol (nth 3 $parse-result))
       ;; Debug information
-      (when DEBUG
-        (when $is-let-in (message "Parsed expression: 'let _ = _ in'"))
-        (when $has-semicol (message "Parsed expression: '_;'"))
-        (when (and (not $is-let-in) (not $has-semicol)) (message "Parsed expression: '_'")))
+      (when $is-let-in (log-dbg "Parsed expression: 'let _ = _ in'"))
+      (when $has-semicol (log-dbg "Parsed expression: '_;'"))
+      (when (and (not $is-let-in) (not $has-semicol)) (log-dbg "Parsed expression: '_'"))
       ;; Compute the indentation: if the area between the beginning of the focused
       ;; term and the beginning of the line is made of spaces and comments, we copy
       ;; it (allows to have a formatting consistent with ghosted code: "(**)",
@@ -955,7 +960,7 @@ TODO: add assertions for the parameters' refinements"
           (setq $indent-str (make-string $indent ? ))))
       ;; Process the term
       (insert-assert-pre-post--process $indent-str $p1 $p2 $cp1 $cp2 $is-let-in
-                                       $has-semicol DEBUG))))
+                                       $has-semicol))))
 
 ;; Actually already C-M-o
 (defun split-line-indent-is-cursor ()
@@ -1001,6 +1006,6 @@ TODO: add assertions for the parameters' refinements"
 
 (defun t1 ()
   (interactive)
-  (insert-assert-pre-post t))
+  (insert-assert-pre-post))
 
 
