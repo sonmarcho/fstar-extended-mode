@@ -594,7 +594,7 @@ let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) : nat =
   let w = test_fun4 x in
 //  run_tactic (fun _ -> dprint_eterm (quote (test_fun4 x)) (Some "w") (quote w) [(`())]);
 //  run_tactic (fun _ -> dprint_eterm (quote (test_fun6 x (2 * x) (3 * x))) (Some "a") (quote y) [(`())]);
-  run_tactic (fun _ -> dprint_eterm (quote (test_fun6 x y z)) (Some "a") (quote y) [(`())]);
+//  run_tactic (fun _ -> dprint_eterm (quote (test_fun6 x y z)) (Some "a") (quote y) [(`())]);
   admit()
 
 (*

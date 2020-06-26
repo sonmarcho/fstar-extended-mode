@@ -1,3 +1,12 @@
+;; TODO: many manipulations in the below functions can be simplified by using:
+;; - save-current-buffer, with-current-buffer (to switch buffer), with-temp-buffer
+
+;; I encountered some problems with undo (for instance, insert-assert-pre-post
+;; works properly when executed as a command, but undo performs weird things
+;; if it is linked to a key binding). Some very good explanations are provided
+;; in the link below:
+;; https://stackoverflow.com/questions/15097012/how-to-prevent-emacs-from-setting-an-undo-boundary
+
 ;;
 ;; Custom commands and bindings for the F* mode
 ;;
@@ -299,8 +308,8 @@ characters (if NO_NEWLINE is not nil) and comments."
       (if NO_NEWLINE (not (search-forward "\n" END t)) t))))
 
 (defconst messages-buffer "*Messages*")
-(defconst fstar-edebug-buffer "*fstar-extended-debug*")
-(defconst fstar-process-buffer1 "*fstar-process-buffer*")
+(defconst fstar-temp-buffer1 "*fstar-temp-buffer1*")
+(defconst fstar-temp-buffer2 "*fstar-temp-buffer2*")
 (defconst fstar-message-prefix "[F*] ")
 (defconst fstar-tactic-message-prefix "[F*] TAC>> ")
 
@@ -328,13 +337,11 @@ characters (if NO_NEWLINE is not nil) and comments."
       (goto-char (point-min))      
       (setq $is-let-in
             (re-search-forward "\\`let[[:ascii:][:nonascii:]]+in\\'" (point-max) t 1))
-      (if $is-let-in (message "Is 'let _ = _ in'") (message "Not is 'let _ = _ in'"))
       ;; Check if the narrowed region matches: '_ ;'
       (goto-char (point-min))
       (setq $has-semicol
             ;; We could just check if the character before last is ';'
             (re-search-forward "\\`[[:ascii:][:nonascii:]]+;\\'" (point-max) t 1))
-      (if $has-semicol (message "Is '_ ;'") (message "Not is '_ ;'"))
       ;; Otherwise: it is a return value (end of function)
       ) ;; end of regexp matching
     ;; Return
@@ -515,14 +522,15 @@ structure."
 
 (defun extract-parameters-from-buffer (prefix id
                                        &optional no-error DEBUG LIMIT)
-  (when DEBUG (message "extract-parameters-from-buffer:\n\
-- prefix: %s\n- id: %s" prefix id))
   "Extracts parameters information from the *Messages* buffer. Returns a list of
 param-info"
+  (when DEBUG (message "extract-parameters-from-buffer:\n\
+- prefix: %s\n- id: %s" prefix id))
   ;; Extract the number of messages
   (let ((id-num (concat id ":num")))
     (setq num-data (extract-string-from-buffer prefix id-num no-error DEBUG LIMIT))
     (setq num (string-to-number (meta-info-data num-data)))
+    (when DEBUG (message "> extracting %s parameters" num))
     ;; Extract the proper number of parameters
     (extract-param-info-list-from-buffer prefix id 0 num no-error
                                          DEBUG LIMIT)))
@@ -551,7 +559,7 @@ eterm-info structure."
 
 (defun copy-data-from-messages-to-buffer (beg-delimiter end-delimiter
                                           include-delimiters dest-buffer
-                                          &optional no-error clear-dest-buffer)
+                                          &optional no-error clear-dest-buffer DEBUG)
     "When extracting information from the *Messages* buffer, we start by locating
 it by finding its begin and end delimiters, then copy it to another buffer where
 we can parse/modify it. The reasons are that it is easier to modify the data in
@@ -562,6 +570,10 @@ like narrow-to-region. Moreover, it makes debugging easier. The function returns
 the pair of point coordinates delimiting the copied data in the destination
 buffer.
 include-delimiters controls whether to copy the delimiters or not"
+    (when DEBUG (message (concat "copy-data-from-messages-to-buffer "
+                                 "(beg-delimiter: '%s') (end-delimiter: '%s') "
+                                 "(include-delimiters: '%s') (dest-buffer: '%s')")
+                         beg-delimiter end-delimiter include-delimiters dest-buffer))
     ;; This command MUST NOT send any message to the *Messages* buffer
     (let ((prev-buffer (current-buffer))
           (backward t)
@@ -627,9 +639,9 @@ buffer."
   "Extracts effectful term information from the *Messages* buffer. Returns an
 eterm-info structure. process-buffer is the buffer to use to copy and process
 the raw data (*fstar-data1* by default)."
-  (setq-default process-buffer fstar-process-buffer1)
+  (setq-default process-buffer fstar-temp-buffer2)
   (when DEBUG (message "extract-eterm-info-from-messages:\n\
-- prefix: %s\n- id: %s\n- process buffer: %s\n" prefix id process-buffer))
+- prefix: %s\n- id: %s\n- process buffer: '%s'\n" prefix id process-buffer))
   (let ((prev-buffer (current-buffer))
         (region nil)
         (result nil)
@@ -638,7 +650,8 @@ the raw data (*fstar-data1* by default)."
     ;; Copy the data
     (setq region (copy-data-from-messages-to-buffer beg-delimiter end-delimiter
                                                     t process-buffer no-error
-                                                    clear-process-buffer))
+                                                    clear-process-buffer
+                                                    DEBUG))
     (if (not region)
         (progn
           (when (not no-error)
@@ -758,7 +771,7 @@ refinement)"
     ;; Extract the data. Note that we add two spaces to the indentation, because
     ;; if we need to indent the data, it is because it will be in an assertion.
     (setq info (extract-eterm-info-from-messages "eterm_info" ""
-                                                 fstar-process-buffer1 t t DEBUG))
+                                                 fstar-temp-buffer2 t t DEBUG))
     ;; Print the information
     ;; - utilities
     (let* ((indent2-str (concat indent-str "  "))
@@ -785,7 +798,7 @@ refinement)"
     ;; - copy and switch buffer
     (setq $cbuffer (current-buffer))
     (kill-ring-save $beg $p2)
-    (switch-to-buffer fstar-edebug-buffer)
+    (switch-to-buffer fstar-temp-buffer1)
     ;; - change the reference position
     (goto-char (point-max))
     (insert "\n\n- Starting new processing:\n\n")
@@ -861,6 +874,7 @@ refinement)"
 function call.
 TODO: take into account if/match branches
 TODO: add assertions for the parameters' refinements"
+  (when DEBUG (message "insert-assert-pre-post"))
   (let ($next-point $beg $p $delimiters $indent $indent-str
         $p1 $p2 $parse-result $cp1 $cp2
         $is-let-in $has-semicol $current-buffer)
@@ -923,6 +937,11 @@ TODO: add assertions for the parameters' refinements"
             $cp2 (nth 1 $parse-result)
             $is-let-in (nth 2 $parse-result)
             $has-semicol (nth 3 $parse-result))
+      ;; Debug information
+      (when DEBUG
+        (when $is-let-in (message "Parsed expression: 'let _ = _ in'"))
+        (when $has-semicol (message "Parsed expression: '_;'"))
+        (when (and (not $is-let-in) (not $has-semicol)) (message "Parsed expression: '_'")))
       ;; Compute the indentation: if the area between the beginning of the focused
       ;; term and the beginning of the line is made of spaces and comments, we copy
       ;; it (allows to have a formatting consistent with ghosted code: "(**)",
@@ -981,3 +1000,5 @@ TODO: add assertions for the parameters' refinements"
 (defun t1 ()
   (interactive)
   (insert-assert-pre-post t))
+
+
