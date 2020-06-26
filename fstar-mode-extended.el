@@ -5,6 +5,10 @@
 ;; TODO: many manipulations in the below functions can be simplified by using:
 ;; - save-current-buffer, with-current-buffer (to switch buffer), with-temp-buffer
 
+;; TODO: make the naming conventions coherent:
+;; - capital letters for function parameters
+;; - use $ for local variables
+
 ;; I encountered some problems with undo (for instance, insert-assert-pre-post
 ;; works properly when executed as a command, but undo performs weird things
 ;; if it is linked to a key binding). Some very good explanations are provided
@@ -24,6 +28,8 @@
   "Log a message in the log buffer if fstar-extended-debug is t.
 TODO: for now just calls message"
   (when fstar-extended-debug (apply #'message format-string format-params)))
+
+(define-error 'fstar-meta-parsing "Error while parsing F*")
 
 (defun replace-in-string (FROM TO STR)
   (replace-regexp-in-string (regexp-quote FROM) TO STR nil 'literal))
@@ -252,8 +258,6 @@ Takes optional region delimiters as arguments."
         (insert-newline-term "admit();")
         (insert-newline-term "admit()"))))
 
-(define-error 'fstar-meta-parsing "Error while parsing F*")
-
 ;; From now onwards we use functions from the F* mode
 (use-package fstar-mode
   :demand)
@@ -320,21 +324,116 @@ characters (if NO_NEWLINE is not nil) and comments."
       (goto-char BEG)
       (if NO_NEWLINE (not (search-forward "\n" END t)) t))))
 
-(defconst messages-buffer "*Messages*")
-(defconst fstar-temp-buffer1 " *fstar-temp-buffer1*")
-(defconst fstar-temp-buffer2 " *fstar-temp-buffer2*")
 (defconst fstar-message-prefix "[F*] ")
 (defconst fstar-tactic-message-prefix "[F*] TAC>> ")
 
+(defconst messages-buffer "*Messages*")
+;; Small trick to solve the undo problems: we use temporary buffer names which
+;; start with a ' ' so that emacs deactivates undo by default in those buffers,
+;; preventing the insertion of problematic undo-boundary.
+;; Note that for now we switch buffers "by hand" rather than using the emacs
+;; macros like with-current-bufferbecause it leaves a trace which helps debugging.
+(defconst fstar-temp-buffer1 " *fstar-temp-buffer1*")
+(defconst fstar-temp-buffer2 " *fstar-temp-buffer2*")
+
 (cl-defstruct letb-term
-  "A let binded term"
-  term
+  "A parsed let binded term of the form: 'let b = exp in'"
+  beg end ;; delimiters for the whole expression
+  bind ;; the binding
+  b-beg b-end ;; delimiters
+  exp ;; the expression
+  e-beg e-end ;; delimiters
   is-var ;; nil if tuple
   )
 
-(defun parse-letb-term (BEG END)
-  "Parses the let binded term in a 'let _ = _ in' expression"
-  nil)
+(defun consume-string-forward (STR &optional NO_ERROR)
+  "If the pointer looks at string STR, moves the pointer after it. Otherwise,
+returns nil or raises an error depending on NO_ERROR."
+  (if (looking-at-p (regexp-quote STR))
+      (progn (forward-char (length STR)) t)
+    (if NO_ERROR nil (error (format "consume-string-forward %s failed" STR)))))      
+
+(defun search-forward-not-comment (STR &optional LIMIT)
+    "Looks for the first occurrence of STR not inside a comment, returns t and
+moves the pointer immediately after if finds one, doesn't move the pointer
+and returns nil otherwise."
+    (let (($p (point)))
+      (fstar--search-predicated-forward
+       (lambda () (not (fstar-in-comment-p))) STR LIMIT)
+      (not (= $p (point)))))
+
+(defun region-is-tuple (BEG END)
+  "Returns t if the text region delimited by BEG and END is a tuple (simply
+checks if there is a ',' inside"
+  (save-excursion
+    (save-restriction
+      (goto-char BEG)
+      (search-forward-not-comment "," END))))
+
+(defun parse-letb-term (BEG END &optional NO_ERROR)
+  "Parses the let binded term in a 'let x = y in' expression. Note that the region
+delimited by BEG and END should start exactly with 'let' and end with 'in', put
+aside potential whitespaces and comments."
+  ;; We do things simple: we just look forward for the next '=' (this character
+  ;; shouldn't appear in the 'x' term).
+  ;; Then, in order to check whether the term is a variable or not, we just
+  ;; look for the presence of ',' in it (in which case it is a tuple).
+  (save-excursion
+    (let ($beg $end $eq-end $b $b-beg $b-end $exp $e-beg $e-end $is-var $success $error-msg)
+      (setq $success nil)
+      ;; Restraigning
+      (goto-char BEG)
+      (skip-comments-and-spaces t END)
+      (setq $beg (point))
+      (goto-char END)
+      (skip-comments-and-spaces nil $beg)
+      (setq $end (point))
+      (save-restriction
+        (narrow-to-region $beg $end)
+        (goto-char (point-min))
+        ;; Ignore the 'let'
+        (if (not (consume-string-forward "let" NO_ERROR))
+            (when (not NO_ERROR) (setq $error-msg "could not find the 'let'"))
+          ;; Success
+          (skip-comments-and-spaces t (point-max))
+          ;; Beginning of b
+          (setq $b-beg (point))
+          ;; Look for '='
+          (if (not (search-forward-not-comment "="))
+              (when (not NO_ERROR) (setq $error-msg "could not find the '='"))
+            (setq $eq-end (point))
+            ;; End of b
+            (backward-char)
+            (skip-comments-and-spaces nil $b-beg)
+            (setq $b-end (point))
+            ;; Beginning of exp
+            (goto-char $eq-end)
+            (skip-comments-and-spaces t (point-max))
+            (setq $e-beg (point))
+            ;; End of exp
+            (goto-char (point-max))
+            (backward-char (length "in")) ;; TODO: no check
+            (skip-comments-and-spaces nil $e-beg)
+            (setq $e-end (point))
+            (setq $success t)
+            ;; Check if b is a tuple
+            (setq $is-var (not (region-is-tuple $b-beg $b-end)))
+            )))
+      ;; Process errors and return
+      (if (not $success)
+          ;; Failure
+          (if NO_ERROR nil nil)
+            (error (format "parse-letb-term on '%s' failed: %s"
+                           (buffer-substring-no-properties BEG END)
+                           $error-msg)))
+        ;; Success
+        (make-letb-term :beg $beg :end $end
+                        :bind (buffer-substring-no-properties $b-beg $b-end)
+                        :b-beg $b-beg :b-end $b-end
+                        :exp (buffer-substring-no-properties $e-beg $e-end)
+                        :e-beg $e-beg :e-end $e-end
+                        :is-var $is-var)
+        ))))
 
 (cl-defstruct subexpr
   "An expression of the form 'let _ = _ in', '_;' or '_' (return value)"
@@ -370,7 +469,7 @@ value) in the region delimited by BEG and END. Returns a subexpr."
       (goto-char (point-min))      
       (setq $is-let-in
             (re-search-forward "\\`let[[:ascii:][:nonascii:]]+in\\'" (point-max) t 1))
-      (setq $bterm (parse-letb-term $beg $end))
+      (when $is-let-in (setq $bterm (parse-letb-term $beg $end)))
       ;; Check if the narrowed region matches: '_ ;'
       (goto-char (point-min))
       (setq $has-semicol
@@ -852,7 +951,9 @@ refinement)"
       ;; track of the positions modifications: we will send the whole buffer to F*.
       (cond
        ;; 'let _ = _ in'
-       ($is-let-in (error "Not supported yet: let _ = _ in"))
+       ($is-let-in
+        (error "Not supported yet: let _ = _ in")
+        ) ;; end of case 'let _ = _ in'
        ;; '_;' or '_'
        ($has-semicol
         (let ($prefix $prefix-length $suffix $suffix-length)
@@ -872,7 +973,7 @@ refinement)"
                  ;; Insert a ';' if there isn't
                  (unless $has-semicol (insert ";"))
                  (newline) (indent-according-to-mode) (insert "admit()"))
-          )) ;; end of second case
+          )) ;; end of '_' case
        (t (error "Not supported yet: _"))
        ) ;; end of cond
       ;; TODO: the following is not necessary anymore, but I keep it in comments
@@ -1034,3 +1135,37 @@ TODO: add assertions for the parameters' refinements"
   (insert-assert-pre-post))
 
 
+
+(defun fstar-subp-next-block-end ()
+  "Go to end of current block."
+  (interactive)
+  (when (save-excursion
+          ;; Find appropriate starting point
+          (goto-char (point-at-eol))
+          ;; Jump to next block separator
+          (fstar--re-search-predicated-forward
+           #'fstar-subp--block-end-p fstar-subp-block-sep))
+    (goto-char (match-beginning 1))))
+
+(defun fstar--search-predicated-forward (test-fn needle &optional bound)
+  "Search forward for matches of NEEDLE before BOUND satisfying TEST-FN."
+  (when (fstar--search-predicated #'search-forward test-fn
+                             #'fstar--adjust-point-forward needle bound)
+    (goto-char (match-end 0))))
+
+(defun fstar--re-search-predicated-forward (test-fn re &optional bound)
+  "Search forward for matches of RE before BOUND satisfying TEST-FN."
+  (when (fstar--search-predicated #'re-search-forward test-fn
+                             #'fstar--adjust-point-forward re bound)
+    (goto-char (match-end 0))))
+
+
+(defun fstar-subp--block-start-p ()
+  "Check whether the current match is a valid block start."
+  (and (not (= (match-beginning 1) (point-max)))
+       (fstar-subp--likely-block-start-p)))
+
+(defun fstar-subp--block-end-p ()
+  "Check whether the current match is a valid block end."
+  (and (not (= (match-beginning 0) (point-min)))
+       (fstar-subp--likely-block-start-p)))

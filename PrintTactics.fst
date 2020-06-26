@@ -580,6 +580,9 @@ let _debug_print_var (name : string) (t : term) : Tac unit =
 
 let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) : nat =
   test_lemma1 x; (**)
+  run_tactic (fun _ -> print (term_to_string (quote ((**) x))));
+  let a = 3 in
+  admit()
 //  FStar.Tactics.Derived.run_tactic (fun _ -> PrintTactics.dprint_eterm (quote (test_lemma1 x)) None (`()) [(`())]);
   (**) test_lemma1 x; (**)
   test_lemma1 (let y = x in y); (**)
@@ -616,3 +619,5 @@ let test2 (x : nat{x >= 4}) : nat =
   test_lemma1 y;
   test_lemma3 x;
   admit()
+
+  x = 3;
