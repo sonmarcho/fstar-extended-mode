@@ -422,7 +422,7 @@ aside potential whitespaces and comments."
       ;; Process errors and return
       (if (not $success)
           ;; Failure
-          (if NO_ERROR nil nil)
+          (if NO_ERROR nil
             (error (format "parse-letb-term on '%s' failed: %s"
                            (buffer-substring-no-properties BEG END)
                            $error-msg)))
@@ -952,14 +952,35 @@ refinement)"
       (cond
        ;; 'let _ = _ in'
        ($is-let-in
-        (error "Not supported yet: let _ = _ in")
-        ) ;; end of case 'let _ = _ in'
-       ;; '_;' or '_'
+        (let ((bterm (subexpr-bterm PARSE_RESULT)))
+          ;; Insert the tactic after the let binding, and wrap the bound variable
+          (goto-char $lcp2)
+          (insert "\n")
+          (insert "FStar.Tactics.Derived.run_tactic (fun _ \n-> PrintTactics.dprint_eterm")
+          ;; Quoted expression
+          (insert " (quote (")
+          (insert (letb-term-exp bterm))
+          (insert "))")
+          ;; The optional string
+          (if (not (letb-term-is-var bterm))
+              (insert " None")
+            (insert " (Some (\"")
+            (insert (letb-term-bind bterm))
+            (insert "\"))"))
+          ;; Quoted binding
+          (insert " (quote (")
+          (insert (letb-term-bind bterm))
+          (insert "))")
+          ;; Quoted binding for the post
+          ;; Finish
+          (insert ");\nadmit()")
+          )) ;; end of case 'let _ = _ in'
+       ;; '_;' or '_' (return value)
        ($has-semicol
         (let ($prefix $prefix-length $suffix $suffix-length)
           ;; Wrap the term in a tactic to generate the debugging information
           (setq $prefix "FStar.Tactics.Derived.run_tactic (fun _ -> PrintTactics.dprint_eterm (quote (")
-          (setq $suffix ")) None (`()) [`()])")
+          (setq $suffix ")) None (`()))")
           (setq $prefix-length (length $prefix) $suffix-length (length $suffix))
           (goto-char $lcp1)
           (insert $prefix)

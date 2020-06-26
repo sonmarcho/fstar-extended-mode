@@ -344,37 +344,50 @@ let instantiate_opt_type_info_refin t info =
   | Some info' -> Some (instantiate_type_info_refin t info')
   | _ -> None
 
-val instantiate_refinements : env -> eterm_info -> option string -> term -> list term ->
+let get_rawest_type (ty:type_info) : Tac typ =
+  match ty.rty with
+  | Some rty -> rty.raw
+  | _ -> ty.ty
+
+let get_rawest_type_from_opt_type_info (ty : option type_info) : Tac (option typ) =
+  match ty with
+  | Some ty' -> Some (get_rawest_type ty')
+  | _ -> None
+
+val instantiate_refinements : env -> eterm_info -> option string -> term ->
   Tac (env & eterm_info)
 
-let instantiate_refinements e info ret_arg_name ret_arg post_args =
+#push-options "--ifuel 1"
+let instantiate_refinements e info ret_arg_name ret_arg =
+  (* Create a proper ``ret_arg`` term (in a let binding, the binding variable
+   * often gets replaced by the bound expression: we don't want that *)
+  let (ret_arg' : term), (e' : env) =
+    match get_rawest_type_from_opt_type_info info.ret_type, ret_arg_name with
+    | Some ty, Some name ->
+      let fbv : bv = fresh_bv_named name ty in
+      let b : binder = pack_binder fbv Q_Explicit in
+      pack (Tv_Var fbv), push_binder e b
+    | _ -> ret_arg, e
+  in
   (* Instanciate the post-condition and simplify the information *)
-  let ipost =
+  let ipost : option term =
     match info.post with
-    | Some post -> Some (mk_e_app post post_args)
+    | Some post -> Some (mk_e_app post [ret_arg'])
     | None -> None
   in
   (* Retrieve the return type refinement and instanciate it*)
-  let (iret_type : option type_info), (e' : env) =
+  let iret_type : option type_info =
     match info.ret_type with
     | Some ret_type_info ->
       begin match ret_type_info.rty with
       | Some ret_type_rinfo ->
-        let ret_arg, e' =
-          match ret_arg_name with
-          | Some name ->
-            let fbv : bv = fresh_bv_named name ret_type_rinfo.raw in
-            let b : binder = pack_binder fbv Q_Explicit in
-            pack (Tv_Var fbv), push_binder e b
-          | None -> ret_arg, e
-        in
-        let refin' = mk_e_app ret_type_rinfo.refin [ret_arg] in
+        let refin' = mk_e_app ret_type_rinfo.refin [ret_arg'] in
         let ret_type_rinfo : rtype_info = { ret_type_rinfo with refin = refin' } in
         let ret_type_info' = { ret_type_info with rty = Some ret_type_rinfo } in
-        Some ret_type_info', e'
-      | None -> None, e
+        Some ret_type_info'
+      | None -> None
       end
-    | _ -> None, e
+    | _ -> None
   in
   (* Instantiate the refinements in the parameters *)
   let inst_param (p:param_info) : Tac param_info =
@@ -389,6 +402,7 @@ let instantiate_refinements e info ret_arg_name ret_arg post_args =
     post = ipost;
     ret_type = iret_type;
     parameters = iparameters })
+#pop-options
 
 (*** Step 3 *)
 /// Simplify the information:
@@ -443,11 +457,6 @@ let simplify_eterm_info e steps info =
     goal = simpl_prop info.goal;
   }
 #pop-options
-
-let get_rawest_type (ty:type_info) : Tac typ =
-  match ty.rty with
-  | Some rty -> rty.raw
-  | _ -> ty.ty
 
 let has_refinement (ty:type_info) : Tac bool =
   Some? ty.rty
@@ -525,12 +534,12 @@ let printout_parameters (prefix:string) (parameters:list param_info) : Tac unit 
 
 /// Print the effectful information about a term in a format convenient to
 /// use for the emacs commands
-val print_eterm_info : env -> eterm_info -> option string -> term -> list term -> Tac unit
+val print_eterm_info : env -> eterm_info -> option string -> term -> Tac unit
 
 (* TODO: ret_arg: the introduced variables get replaced... *)
 (* TODO: correct naming for variables derived from tuples *)
 #push-options "--ifuel 1"
-let print_eterm_info e info ret_arg_name ret_arg post_args =
+let print_eterm_info e info ret_arg_name ret_arg =
     print ("ret_arg: " ^ term_to_string ret_arg);
     let sinfo = simplify_eterm_info e [primops; simplify] info in
     (* Print the information *)
@@ -545,10 +554,10 @@ let print_eterm_info e info ret_arg_name ret_arg post_args =
 #pop-options
 
 /// The tactic to be called by the emacs commands
-val dprint_eterm : term -> option string -> term -> list term -> Tac unit
+val dprint_eterm : term -> option string -> term -> Tac unit
 
 #push-options "--ifuel 1"
-let dprint_eterm t ret_arg_name ret_arg post_args =
+let dprint_eterm t ret_arg_name ret_arg =
   let e = top_env () in
   match get_eterm_info e t with
   | None ->
@@ -557,8 +566,8 @@ let dprint_eterm t ret_arg_name ret_arg post_args =
            (term_to_string t) ^ "'")
   | Some info ->
     let e = top_env () in
-    let e', info' = instantiate_refinements e info ret_arg_name ret_arg post_args in
-    print_eterm_info e' info' ret_arg_name ret_arg post_args
+    let e', info' = instantiate_refinements e info ret_arg_name ret_arg in
+    print_eterm_info e' info' ret_arg_name ret_arg
 #pop-options
 
 let _debug_print_var (name : string) (t : term) : Tac unit =
@@ -582,7 +591,6 @@ let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) : nat =
   test_lemma1 x; (**)
   run_tactic (fun _ -> print (term_to_string (quote ((**) x))));
   let a = 3 in
-  admit()
 //  FStar.Tactics.Derived.run_tactic (fun _ -> PrintTactics.dprint_eterm (quote (test_lemma1 x)) None (`()) [(`())]);
   (**) test_lemma1 x; (**)
   test_lemma1 (let y = x in y); (**)
