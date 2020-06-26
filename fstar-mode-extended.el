@@ -831,7 +831,7 @@ refinement)"
        ($has-semicol
         (let ($prefix $prefix-length $suffix $suffix-length)
           ;; Wrap the term in a tactic to generate the debugging information
-          (setq $prefix "run_tactic (fun _ -> dprint_eterm (quote (")
+          (setq $prefix "FStar.Tactics.Derived.run_tactic (fun _ -> PrintTactics.dprint_eterm (quote (")
           (setq $suffix ")) None (`()) [`()])")
           (setq $prefix-length (length $prefix) $suffix-length (length $suffix))
           (goto-char $lcp1)
