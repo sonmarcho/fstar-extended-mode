@@ -828,6 +828,46 @@ after the focused term, nil otherwise. comment is an optional comment"
     ;; If we are before the studied term: insert a newline
     (when (not after-term) (insert "\n"))))
 
+(defun generate-has-type-assert (indent-str after-term term type-term)
+  "Generates an assertion of the form 'has_type term type'"
+  (when (and term type-term)
+    (let ((several-lines
+           (or (> (meta-info-pp-res term) 1)
+               (> (meta-info-pp-res type-term) 1))))
+      (when after-term (insert "\n"))
+      (insert indent-str)
+      (insert "assert(has_type")
+      ;; Insert the term
+      (if several-lines
+          ;; Several lines
+          (progn
+            (insert "\n")
+            (insert indent-str)
+            (insert "  (")
+            (insert-with-indent (concat indent-str "   ") (meta-info-data term))
+            (insert ")"))
+        ;; One line
+        (insert " (")
+        (insert (meta-info-data term))
+        (insert ") "))
+      ;; Insert the type
+      (if several-lines
+          ;; Several lines
+          (progn
+            (insert "\n")
+            (insert indent-str)
+            (insert "  (")
+            (insert-with-indent (concat indent-str "   ") (meta-info-data type-term))
+            (insert ")"))
+        ;; One line
+        (insert "(")
+        (insert (meta-info-data type-term))
+        (insert ")"))
+      ;; Finish
+      (when several-lines (insert "\n") (insert indent-str))
+      (insert ");")
+      (when (not after-term) (insert "\n")))))
+
 (defun generate-param-asserts (indent-str param)
   "Generates the appropriate assertions for a parameter (type cast and type
 refinement)"
@@ -837,42 +877,8 @@ refinement)"
     (when (and term p-ty e-ty)
       ;; Insert an assertion for the type cast
       (when (param-info-requires-cast param)
-        (let* ((rawest-e-ty (type-info-rawest-type e-ty))
-               (several-lines
-                (or (> (meta-info-pp-res term) 1)
-                    (> (meta-info-pp-res rawest-e-ty) 1))))
-          ;; Begin
-          (insert indent-str)
-          (insert "assert(has_type")
-          ;; Insert the term
-          (if several-lines
-              ;; Several lines
-              (progn
-                (insert "\n")
-                (insert indent-str)
-                (insert "  (")
-                (insert-with-indent (concat indent-str "   ") (meta-info-data term))
-                (insert ")"))
-            ;; One line
-            (insert " (")
-            (insert (meta-info-data term))
-            (insert ") "))
-          ;; Insert the type
-          (if several-lines
-              ;; Several lines
-              (progn
-                (insert "\n")
-                (insert indent-str)
-                (insert "  (")
-                (insert-with-indent (concat indent-str "   ") (meta-info-data rawest-e-ty))
-                (insert ")"))
-            ;; One line
-            (insert "(")
-            (insert (meta-info-data rawest-e-ty))
-            (insert ")"))
-          ;; Finish
-          (when several-lines (insert "\n") (insert indent-str))
-          (insert ");\n")))
+        (let* ((rawest-e-ty (type-info-rawest-type e-ty)))
+          (generate-has-type-assert indent-str nil term rawest-e-ty)))
       ;; Insert an assertion for the refinement
       (when (param-info-requires-refinement param)
         (generate-assert-from-term indent-str nil (type-info-rty-refin e-ty))
@@ -915,6 +921,7 @@ refinement)"
         (generate-param-asserts indent-str param))
       ;; -- and insert after the focused term
       (forward-char (- p2 p1))
+      ;; TODO: refinement for the returned value
       (generate-assert-from-term indent-str t (eterm-info-post info))
       (generate-assert-from-term indent-str t (eterm-info-goal info))
       )))
