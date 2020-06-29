@@ -200,16 +200,15 @@ let get_type_info_from_type (e:env) (ty:term) : Tac type_info =
   let refin = get_rtype_info_from_type ty in
   mk_type_info ty refin
 
-/// Parameter information
-noeq type param_info = {
+/// Cast information
+noeq type cast_info = {
   term : term;
-  qualif : aqualv;
   p_ty : option type_info; // The type of the term
   exp_ty : option type_info; // The type of the expected parameter
 }
 
-let mk_param_info t qualif p_ty exp_ty : param_info =
-  Mkparam_info t qualif p_ty exp_ty
+let mk_cast_info t p_ty exp_ty : cast_info =
+  Mkcast_info t p_ty exp_ty
 
 /// Effectful term information
 noeq type eterm_info = {
@@ -219,25 +218,27 @@ noeq type eterm_info = {
   ret_type : option type_info;
   (* Head and parameters of the decomposition of the term into a function application *)
   head : term;
-  parameters : list param_info;
-  (* ``goal`` is used when the term is the return result of a function:
-   * it contains the proof obligation (which is generally a function of
-   * the result) *)
+  parameters : list cast_info;
+  (* The following fields are used when the term is the return value of a
+   * function:
+   * - ``ret_cast``: contains the cast to the function return type
+   * - ``goal``: contains the postcondition of the function *)
+  ret_cast : option cast_info;
   goal : option term;
 }
 
-let mk_eterm_info etype pre post ret_type head parameters goal : eterm_info =
-  Mketerm_info etype pre post ret_type head parameters goal
+let mk_eterm_info etype pre post ret_type head parameters ret_cast goal : eterm_info =
+  Mketerm_info etype pre post ret_type head parameters ret_cast goal
 
 (*** Step 1 *)
 /// Analyze a term to retrieve its effectful information
 
 /// Decompose a function application between its body and parameters
-val decompose_application : env -> term -> Tac (term & list param_info)
+val decompose_application : env -> term -> Tac (term & list cast_info)
 
 #push-options "--ifuel 1"
 let rec decompose_application_aux (e : env) (t : term) :
-  Tac (term & list param_info) =
+  Tac (term & list cast_info) =
   match inspect t with
   | Tv_App hd (a, qualif) ->
     let hd0, params = decompose_application_aux e hd in
@@ -258,8 +259,8 @@ let rec decompose_application_aux (e : env) (t : term) :
           Some (mk_type_info ty rty)
         | _ -> None
     in
-    let param_info = mk_param_info a qualif a_type param_type in
-    hd0, param_info :: params
+    let cast_info = mk_cast_info a a_type param_type in
+    hd0, cast_info :: params
   | _ -> t, []
 #pop-options
 
@@ -283,18 +284,18 @@ let get_eterm_info (e:env) (t : term) =
     | C_Total ret_ty decr ->
       print ("C_Total: " ^ (term_to_string ret_ty));
       let ret_type_info = Some (get_type_info_from_type e ret_ty) in
-      Some (mk_eterm_info E_Total None None ret_type_info hd parameters None)
+      Some (mk_eterm_info E_Total None None ret_type_info hd parameters None None)
     | C_GTotal ret_ty decr ->
       print ("C_GTotal: " ^ (term_to_string ret_ty));
       let ret_type_info = Some (get_type_info_from_type e ret_ty) in
-      Some (mk_eterm_info E_GTotal None None ret_type_info hd parameters None)
+      Some (mk_eterm_info E_GTotal None None ret_type_info hd parameters None None)
     | C_Lemma pre post patterns ->
       print "C_Lemma:";
       print ("- pre:\n" ^ (term_to_string pre));
       print ("- post:\n" ^ (term_to_string post));
       print ("- patterns:\n" ^ (term_to_string patterns));
       (* No return type information - we might put unit *)
-      Some (mk_eterm_info E_Lemma (Some pre) (Some post) None hd parameters None)
+      Some (mk_eterm_info E_Lemma (Some pre) (Some post) None hd parameters None None)
     | C_Eff univs eff_name ret_ty eff_args ->
       print "C_Eff:";
       print ("- eff_name: " ^ (implode_qn eff_name));
@@ -305,13 +306,13 @@ let get_eterm_info (e:env) (t : term) =
       (* Handle the common effects *)
       begin match effect_name_to_type eff_name, eff_args with
       | Some E_PURE, [(pre, _)] ->
-        Some (mk_eterm_info E_PURE (Some pre) None ret_type_info hd parameters None)
+        Some (mk_eterm_info E_PURE (Some pre) None ret_type_info hd parameters None None)
       | Some E_Pure, [(pre, _); (post, _)] ->
-        Some (mk_eterm_info E_Pure (Some pre) (Some post) ret_type_info hd parameters None)
+        Some (mk_eterm_info E_Pure (Some pre) (Some post) ret_type_info hd parameters None None)
       | Some E_Stack, [(pre, _); (post, _)] ->
-        Some (mk_eterm_info E_Stack (Some pre) (Some post) ret_type_info hd parameters None)
+        Some (mk_eterm_info E_Stack (Some pre) (Some post) ret_type_info hd parameters None None)
       | Some E_ST, [(pre, _); (post, _)] ->
-        Some (mk_eterm_info E_ST (Some pre) (Some post) ret_type_info hd parameters None)
+        Some (mk_eterm_info E_ST (Some pre) (Some post) ret_type_info hd parameters None None)
       | _, _ ->
         print ("Unknown or inconsistant effect: " ^ (implode_qn eff_name));
         None
@@ -322,6 +323,15 @@ let get_eterm_info (e:env) (t : term) =
            (term_to_string t) ^ "'");
     None
 #pop-options
+
+/// Adds the current goal information to an ``eterm_info`` (if the term is a returned value)
+val get_goal_info : eterm_info -> Tac eterm_info
+
+// TODO:
+let get_goal_info info =
+  let env = cur_env () in
+  let goal = cur_goal () in
+  info
 
 (*** Step 2 *)
 /// The retrieved type refinements and post-conditions are not instantiated (they
@@ -390,7 +400,7 @@ let instantiate_refinements e info ret_arg_name ret_arg =
     | _ -> None
   in
   (* Instantiate the refinements in the parameters *)
-  let inst_param (p:param_info) : Tac param_info =
+  let inst_param (p:cast_info) : Tac cast_info =
     let p_ty' = instantiate_opt_type_info_refin p.term p.p_ty in
     let exp_ty' = instantiate_opt_type_info_refin p.term p.exp_ty in
     { p with p_ty = p_ty'; exp_ty = exp_ty' }
@@ -445,7 +455,7 @@ val simplify_eterm_info : env -> list norm_step -> eterm_info -> Tac eterm_info
 let simplify_eterm_info e steps info =
   let simpl_prop = simplify_opt_proposition e steps in
   let simpl_type = simplify_opt_type_info e steps in
-  let simpl_param (p:param_info) : Tac param_info =
+  let simpl_cast (p:cast_info) : Tac cast_info =
     { p with p_ty = simpl_type p.p_ty; exp_ty = simpl_type p.exp_ty; }
   in
   {
@@ -453,7 +463,7 @@ let simplify_eterm_info e steps info =
     pre = simpl_prop info.pre;
     post = simpl_prop info.post;
     ret_type = simpl_type info.ret_type;
-    parameters = map simpl_param info.parameters;
+    parameters = map simpl_cast info.parameters;
     goal = simpl_prop info.goal;
   }
 #pop-options
@@ -485,7 +495,7 @@ let compare_types (info1 info2 : type_info) : Tac type_comparison =
     else
       Unknown
 
-let compare_param_types (p:param_info) : Tac type_comparison =
+let compare_param_types (p:cast_info) : Tac type_comparison =
   match p.p_ty, p.exp_ty with
   | Some info1, Some info2 -> compare_types info1 info2
   | _ -> Unknown
@@ -520,7 +530,7 @@ let printout_opt_type (prefix:string) (ty:option type_info) : Tac unit =
   printout_opt_term (prefix ^ ":rty_raw") rty_raw;
   printout_opt_term (prefix ^ ":rty_refin") rty_refin
 
-let printout_parameter (prefix:string) (index:int) (p:param_info) : Tac unit =
+let printout_parameter (prefix:string) (index:int) (p:cast_info) : Tac unit =
   let p_prefix = prefix ^ ":param" ^ string_of_int index in
   printout_term (p_prefix ^ ":term") p.term;
   printout_opt_type (p_prefix ^ ":p_ty") p.p_ty;
@@ -528,7 +538,7 @@ let printout_parameter (prefix:string) (index:int) (p:param_info) : Tac unit =
   printout_string (p_prefix ^ ":types_comparison")
                   (type_comparison_to_string (compare_param_types p))
 
-let printout_parameters (prefix:string) (parameters:list param_info) : Tac unit =
+let printout_parameters (prefix:string) (parameters:list cast_info) : Tac unit =
   printout_string (prefix ^ ":num") (string_of_int (List.length parameters));
   iteri (printout_parameter prefix) parameters
 
@@ -587,9 +597,137 @@ let _debug_print_var (name : string) (t : term) : Tac unit =
   end;
   print "end of _debug_print_var"
 
-let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) : nat =
+/// We use the following to solve goals requiring a unification variable (for
+/// which we might not have a candidate, or for which the candidate may not
+/// typecheck correctly). We can't use the tactic ``tadmit`` for the simple
+/// reason that it generates a warning which may mess up with the subsequent
+/// parsing of the data generated by the tactics.
+assume val magic_witness (#a : Type) : a
+
+let tadmit_no_warning () : Tac unit =
+  apply (`magic_witness)
+
+let pp_tac () : Tac unit =
+  print ("post-processing: " ^ (term_to_string (cur_goal ())));
+  trefl()
+
+let test0 () : Lemma(3 >= 2) =
+  _ by (
+    let s = term_to_string (cur_goal ()) in
+    iteri (fun i g -> print ("goal " ^ (string_of_int i) ^ ":" ^
+                          "\n- type: " ^ (term_to_string (goal_type g)) ^
+                          "\n- witness: " ^ (term_to_string (goal_witness g))))
+                          (goals());
+    iteri (fun i g -> print ("smt goal " ^ (string_of_int i) ^ ": " ^
+                          (term_to_string (goal_type g)))) (smt_goals());
+    print ("- qualif: " ^ term_qualifier (cur_goal ()));
+    tadmit_no_warning())
+
+//binders_of_env
+//lookup_typ
+//lookup_attr
+//all_defs_in_env  
+
+#push-options "--ifuel 1"
+let print_binder_info (full : bool) (b : binder) : Tac unit =
+  let bv, a = inspect_binder b in
+  let a_str = match a with
+    | Q_Implicit -> "Implicit"
+    | Q_Explicit -> "Explicit"
+    | Q_Meta t -> "Meta: " ^ term_to_string t
+  in
+  let bview = inspect_bv bv in
+  if full then
+    print (
+      "> print_binder_info:" ^
+      "\n- name: " ^ (name_of_binder b) ^
+      "\n- as string: " ^ (binder_to_string b) ^
+      "\n- aqual: " ^ a_str ^
+      "\n- ppname: " ^ bview.bv_ppname ^
+      "\n- index: " ^ string_of_int bview.bv_index ^
+      "\n- sort: " ^ term_to_string bview.bv_sort
+    )
+  else print (binder_to_string b)
+
+let print_binders_info (full : bool) : Tac unit =
+  let e = top_env () in
+  iter (print_binder_info full) (binders_of_env e)
+  
+#push-options "--admit_smt_queries true"
+//[@(postprocess_with pp_tac)]
+let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
+  Pure (n:nat{n >= 17})
+  (requires (x % 3 = 0))
+  (ensures (fun n -> n % 2 = 0)) =
   test_lemma1 x; (**)
-  run_tactic (fun _ -> print (term_to_string (quote ((**) x))));
+  run_tactic (fun _ -> print_binders_info true);
+  17
+
+let test2 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
+  Lemma(x + y + z >= 26) =
+  (* Look for the binder after the one with type "Prims.pure_post".
+   * Or: count how many parameters the function has... *)
+  run_tactic (fun _ -> print_binders_info true)
+
+let test3 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
+  Lemma (requires x % 2 = 0) (ensures x + y + z >= 26) =
+  (* The pre and the post are put together in a conjunction *)
+  run_tactic (fun _ -> print_binders_info true)
+
+let test4 (x : nat{x >= 4}) :
+  ST.Stack nat
+  (requires (fun h -> x % 2 = 0))
+  (ensures (fun h1 y h2 -> y % 3 = 0)) =
+  (* Look after FStar.Pervasives.st_post_h FStar.Monotonic.HyperStack.mem Prims.nat
+   * and FStar.Monotonic.HyperStack.mem *)
+  run_tactic (fun _ -> print_binders_info true);
+  3
+
+let test5 (x : nat{x >= 4}) :
+  ST.Stack nat
+  (requires (fun h -> x % 2 = 0))
+  (ensures (fun h1 y h2 -> y % 3 = 0)) =
+  (* Shadowing: we can't use the pre anymore... *)
+  let x = 5 in
+  test_lemma1 x;
+  run_tactic (fun _ -> print_binders_info false);
+  3
+
+(* Trying to use different names between the declaration and the definition *)
+val test6 (x : nat{x >= 4}) :
+  ST.Stack nat
+  (requires (fun h -> x % 2 = 0))
+  (ensures (fun h1 y h2 -> y % 3 = 0))
+
+(* It's ok: the pre references y *)
+let test6 y =
+  run_tactic (fun _ -> print_binders_info false);
+  3
+
+(* TODO: what is ``lookup_attr`` used for? *)
+let test7 (x : nat) : nat =
+  [@inline_let] let y = x + 1 in
+  run_tactic (fun _ ->
+    let e = top_env () in
+    print "> lookup_attr";
+    iter (fun a -> print (implode_qn (inspect_fv a))) (lookup_attr (quote y) e);
+    (* Warning: takes some time! *)
+//    print "> all_defs_in_env";
+//    iter (fun a -> print (implode_qn (inspect_fv a))) (all_defs_in_env e);
+    ()
+  );
+  0
+
+//binders_of_env
+//lookup_typ
+//lookup_attr
+//all_defs_in_env  
+
+
+//[@(postprocess_with pp_tac)]
+let test8 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
+  Tot (n:nat{n % 2 = 0}) =
+//  run_tactic (fun _ -> print (term_to_string (quote ((**) x))));
   let a = 3 in
 //  FStar.Tactics.Derived.run_tactic (fun _ -> PrintTactics.dprint_eterm (quote (test_lemma1 x)) None (`()) [(`())]);
   (**) test_lemma1 x; (**)
@@ -601,10 +739,17 @@ let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) : nat =
   (**) test_lemma3 y; (**)
   test_lemma4 x y x 1 2;
   let w = test_fun4 x in
+  _ by (
+    let s = term_to_string (cur_goal ()) in
+    iteri (fun i g -> print ("goal " ^ (string_of_int i) ^ ": " ^
+                          (term_to_string (goal_type g)))) (goals());
+    iteri (fun i g -> print ("smt goal " ^ (string_of_int i) ^ ": " ^
+                          (term_to_string (goal_type g)))) (smt_goals());
+    tadmit_no_warning())
+
 //  run_tactic (fun _ -> dprint_eterm (quote (test_fun4 x)) (Some "w") (quote w) [(`())]);
 //  run_tactic (fun _ -> dprint_eterm (quote (test_fun6 x (2 * x) (3 * x))) (Some "a") (quote y) [(`())]);
 //  run_tactic (fun _ -> dprint_eterm (quote (test_fun6 x y z)) (Some "a") (quote y) [(`())]);
-  admit()
 
 (*
    (setq debug-on-error t)
