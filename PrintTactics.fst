@@ -125,7 +125,7 @@ let comp_qualifier (c : comp) : Tac string =
 
 /// Effect information: we list the current supported effects
 type effect_type =
-| E_Total | E_GTotal | E_Lemma | E_PURE | E_Pure | E_Stack | E_ST
+| E_Total | E_GTotal | E_Lemma | E_PURE | E_Pure | E_Stack | E_ST | E_Unknown
 
 val effect_type_to_string : effect_type -> string
 
@@ -139,17 +139,18 @@ let effect_type_to_string ety =
   | E_Pure -> "E_Pure"
   | E_Stack -> "E_Stack"
   | E_ST -> "E_ST"
+  | E_Unknown -> "E_Unknown"
 #pop-options
 
-val effect_name_to_type (ename : name) : Tot (option effect_type)
+val effect_name_to_type (ename : name) : Tot effect_type
 
-let effect_name_to_type (ename : name) : Tot (option effect_type) =
+let effect_name_to_type (ename : name) : Tot effect_type =
   let ename = flatten_name ename in
-  if ename = pure_effect_qn then Some E_PURE
-  else if ename = pure_hoare_effect_qn then Some E_Pure
-  else if ename = stack_effect_qn then Some E_Stack
-  else if ename = st_effect_qn then Some E_ST
-  else None
+  if ename = pure_effect_qn then E_PURE
+  else if ename = pure_hoare_effect_qn then E_Pure
+  else if ename = stack_effect_qn then E_Stack
+  else if ename = st_effect_qn then E_ST
+  else E_Unknown
 
 /// Refinement type information
 noeq type rtype_info = {
@@ -168,6 +169,8 @@ noeq type type_info = {
 
 let mk_type_info ty rty : type_info =
   Mktype_info ty rty
+
+let unit_type_info = mk_type_info (`unit) None
 
 val safe_tc (e:env) (t:term) : Tac (option term)
 
@@ -219,7 +222,7 @@ noeq type eterm_info = {
   etype : effect_type;
   pre : option term;
   post : option term;
-  ret_type : option type_info;
+  ret_type : type_info;
   (* Head and parameters of the decomposition of the term into a function application *)
   head : term;
   parameters : list cast_info;
@@ -234,9 +237,10 @@ noeq type eterm_info = {
 let mk_eterm_info etype pre post ret_type head parameters ret_cast goal : eterm_info =
   Mketerm_info etype pre post ret_type head parameters ret_cast goal
 
-(*** Step 1 *)
+(*** Effectful term analysis *)
 /// Analyze a term to retrieve its effectful information
 
+(**** Step 1 *)
 /// Decompose a function application between its body and parameters
 val decompose_application : env -> term -> Tac (term & list cast_info)
 
@@ -272,10 +276,18 @@ let decompose_application e t =
   let hd, params = decompose_application_aux e t in
   hd, List.Tot.rev params
 
-/// Returns the effectful information about a term
-val get_eterm_info : env -> term -> Tac (option eterm_info)
+(*type valid_eterm_info =
+  info:eterm_info{
+    match info.etype with
+    | E_Total | E_GTotal | E_Lemma -> True
+    | E_PURE | E_Pure | E_Stack | E_ST | E_Unknown ->
+      Some? info.ret_type
+  }*)
 
-#push-options "--ifuel 1"
+/// Returns the effectful information about a term
+val get_eterm_info : env -> term -> Tac eterm_info
+
+#push-options "--ifuel 2"
 let get_eterm_info (e:env) (t : term) =
   (* Decompose the term if it is a function application *)
   let hd, parameters = decompose_application e t in
@@ -287,92 +299,408 @@ let get_eterm_info (e:env) (t : term) =
     match cv with
     | C_Total ret_ty decr ->
       print ("C_Total: " ^ (term_to_string ret_ty));
-      let ret_type_info = Some (get_type_info_from_type e ret_ty) in
-      Some (mk_eterm_info E_Total None None ret_type_info hd parameters None None)
+      let ret_type_info = get_type_info_from_type e ret_ty in
+      mk_eterm_info E_Total None None ret_type_info hd parameters None None
     | C_GTotal ret_ty decr ->
       print ("C_GTotal: " ^ (term_to_string ret_ty));
-      let ret_type_info = Some (get_type_info_from_type e ret_ty) in
-      Some (mk_eterm_info E_GTotal None None ret_type_info hd parameters None None)
+      let ret_type_info = get_type_info_from_type e ret_ty in
+      mk_eterm_info E_GTotal None None ret_type_info hd parameters None None
     | C_Lemma pre post patterns ->
       print "C_Lemma:";
       print ("- pre:\n" ^ (term_to_string pre));
       print ("- post:\n" ^ (term_to_string post));
       print ("- patterns:\n" ^ (term_to_string patterns));
-      (* No return type information - we might put unit *)
-      Some (mk_eterm_info E_Lemma (Some pre) (Some post) None hd parameters None None)
+      (* We use unit as the return type information *)
+      mk_eterm_info E_Lemma (Some pre) (Some post) unit_type_info hd parameters None None
     | C_Eff univs eff_name ret_ty eff_args ->
       print "C_Eff:";
       print ("- eff_name: " ^ (flatten_name eff_name));
       print ("- result: " ^ (term_to_string ret_ty));
       print "- eff_args:";
       iter (fun (a, _) -> print ("arg: " ^ (term_to_string a))) eff_args;
-      let ret_type_info = Some (get_type_info_from_type e ret_ty) in
+      let ret_type_info = get_type_info_from_type e ret_ty in
       (* Handle the common effects *)
       begin match effect_name_to_type eff_name, eff_args with
-      | Some E_PURE, [(pre, _)] ->
-        Some (mk_eterm_info E_PURE (Some pre) None ret_type_info hd parameters None None)
-      | Some E_Pure, [(pre, _); (post, _)] ->
-        Some (mk_eterm_info E_Pure (Some pre) (Some post) ret_type_info hd parameters None None)
-      | Some E_Stack, [(pre, _); (post, _)] ->
-        Some (mk_eterm_info E_Stack (Some pre) (Some post) ret_type_info hd parameters None None)
-      | Some E_ST, [(pre, _); (post, _)] ->
-        Some (mk_eterm_info E_ST (Some pre) (Some post) ret_type_info hd parameters None None)
-      | _, _ ->
-        print ("Unknown or inconsistant effect: " ^ (flatten_name eff_name));
-        None
+      | E_PURE, [(pre, _)] ->
+        mk_eterm_info E_PURE (Some pre) None ret_type_info hd parameters None None
+      | E_Pure, [(pre, _); (post, _)] ->
+        mk_eterm_info E_Pure (Some pre) (Some post) ret_type_info hd parameters None None
+      | E_Stack, [(pre, _); (post, _)] ->
+        mk_eterm_info E_Stack (Some pre) (Some post) ret_type_info hd parameters None None
+      | E_ST, [(pre, _); (post, _)] ->
+        mk_eterm_info E_ST (Some pre) (Some post) ret_type_info hd parameters None None
+      (* If the effect is unknown and there are two parameters or less, we make the
+       * guess that the first one is a pre-condition and the second one is a
+       * post-condition *)
+      | E_Unknown, [] ->
+        mk_eterm_info E_Unknown None None ret_type_info hd parameters None None
+      | E_Unknown, [(pre, _)] ->
+        mk_eterm_info E_Unknown (Some pre) None ret_type_info hd parameters None None
+      | E_Unknown, [(pre, _); (post, _)] ->
+        mk_eterm_info E_Unknown (Some pre) (Some post) ret_type_info hd parameters None None
+      | _ ->
+        mfail ("Unknown or inconsistant effect: " ^ (flatten_name eff_name))
       end
     end
-  with | _ ->
-    mfail ("get_eterm_info: error: could not compute the type of '" ^
-           (term_to_string t) ^ "'");
-    None
+  with
+  | TacticFailure msg ->
+    mfail ("get_eterm_info: failure: '" ^ msg ^ "'")
+  | e -> raise e
 #pop-options
 
 /// Adds the current goal information to an ``eterm_info`` (if the term is a returned value)
 val get_goal_info : eterm_info -> Tac eterm_info
 
-// TODO:
+/// TODO:
 let get_goal_info info =
   let env = cur_env () in
   let goal = cur_goal () in
   info
 
-(*** Step 2 *)
+(**** Step 2 *)
 /// The retrieved type refinements and post-conditions are not instantiated (they
 /// are lambda functions): instantiate them to get propositions.
 
-val instantiate_type_info_refin : term -> type_info -> Tac type_info
+/// The type to model a proposition
+noeq type proposition = {
+  (* The proposition body *)
+  prop : term;
+  (* The parameters which must be abstracted. It happens that we need to
+   * introduce variables that don't appear in the user code (for example,
+   * stack memories for the pre and post-condition of stateful functions).
+   * In this case, we introduce the appropriate assertions for the pre and
+   * the post but written as asbtractions applied to those missing parameters
+   * (i.e.: [> assert((fun h1 h2 -> post) h1 h2); ).
+   * The user can then replace those parameters (h1 and h2 above) by the proper
+   * ones then normalize the assertion by using the appropriate command, to get
+   * what he needs. *)
+  abs : list term;
+}
 
-let instantiate_type_info_refin t info =
-  match info.rty with
-  | Some rinfo ->
-    let refin' = mk_e_app rinfo.refin [t] in
-    let opt_rinfo' = Some ({rinfo with refin = refin'}) in
-    { info with rty = opt_rinfo' }
-  | _ -> info
+(***** Types, casts and refinements *)
 
-val instantiate_opt_type_info_refin : term -> option type_info -> Tac (option type_info)
+let has_refinement (ty:type_info) : Tot bool =
+  Some? ty.rty
 
-let instantiate_opt_type_info_refin t info =
-  match info with
-  | Some info' -> Some (instantiate_type_info_refin t info')
-  | _ -> None
+let get_refinement (ty:type_info{Some? ty.rty}) : Tot term =
+  (Some?.v ty.rty).refin
+
+let get_opt_refinment (ty:type_info) : Tot (option term) =
+  match ty.rty with
+  | Some rty -> Some rty.refin
+  | None -> None
 
 let get_rawest_type (ty:type_info) : Tot typ =
   match ty.rty with
   | Some rty -> rty.raw
   | _ -> ty.ty
 
-let get_rawest_type_from_opt_type_info (ty : option type_info) : Tot (option typ) =
-  match ty with
-  | Some ty' -> Some (get_rawest_type ty')
+/// Compare the type of a parameter and its expected type
+type type_comparison = | Refines | Same_raw_type | Unknown
+
+let compare_types (info1 info2 : type_info) :
+  Tot (c:type_comparison{c = Same_raw_type ==> has_refinement info2}) =
+  if term_eq info1.ty info2.ty
+  then Refines // The types are the same
+  else
+    let ty1 = get_rawest_type info1 in
+    let ty2 = get_rawest_type info2 in
+    if term_eq ty1 ty2 then
+      if has_refinement info2
+      then Same_raw_type // Same raw type but can't say anything about the expected refinement
+      else Refines // The first type is more precise than the second type
+    else
+      Unknown
+
+let compare_cast_types (p:cast_info) :
+  Tot (c:type_comparison{
+    ((c = Refines \/ c = Same_raw_type) ==> (Some? p.p_ty /\ Some? p.exp_ty)) /\
+    (c = Same_raw_type ==> has_refinement (Some?.v p.exp_ty))}) =
+  match p.p_ty, p.exp_ty with
+  | Some info1, Some info2 -> compare_types info1 info2
+  | _ -> Unknown
+
+let opt_cons (#a : Type) (opt_x : option a) (ls : list a) : Tot (list a) =
+  match opt_x with
+  | Some x -> x :: ls
+  | None -> ls
+
+/// Instantiate a proposition. ``abstract_params`` controls whether the parameters
+/// used for instantiation should be considered abstract or not.
+val term_to_opt_proposition : bool -> term -> list term -> Tot proposition
+let term_to_opt_proposition abstract_params t params =
+  let p = mk_e_app t params in
+  if abstract_params then { prop = p; abs = params; }
+  else { prop = p; abs = []; }
+
+val opt_term_to_opt_proposition : bool -> option term -> list term -> Tot (option proposition)
+let opt_term_to_opt_proposition abstract_params opt_t params =
+  match opt_t with
+  | Some t -> Some (term_to_opt_proposition abstract_params t params)
+  | None -> None  
+
+/// Generate the propositions equivalent to a correct type cast.
+/// Note that the type refinements need to be instantiated.
+/// ``abstract_refin`` controls whether the term in the type cast should be
+/// considered abstract or not (when instantiating the target type refinement).
+val cast_info_to_propositions : bool -> cast_info -> Tac (list proposition)
+let cast_info_to_propositions abstract_refin ci =
+  match compare_cast_types ci with
+  | Refines -> []
+  | Same_raw_type ->
+    let refin = get_refinement (Some?.v ci.exp_ty) in
+    let inst_refin = term_to_opt_proposition abstract_refin refin [ci.term] in
+    [inst_refin]
+  | Unknown ->
+    match ci.p_ty, ci.exp_ty with
+    | Some p_ty, Some e_ty ->
+      let p_rty = get_rawest_type p_ty in
+      let e_rty = get_rawest_type e_ty in
+      (* For the type cast, we generate an assertion of the form:
+       * [> has_type (p <: type_of_p) expected_type
+       * The reason is that we want the user to know which parameter is
+       * concerned (hence the ``has_type``), and which types should be
+       * related (hence the ascription).
+       *)
+      let ascr_term = pack (Tv_AscribedT ci.term p_rty None) in
+      let has_type_params = [(p_rty, Q_Implicit); (ascr_term, Q_Explicit); (e_rty, Q_Explicit)] in
+      let type_cast = mk_app (`has_type) has_type_params in
+      (* Expected type's refinement *)
+      let opt_refin = get_opt_refinment e_ty in
+      let inst_opt_refin = opt_term_to_opt_proposition abstract_refin opt_refin [ci.term] in
+      opt_cons inst_opt_refin [{ prop = type_cast; abs = []; }]
+    | _ -> []
+
+/// Generates a list of propositions from a list of ``cast_info``. Note that
+/// the user should revert the list before printing the propositions.
+val cast_info_list_to_propositions : bool -> list cast_info -> Tac (list proposition)
+let cast_info_list_to_propositions abstract_params ls =
+  let lsl = map (cast_info_to_propositions abstract_params) ls in
+  flatten lsl
+
+/// Versions of ``fresh_bv`` and ``fresh_binder`` inspired by the standard library
+/// We make sure the name is fresh because we need to be able to generate valid code
+/// (it is thus not enough to have a fresh integer).
+let rec _fresh_bv binder_names basename i ty : Tac bv =
+  let name = basename ^ string_of_int i in
+  (* In worst case the performance is quadratic in the number of binders,
+   * but it is very unlikely that we get the worst case  *)
+  if List.mem name binder_names then _fresh_bv binder_names basename (i+1) ty
+  else fresh_bv_named name ty
+
+let fresh_bv (e : env) (basename : string) (ty : typ) : Tac bv =
+  let binders = binders_of_env e in
+  let binder_names = List.Tot.map name_of_binder binders in
+  _fresh_bv binder_names basename 0 ty
+
+let fresh_binder (e : env) (basename : string) (ty : typ) : Tac binder =
+  let bv = fresh_bv e basename ty in
+  mk_binder bv
+
+let push_fresh_binder (e : env) (basename : string) (ty : typ) : Tac (binder & env) =
+  let b = fresh_binder e basename ty in
+  let e' = push_binder e b in
+  b, e'
+
+/// When dealing with unknown effects, we try to guess what the pre and post-conditions
+/// are. The effects are indeed very likely to have a pre and a post-condition,
+/// and to be parameterized with an internal effect state, so that the pre and posts
+/// have the following shapes:
+/// - pre  : STATE -> Type0
+/// - post : STATE -> RET -> STATE -> Type0
+/// Or (no state/pure):
+/// - pre  : Type0
+/// - post : RET -> Type0
+/// We try to detect that with the following functions:
+noeq type pre_post_type =
+  | PP_Unknown | PP_Pure
+  | PP_State : (state_type:term) -> pre_post_type
+
+val get_total_or_gtotal_ret_type : comp -> Tot (option typ)
+let get_total_or_gtotal_ret_type c =
+  match inspect_comp c with
+  | C_Total ret_ty _ | C_GTotal ret_ty _ -> Some ret_ty
   | _ -> None
 
-val instantiate_refinements : env -> eterm_info -> term ->
+val check_pre_type : env -> term -> Tac pre_post_type
+let check_pre_type e pre =
+  match safe_tc e pre with
+  | None -> PP_Unknown
+  | Some ty ->
+    match inspect ty with
+    | Tv_Arrow b c ->
+      (* Not sure if the comp check is necessary *)
+      if Some? (get_total_or_gtotal_ret_type c) then PP_State (type_of_binder b)
+      else PP_Unknown
+    | _ -> PP_Pure
+
+val check_post_type : env -> term -> term -> Tac pre_post_type
+let check_post_type e ret_type post =
+  let get_tot_ret_type c : Tac (option term_view) =
+    match get_total_or_gtotal_ret_type c with
+    | Some ret_ty -> Some (inspect ret_ty)
+    | None -> None
+  in
+  match safe_tc e post with
+  | None -> PP_Unknown
+  | Some ty ->
+    (* The initial state or the return value *)
+    match inspect ty with
+    | Tv_Arrow b0 c0 ->
+      begin match get_tot_ret_type c0 with
+      | None -> PP_Unknown
+      (* If arrow: the post-condition is for a stateful effect, and the binder
+       * we get here gives us the type of the return value *)
+      | Some (Tv_Arrow b1 c1) ->
+        (* Check that there is a third arrow for the new state *)
+        begin match get_tot_ret_type c1 with
+        | None -> PP_Unknown
+        | Some (Tv_Arrow b2 c2) ->
+          (* Just check that the types are coherent: return type, but also states *)
+          if term_eq ret_type (type_of_binder b1) &&
+             term_eq (type_of_binder b0) (type_of_binder b2)
+          then PP_Pure else PP_Unknown
+        | _ -> PP_Unknown
+        end
+      (* Otherwise, it is the post-condition of a pure effect *)
+      | Some _ ->
+        (* Check that the return value type is consistent *)
+        if term_eq ret_type (type_of_binder b0) then PP_Pure else PP_Unknown
+      end
+    | _ -> PP_Unknown
+
+val check_pre_post_type : env -> term -> term -> term -> Tac pre_post_type
+let check_pre_post_type e pre ret_type post =
+  match check_pre_type e pre, check_post_type e ret_type post with
+  | PP_Pure, PP_Pure -> PP_Pure
+  | PP_State ty1, PP_State ty2 ->
+    if term_eq ty1 ty2 then PP_State ty1 else PP_Unknown
+  | _ -> PP_Unknown
+
+val check_opt_pre_post_type : env -> option term -> term -> option term -> Tac (option pre_post_type)
+let check_opt_pre_post_type e opt_pre ret_type opt_post =
+  match opt_pre, opt_post with
+  | Some pre, Some post -> Some (check_pre_post_type e pre ret_type post)
+  | Some pre, None -> Some (check_pre_type e pre)
+  | None, Some post -> Some (check_post_type e ret_type post)
+  | None, None -> None
+
+val push_two_fresh_vars : env -> string -> typ -> Tac (term & term & env)
+let push_two_fresh_vars e0 basename ty =
+  let b1, e1 = push_fresh_binder e0 basename ty in
+  let b2, e2 = push_fresh_binder e1 basename ty in
+  let v1 = pack (Tv_Var (bv_of_binder b1)) in
+  let v2 = pack (Tv_Var (bv_of_binder b2)) in
+  v1, v2, e2
+
+val _introduce_variables_for_abs : env -> typ -> Tac (list term & env)
+let rec _introduce_variables_for_abs e ty =
+  match inspect ty with
+  | Tv_Arrow b c ->
+    let b1, e1 = push_fresh_binder e (name_of_binder b) (type_of_binder b) in
+    let bv1 = bv_of_binder b1 in
+    let v1 = pack (Tv_Var bv1) in
+    begin match get_total_or_gtotal_ret_type c with
+    | Some ty1 ->
+      let vl, e2 = _introduce_variables_for_abs e1 ty1 in
+      v1 :: vl, e2
+    | None -> [v1], e1
+    end
+ | _ -> [], e
+
+val introduce_variables_for_abs : env -> term -> Tac (list term & env)
+let introduce_variables_for_abs e tm =
+  match safe_tc e tm with
+  | Some ty -> _introduce_variables_for_abs e ty
+  | None -> [], e
+
+val introduce_variables_for_opt_abs : env -> option term -> Tac (list term & env)
+let introduce_variables_for_opt_abs e opt_tm =
+  match opt_tm with
+  | Some tm -> introduce_variables_for_abs e tm
+  | None -> [], e
+
+/// Convert effectful type information to a list of propositions. May have to
+/// introduce additional binders for the preconditions/postconditions/goal (hence
+/// the environment in the return type).
+/// The ``bind_var`` parameter is a variable if the studied term was bound in a let
+/// expression.
+val eterm_info_to_propositions : env -> eterm_info -> option term -> Tac (env & list proposition)
+let eterm_info_to_propositions e info bind_var =
+  (* Introduce additional variables to instantiate the return type refinement,
+   * the precondition, the postcondition and the goal *)
+  (* First, the return value *)
+  let gen_ret_var e : Tac (env & term & bool) =
+    match bind_var with
+    | Some v -> e, v, false
+    | None ->
+      let b = fresh_binder e "__ret" info.ret_type.ty in
+      let bv = bv_of_binder b in
+      let tm = pack (Tv_Var bv) in
+      push_binder e b, tm, true
+  in
+  (* Then, the variables for the pre/postconditions *)
+  let e', ret_vars, pre_vars, post_vars =
+    match info.etype with
+    | E_Lemma ->
+      (* Nothing to introduce *)
+      e, [], [], []
+    | E_Total | E_GTotal ->
+      (* Optionally introduce a variable for the return value *)
+      let e', v, abs_ret = gen_ret_var e in
+      e', [(v, abs_ret)], [], []
+    | E_PURE | E_Pure ->
+      (* Optionally introduce a variable for the return value *)
+      let e', v, abs_ret = gen_ret_var e in
+      e', [(v, abs_ret)], [], [(v, abs_ret)]
+    | E_Stack | E_ST ->
+      (* Optionally introduce a variable for the return value *)
+      let e0, v, abs_ret = gen_ret_var e in
+      (* Introduce variables for the memories *)
+      let h1, h2, e2 = push_two_fresh_vars e0 "__h" (`HS.mem) in
+      e2, [(v, abs_ret)], [(h1, true)], [(h1, true); (v, abs_ret); (h2, true)]
+    | E_Unknown ->
+      (* We don't know what the effect is and the current pre and post-conditions
+       * are currently guesses. Introduce any variable which is abstracted by
+       * those parameters *)
+      (* Optionally introduce a variable for the return value *)
+      let e0, v, abs_ret = gen_ret_var e in
+       (* The pre and post-conditions are likely to have the same shape as
+        * one of Pure or Stack (depending on whether we use or not an internal
+        * state). We try to check that and to instantiate them accordingly *)
+      let pp_type = check_opt_pre_post_type e0 info.pre info.ret_type.ty info.post in
+      begin match pp_type with
+      | Some PP_Pure ->
+        (* We only need the return value *)
+        e0, [(v, abs_ret)], [], [(v, abs_ret)]
+      | Some (PP_State state_type) ->
+        (* Introduces variables for the states *)
+        let s1, s2, e2 = push_two_fresh_vars e0 "__s" state_type in
+        e2, [(v, abs_ret)], [(s1, true)], [(s1, true); (v, abs_ret); (s2, true)]
+      | Some PP_Unknown ->
+        (* Introduce variables for all the values, for the pre and the post *)
+        let pre_vars, e1 = introduce_variables_for_opt_abs e0 info.pre in
+        let post_vars, e2 = introduce_variables_for_opt_abs e1 info.post in
+        let pre_vars = List.Tot.map (fun x -> (x, true)) pre_vars in
+        let post_vars = List.Tot.map (fun x -> (x, true)) post_vars in
+        e2, [(v, abs_ret)], pre_vars, post_vars
+      | _ ->
+        (* No pre and no post *)
+        e0, [(v, abs_ret)], [], []
+      end
+  in
+  admit()
+
+
+
+type effect_type =
+| E_Total | E_GTotal | E_Lemma | E_PURE | E_Pure | E_Stack | E_ST
+
+
+val instantiate_propositions : env -> eterm_info -> term ->
   Tac eterm_info
 
-#push-options "--ifuel 1"
-let instantiate_refinements e info ret_arg =
+let instantiate_propositions e info ret_arg =
   (* Instanciate the post-condition and simplify the information *)
   let ipost : option term =
     match info.post with
@@ -405,10 +733,34 @@ let instantiate_refinements e info ret_arg =
     post = ipost;
     ret_type = iret_type;
     parameters = iparameters }
-#pop-options
 
-(*** Step 3 *)
-/// Simplify the information:
+
+/// Generates a list of obligations from a list of ``cast_info``. Note that
+/// the user should revert the list before printing the obligations.
+val cast_info_list_to_obligations : list cast_info -> Tac (list term)
+let cast_info_list_to_obligations ls =
+  let lsl = map cast_info_to_obligations ls in
+  flatten lsl
+
+/// Convert the effectful information about a term to a list of assertions, split
+/// betweens the assertions to place before the term and the assertions to place
+/// after.
+val eterm_info_to_assertions : bool -> env -> eterm_info -> Tac assertions
+let eterm_info_to_assertions is_let e info =
+  let pres : list term = [] in
+  let posts : list term = [] in
+  (* Pre *)
+  let pres = opt_cons info.pre pres in
+  (* Parameters (type cast + refinements) *)
+  let param_obligations = cast_info_list_to_obligations info.parameters in
+  let pres = append param_obligations pres in
+  (* Post *)
+  let posts = if is_let then opt_cons info.post posts else posts in
+  { pres = pres; posts = posts }
+
+
+(**** Step 3 *)
+/// Simplify and filter the assertions:
 /// - simplify the propositions and ignore them if they are trivial (i.e.: True)
 
 /// Check if a proposition is trivial (i.e.: is True)
@@ -482,28 +834,6 @@ let type_comparison_to_string c =
   | Same_raw_type -> "Same_raw_type"
   | Unknown -> "Unknown"
 #pop-options
-
-let compare_types (info1 info2 : type_info) :
-  Tot (c:type_comparison{c = Same_raw_type ==> has_refinement info2}) =
-  if term_eq info1.ty info2.ty
-  then Refines // The types are the same
-  else
-    let ty1 = get_rawest_type info1 in
-    let ty2 = get_rawest_type info2 in
-    if term_eq ty1 ty2 then
-      if has_refinement info2
-      then Same_raw_type // Same raw type but can't say anything about the expected refinement
-      else Refines // The first type is more precise than the second type
-    else
-      Unknown
-
-let compare_cast_types (p:cast_info) :
-  Tot (c:type_comparison{
-    ((c = Refines \/ c = Same_raw_type) ==> (Some? p.p_ty /\ Some? p.exp_ty)) /\
-    (c = Same_raw_type ==> has_refinement (Some?.v p.exp_ty))}) =
-  match p.p_ty, p.exp_ty with
-  | Some info1, Some info2 -> compare_types info1 info2
-  | _ -> Unknown
 
 (*** Step 4 *)
 /// Output the resulting information
@@ -630,10 +960,13 @@ let printout_assertions prefix as =
   let printout_assert qualif i p : Tac unit =
     printout_term (prefix ^ qualif ^ string_of_int i) p
   in
+  print (prefix ^ ":BEGIN");
   printout_string (prefix ^ ":num_pres") (string_of_int (List.length as.pres));
   iteri (printout_assert ":pre") as.pres;
   printout_string (prefix ^ ":num_posts") (string_of_int (List.length as.posts));
-  iteri (printout_assert ":post") as.posts
+  iteri (printout_assert ":post") as.posts;
+  print (prefix ^ ":END")
+  
 
 /// The tactic to be called by the emacs commands
 val dprint_eterm : term -> term -> Tac unit
@@ -648,7 +981,7 @@ let dprint_eterm t ret_arg =
            (term_to_string t) ^ "'")
   | Some info ->
     let e = top_env () in
-    let info' = instantiate_refinements e info ret_arg in
+    let info' = instantiate_propositions e info ret_arg in
     print_eterm_info e info' ret_arg
 #pop-options
 
@@ -945,7 +1278,7 @@ let analyze_effectful_term () ge t =
        (* Instantiate the refinements *)
        begin match opt_info with
        | Some info ->
-         let inst_info = instantiate_refinements ge.env info ret_arg in
+         let inst_info = instantiate_propositions ge.env info ret_arg in
          (* Simplify and filter *)
          let sinfo = simplify_eterm_info ge.env [primops; simplify] inst_info in
          (* Convert to a list of assertions *)
