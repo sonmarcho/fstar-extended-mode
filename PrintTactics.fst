@@ -9,7 +9,7 @@ open FStar.Mul
 
 /// TODO: precondition, postcondition, current goal, unfold
 
-#push-options "--z3rlimit 15 --fuel 0 --ifuel 0"
+#push-options "--z3rlimit 15 --fuel 0 --ifuel 1"
 
 (* TODO: move to FStar.Tactics.Util.fst *)
 #push-options "--ifuel 1"
@@ -87,9 +87,9 @@ let st_effect_name = "FStar.HyperStack.ST.ST"
 
 
 /// Return the qualifier of a term as a string
-val term_qualifier (t : term) : Tac string
+val term_construct (t : term) : Tac string
 
-let term_qualifier (t : term) : Tac string =
+let term_construct (t : term) : Tac string =
   match inspect t with
   | Tv_Var _ -> "Tv_Var"
   | Tv_BVar _ -> "Tv_BVar"
@@ -140,7 +140,7 @@ let effect_type_to_string ety =
 val effect_name_to_type (ename : name) : Tot (option effect_type)
 
 let effect_name_to_type (ename : name) : Tot (option effect_type) =
-  let ename = implode_qn ename in
+  let ename = flatten_name ename in
   if ename = pure_effect_name then Some E_PURE
   else if ename = pure_hoare_effect_name then Some E_Pure
   else if ename = stack_effect_name then Some E_Stack
@@ -182,7 +182,7 @@ let get_rtype_info_from_type t =
   | Tv_Refine bv refin ->
     let bview : bv_view = inspect_bv bv in
     let raw_type : typ = bview.bv_sort in
-    let b : binder = pack_binder bv Q_Explicit in
+    let b : binder = mk_binder bv in
     let refin = pack (Tv_Abs b refin) in
     Some (mk_rtype_info raw_type refin)
   | _ -> None
@@ -298,7 +298,7 @@ let get_eterm_info (e:env) (t : term) =
       Some (mk_eterm_info E_Lemma (Some pre) (Some post) None hd parameters None None)
     | C_Eff univs eff_name ret_ty eff_args ->
       print "C_Eff:";
-      print ("- eff_name: " ^ (implode_qn eff_name));
+      print ("- eff_name: " ^ (flatten_name eff_name));
       print ("- result: " ^ (term_to_string ret_ty));
       print "- eff_args:";
       iter (fun (a, _) -> print ("arg: " ^ (term_to_string a))) eff_args;
@@ -314,7 +314,7 @@ let get_eterm_info (e:env) (t : term) =
       | Some E_ST, [(pre, _); (post, _)] ->
         Some (mk_eterm_info E_ST (Some pre) (Some post) ret_type_info hd parameters None None)
       | _, _ ->
-        print ("Unknown or inconsistant effect: " ^ (implode_qn eff_name));
+        print ("Unknown or inconsistant effect: " ^ (flatten_name eff_name));
         None
       end
     end
@@ -375,7 +375,7 @@ let instantiate_refinements e info ret_arg_name ret_arg =
     match get_rawest_type_from_opt_type_info info.ret_type, ret_arg_name with
     | Some ty, Some name ->
       let fbv : bv = fresh_bv_named name ty in
-      let b : binder = pack_binder fbv Q_Explicit in
+      let b : binder = mk_binder fbv in
       pack (Tv_Var fbv), push_binder e b
     | _ -> ret_arg, e
   in
@@ -586,7 +586,7 @@ let _debug_print_var (name : string) (t : term) : Tac unit =
   | Some ty -> print ("type: " ^ term_to_string ty)
   | _ -> ()
   end;
-  print ("qualifier: " ^ term_qualifier t);
+  print ("qualifier: " ^ term_construct t);
   begin match inspect t with
   | Tv_Var bv ->
     let b : bv_view = inspect_bv bv in
@@ -609,6 +609,7 @@ let tadmit_no_warning () : Tac unit =
 
 let pp_tac () : Tac unit =
   print ("post-processing: " ^ (term_to_string (cur_goal ())));
+  dump "";
   trefl()
 
 let test0 () : Lemma(3 >= 2) =
@@ -620,7 +621,7 @@ let test0 () : Lemma(3 >= 2) =
                           (goals());
     iteri (fun i g -> print ("smt goal " ^ (string_of_int i) ^ ": " ^
                           (term_to_string (goal_type g)))) (smt_goals());
-    print ("- qualif: " ^ term_qualifier (cur_goal ()));
+    print ("- qualif: " ^ term_construct (cur_goal ()));
     tadmit_no_warning())
 
 //binders_of_env
@@ -652,9 +653,195 @@ let print_binder_info (full : bool) (b : binder) : Tac unit =
 let print_binders_info (full : bool) : Tac unit =
   let e = top_env () in
   iter (print_binder_info full) (binders_of_env e)
+
+(*** Alternative: post-processing *)
+
+/// We declare some identifiers that we will use to guide the meta processing
+assume type meta_info
+assume val focus_on_term : meta_info
+
+exception MetaAnalysis of string
+let mfail str =
+  raise (MetaAnalysis str)
+
+//type amap 'a 'b = list 'a
+
+/// A map linking variables to terms. For now we use a list to define it, because
+/// there shouldn't be too many bindings.
+type bind_map = list (bv & term)
+
+let bind_map_push (b:bv) (t:term) (m:bind_map) = (b,t)::m
+
+let rec bind_map_get (b:bv) (m:bind_map) : Tot (option term) =
+  match m with
+  | [] -> None
+  | (b',t)::m' ->
+    if compare_bv b b' = Order.Eq then Some t else bind_map_get b m'
+
+let rec bind_map_get_from_name (b:string) (m:bind_map) : Tot (option (bv & term)) =
+  match m with
+  | [] -> None
+  | (b',t)::m' ->
+    let b'v = inspect_bv b' in
+    if b'v.bv_ppname = b then Some (b',t) else bind_map_get_from_name b m'
+
+noeq type genv =
+  {
+    env : env;
+    bmap : bind_map;
+  }
+let get_env (e:genv) : env = e.env
+let get_bind_map (e:genv) : bind_map = e.bmap
+let mk_genv env bmap : genv =
+  Mkgenv env bmap
+
+/// Push a binder to a ``genv``. Optionally takes a ``term`` which provides the
+/// term the binder is bound to (in a `let _ = _ in` construct for example).
+let genv_push_bv (b:bv) (t:option term) (e:genv) : Tac genv =
+  match t with
+  | Some t' ->
+    let br = mk_binder b in
+    let e' = push_binder e.env br in
+    let bmap' = bind_map_push b t' e.bmap in
+    mk_genv e' bmap'
+  | None ->
+    let br = mk_binder b in
+    let e' = push_binder e.env br in
+    let bmap' = bind_map_push b (pack (Tv_Var b)) e.bmap in
+    mk_genv e' bmap'
+
+let genv_push_binder (b:binder) (t:option term) (e:genv) : Tac genv =
+  match t with
+  | Some t' ->
+    let e' = push_binder e.env b in
+    let bmap' = bind_map_push (bv_of_binder b) t' e.bmap in
+    mk_genv e' bmap'
+  | None ->
+    let e' = push_binder e.env b in
+    let bv = bv_of_binder b in
+    let bmap' = bind_map_push bv (pack (Tv_Var bv)) e.bmap in
+    mk_genv e' bmap'
+
+/// TODO: for now I need to use universe 0 for type a because otherwise it doesn't
+/// type check
+val explore_term (#a : Type0) (f : a -> genv -> term -> Tac a)
+                 (x : a) (ge:genv) (t:term) :
+  Tac a
+
+val explore_pattern (#a : Type0) (f : a -> genv -> term -> Tac a)
+                    (x : a) (ge:genv) (pat:pattern) :
+  Tac (genv & a)
+
+let rec explore_term #a f x ge t =
+  match inspect t with
+  | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> x
+  | Tv_App hd (a,qual) ->
+    let x' = explore_term f x ge a in
+    explore_term f x' ge hd
+  | Tv_Abs br body ->
+    (* We first explore the type of the binder - the user might want to
+     * check information inside the binder definition *)
+    let bv = bv_of_binder br in
+    let bvv = inspect_bv bv in
+    let x' = explore_term f x ge bvv.bv_sort in
+    let ge' = genv_push_binder br None ge in
+    explore_term f x' ge' body
+  | Tv_Arrow br c -> x (* TODO: we might want to explore that *)
+  | Tv_Type () -> x
+  | Tv_Refine bv ref ->
+    let bvv = inspect_bv bv in
+    let x' = explore_term f x ge bvv.bv_sort in
+    let ge' = genv_push_bv bv None ge in
+    explore_term f x' ge' ref
+  | Tv_Const _ -> x
+  | Tv_Uvar _ _ -> x
+  | Tv_Let recf attrs bv def body ->
+    (* We need to check if the let definition is a meta identifier *)
+    if term_eq def (`focus_on_term) then
+      begin
+      (* TODO: process *)
+      print ("[> Focus on term: " ^ term_to_string body);
+      x
+      end
+    else
+      begin
+      let bvv = inspect_bv bv in
+      let x' = explore_term f x ge bvv.bv_sort in
+      let x'' = explore_term f x' ge body in
+      let ge' = genv_push_bv bv (Some def) ge in
+      explore_term f x ge' body
+      end
+  | Tv_Match scrutinee branches ->
+    (* TODO: transmit the x *)
+    let explore_branch x br =
+      let pat, t = br in
+      let ge', x' = explore_pattern #a f x ge pat in
+      explore_term #a f x' ge' t
+    in
+    let x' = explore_term #a f x ge scrutinee in
+    fold_left explore_branch x' branches
+  | Tv_AscribedT e ty tac ->
+    let x' = explore_term #a f x ge e in
+    explore_term #a f x' ge ty
+  | Tv_AscribedC e c tac ->
+    (* TODO: explore the comp *)
+    explore_term #a f x ge e
+  | _ ->
+    (* Unknown *)
+    x
+
+and explore_pattern #a f x ge pat =
+  match pat with
+  | Pat_Constant _ -> ge, x
+  | Pat_Cons fv patterns ->
+    fold_left (fun (ge, x) (pat, _) -> explore_pattern #a f x ge pat) (ge, x) patterns
+  | Pat_Var bv | Pat_Wild bv ->
+    let ge' = genv_push_bv bv None ge in
+    ge', x
+  | Pat_Dot_Term bv t ->
+    (* TODO: I'm not sure what this is *)
+    let ge' = genv_push_bv bv None ge in
+    ge', x
+
+let print_dbg (debug : bool) (s : string) : Tac unit =
+  if debug then print s
+
+let pp_explore (#a : Type0) (f : a -> genv -> term -> Tac a)
+               (x : a) :
+  Tac unit =
+  print "[> start_explore_term";
+  let g = cur_goal () in
+  let e = cur_env () in
+  begin match term_as_formula g with
+  | Comp (Eq _) l r ->
+    let ge = mk_genv e [] in
+    let x = explore_term f x ge l in
+    trefl()
+  | _ -> mfail "pp_explore: not a squashed equality"
+  end
+
+(*** Tests *)
+(**** Post-processing *)
+
+val pp_f : unit -> genv -> term -> Tac unit
+let pp_f () ge t = ()
+
+val pp_focused_term : unit -> Tac unit
+let pp_focused_term () =
+  pp_explore pp_f ()
+
+[@(postprocess_with pp_focused_term)]
+let pp_test1 () : Tot nat =
+  let _ = focus_on_term in
+  3
+  
+
+(**** Wrapping with tactics *)
+
+// Rk.: problems with naming: use synth: let x = _ by (...)
   
 #push-options "--admit_smt_queries true"
-//[@(postprocess_with pp_tac)]
+[@(postprocess_with pp_tac)]
 let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
   Pure (n:nat{n >= 17})
   (requires (x % 3 = 0))
@@ -693,6 +880,34 @@ let test5 (x : nat{x >= 4}) :
   run_tactic (fun _ -> print_binders_info false);
   3
 
+let test5_1 (x : nat{x >= 4}) :
+  ST.Stack nat
+  (requires (fun h -> x % 2 = 0))
+  (ensures (fun h1 y h2 -> y % 3 = 0)) =
+  (* When using ``synth``, we don't see the same thing *)
+  let x = 5 in
+  test_lemma1 x;
+  let _ : unit = _ by (print_binders_info false; exact (`())) in
+  3
+
+(* Playing with module definitions *)
+let test5_2 (x : nat{x >= 4}) :
+  ST.Stack nat
+  (requires (fun h -> x % 2 = 0))
+  (ensures (fun h1 y h2 -> y % 3 = 0)) =
+  let x = 5 in
+  test_lemma1 x;
+  run_tactic (
+    fun () ->
+    let opt_sig = lookup_typ (top_env ()) ["PrintTactics"; "Unknown"] in
+    begin match opt_sig with
+    | Some sig -> print "Found signature"
+    | _ -> print "No signature"
+    end;
+    iter (fun fv -> print (fv_to_string fv)) (defs_in_module (top_env()) ["PrintTactics"])
+    );
+  3
+
 (* Trying to use different names between the declaration and the definition *)
 val test6 (x : nat{x >= 4}) :
   ST.Stack nat
@@ -710,10 +925,10 @@ let test7 (x : nat) : nat =
   run_tactic (fun _ ->
     let e = top_env () in
     print "> lookup_attr";
-    iter (fun a -> print (implode_qn (inspect_fv a))) (lookup_attr (quote y) e);
+    iter (fun a -> print (flatten_name (inspect_fv a))) (lookup_attr (quote y) e);
     (* Warning: takes some time! *)
 //    print "> all_defs_in_env";
-//    iter (fun a -> print (implode_qn (inspect_fv a))) (all_defs_in_env e);
+//    iter (fun a -> print (flatten_name (inspect_fv a))) (all_defs_in_env e);
     ()
   );
   0
