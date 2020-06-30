@@ -76,14 +76,18 @@ let test_lemma4 (n1 : nat{n1 >= 3}) (n2 : int{n2 >= 5}) (n3 n4 n5 : nat):
   (requires (n3 + n4 + n5 >= 1))
   (ensures (n1 * n2 * (n3 + n4 + n5) >= 15)) = ()
 
+exception MetaAnalysis of string
+let mfail str =
+  raise (MetaAnalysis str)
+
 /// Some constants
-let prims_true_name = "Prims.l_True"
+let prims_true_qn = "Prims.l_True"
 let prims_true_term = `Prims.l_True
 
-let pure_effect_name = "Prims.PURE"
-let pure_hoare_effect_name = "Prims.Pure"
-let stack_effect_name = "FStar.HyperStack.ST.Stack"
-let st_effect_name = "FStar.HyperStack.ST.ST"
+let pure_effect_qn = "Prims.PURE"
+let pure_hoare_effect_qn = "Prims.Pure"
+let stack_effect_qn = "FStar.HyperStack.ST.Stack"
+let st_effect_qn = "FStar.HyperStack.ST.ST"
 
 
 /// Return the qualifier of a term as a string
@@ -141,10 +145,10 @@ val effect_name_to_type (ename : name) : Tot (option effect_type)
 
 let effect_name_to_type (ename : name) : Tot (option effect_type) =
   let ename = flatten_name ename in
-  if ename = pure_effect_name then Some E_PURE
-  else if ename = pure_hoare_effect_name then Some E_Pure
-  else if ename = stack_effect_name then Some E_Stack
-  else if ename = st_effect_name then Some E_ST
+  if ename = pure_effect_qn then Some E_PURE
+  else if ename = pure_hoare_effect_qn then Some E_Pure
+  else if ename = stack_effect_qn then Some E_Stack
+  else if ename = st_effect_qn then Some E_ST
   else None
 
 /// Refinement type information
@@ -319,7 +323,7 @@ let get_eterm_info (e:env) (t : term) =
       end
     end
   with | _ ->
-    print ("get_eterm_info: error: could not compute the type of '" ^
+    mfail ("get_eterm_info: error: could not compute the type of '" ^
            (term_to_string t) ^ "'");
     None
 #pop-options
@@ -354,35 +358,25 @@ let instantiate_opt_type_info_refin t info =
   | Some info' -> Some (instantiate_type_info_refin t info')
   | _ -> None
 
-let get_rawest_type (ty:type_info) : Tac typ =
+let get_rawest_type (ty:type_info) : Tot typ =
   match ty.rty with
   | Some rty -> rty.raw
   | _ -> ty.ty
 
-let get_rawest_type_from_opt_type_info (ty : option type_info) : Tac (option typ) =
+let get_rawest_type_from_opt_type_info (ty : option type_info) : Tot (option typ) =
   match ty with
   | Some ty' -> Some (get_rawest_type ty')
   | _ -> None
 
-val instantiate_refinements : env -> eterm_info -> option string -> term ->
-  Tac (env & eterm_info)
+val instantiate_refinements : env -> eterm_info -> term ->
+  Tac eterm_info
 
 #push-options "--ifuel 1"
-let instantiate_refinements e info ret_arg_name ret_arg =
-  (* Create a proper ``ret_arg`` term (in a let binding, the binding variable
-   * often gets replaced by the bound expression: we don't want that *)
-  let (ret_arg' : term), (e' : env) =
-    match get_rawest_type_from_opt_type_info info.ret_type, ret_arg_name with
-    | Some ty, Some name ->
-      let fbv : bv = fresh_bv_named name ty in
-      let b : binder = mk_binder fbv in
-      pack (Tv_Var fbv), push_binder e b
-    | _ -> ret_arg, e
-  in
+let instantiate_refinements e info ret_arg =
   (* Instanciate the post-condition and simplify the information *)
   let ipost : option term =
     match info.post with
-    | Some post -> Some (mk_e_app post [ret_arg'])
+    | Some post -> Some (mk_e_app post [ret_arg])
     | None -> None
   in
   (* Retrieve the return type refinement and instanciate it*)
@@ -391,7 +385,7 @@ let instantiate_refinements e info ret_arg_name ret_arg =
     | Some ret_type_info ->
       begin match ret_type_info.rty with
       | Some ret_type_rinfo ->
-        let refin' = mk_e_app ret_type_rinfo.refin [ret_arg'] in
+        let refin' = mk_e_app ret_type_rinfo.refin [ret_arg] in
         let ret_type_rinfo : rtype_info = { ret_type_rinfo with refin = refin' } in
         let ret_type_info' = { ret_type_info with rty = Some ret_type_rinfo } in
         Some ret_type_info'
@@ -407,11 +401,10 @@ let instantiate_refinements e info ret_arg_name ret_arg =
   in
   let iparameters = map inst_param info.parameters in
   (* Return *)
-  e',
-  ({ info with
+  { info with
     post = ipost;
     ret_type = iret_type;
-    parameters = iparameters })
+    parameters = iparameters }
 #pop-options
 
 (*** Step 3 *)
@@ -468,8 +461,16 @@ let simplify_eterm_info e steps info =
   }
 #pop-options
 
-let has_refinement (ty:type_info) : Tac bool =
+let has_refinement (ty:type_info) : Tot bool =
   Some? ty.rty
+
+let get_refinement (ty:type_info{Some? ty.rty}) : Tot term =
+  (Some?.v ty.rty).refin
+
+let get_opt_refinment (ty:type_info) : Tot (option term) =
+  match ty.rty with
+  | Some rty -> Some rty.refin
+  | None -> None
 
 /// Compare the type of a parameter and its expected type
 type type_comparison = | Refines | Same_raw_type | Unknown
@@ -482,7 +483,8 @@ let type_comparison_to_string c =
   | Unknown -> "Unknown"
 #pop-options
 
-let compare_types (info1 info2 : type_info) : Tac type_comparison =
+let compare_types (info1 info2 : type_info) :
+  Tot (c:type_comparison{c = Same_raw_type ==> has_refinement info2}) =
   if term_eq info1.ty info2.ty
   then Refines // The types are the same
   else
@@ -495,13 +497,23 @@ let compare_types (info1 info2 : type_info) : Tac type_comparison =
     else
       Unknown
 
-let compare_param_types (p:cast_info) : Tac type_comparison =
+let compare_cast_types (p:cast_info) :
+  Tot (c:type_comparison{
+    ((c = Refines \/ c = Same_raw_type) ==> (Some? p.p_ty /\ Some? p.exp_ty)) /\
+    (c = Same_raw_type ==> has_refinement (Some?.v p.exp_ty))}) =
   match p.p_ty, p.exp_ty with
   | Some info1, Some info2 -> compare_types info1 info2
   | _ -> Unknown
 
 (*** Step 4 *)
 /// Output the resulting information
+/// Originally: we output the ``eterm_info`` and let the emacs commands do some
+/// filtering and formatting. Now, we convert to a an ``assertions``.
+
+noeq type assertions = {
+  pres : list term;
+  posts : list term;
+}
 
 let printout_string (prefix data:string) : Tac unit =
   (* Export all at once - actually I'm not sure it is not possible for external
@@ -536,7 +548,7 @@ let printout_parameter (prefix:string) (index:int) (p:cast_info) : Tac unit =
   printout_opt_type (p_prefix ^ ":p_ty") p.p_ty;
   printout_opt_type (p_prefix ^ ":e_ty") p.exp_ty;
   printout_string (p_prefix ^ ":types_comparison")
-                  (type_comparison_to_string (compare_param_types p))
+                  (type_comparison_to_string (compare_cast_types p))
 
 let printout_parameters (prefix:string) (parameters:list cast_info) : Tac unit =
   printout_string (prefix ^ ":num") (string_of_int (List.length parameters));
@@ -544,12 +556,9 @@ let printout_parameters (prefix:string) (parameters:list cast_info) : Tac unit =
 
 /// Print the effectful information about a term in a format convenient to
 /// use for the emacs commands
-val print_eterm_info : env -> eterm_info -> option string -> term -> Tac unit
+val print_eterm_info : env -> eterm_info -> term -> Tac unit
 
-(* TODO: ret_arg: the introduced variables get replaced... *)
-(* TODO: correct naming for variables derived from tuples *)
-#push-options "--ifuel 1"
-let print_eterm_info e info ret_arg_name ret_arg =
+let print_eterm_info e info ret_arg =
     print ("ret_arg: " ^ term_to_string ret_arg);
     let sinfo = simplify_eterm_info e [primops; simplify] info in
     (* Print the information *)
@@ -561,13 +570,76 @@ let print_eterm_info e info ret_arg_name ret_arg =
     printout_parameters "eterm_info:parameters" sinfo.parameters;
     printout_opt_term "eterm_info:goal" sinfo.goal;
     print ("eterm_info:END")
-#pop-options
+
+let opt_cons (#a : Type) (opt_x : option a) (ls : list a) : Tot (list a) =
+  match opt_x with
+  | Some x -> x :: ls
+  | None -> ls
+
+(* TODO HERE *)
+val cast_info_to_obligations : cast_info -> Tac (list term)
+let cast_info_to_obligations ci =
+  match compare_cast_types ci with
+  | Refines -> []
+  | Same_raw_type ->
+    let refin = get_refinement (Some?.v ci.exp_ty) in
+    [refin]
+  | Unknown ->
+    match ci.p_ty, ci.exp_ty with
+    | Some p_ty, Some e_ty ->
+      let p_rty = get_rawest_type p_ty in
+      let e_rty = get_rawest_type e_ty in
+      (* For the type cast, we generate an assertion of the form:
+       * [> has_type (p <: type_of_p) expected_type
+       * The reason is that we want the user which parameter is concerned (hence
+       * the ``has_type``), and which types should be related (hence the
+       * ascription).
+       *)
+      let ascr_term = pack (Tv_AscribedT ci.term p_rty None) in
+      let has_type_params = [(p_rty, Q_Implicit); (ascr_term, Q_Explicit); (e_rty, Q_Explicit)] in
+      let type_cast = mk_app (`has_type) has_type_params in
+      let opt_refin = get_opt_refinment e_ty in
+      opt_cons opt_refin [type_cast]
+    | _ -> []
+
+/// Generates a list of obligations from a list of ``cast_info``. Note that
+/// the user should revert the list before printing the obligations.
+val cast_info_list_to_obligations : list cast_info -> Tac (list term)
+let cast_info_list_to_obligations ls =
+  let lsl = map cast_info_to_obligations ls in
+  flatten lsl
+
+/// Convert the effectful information about a term to a list of assertions, split
+/// betweens the assertions to place before the term and the assertions to place
+/// after.
+val eterm_info_to_assertions : bool -> env -> eterm_info -> Tac assertions
+let eterm_info_to_assertions is_let e info =
+  let pres : list term = [] in
+  let posts : list term = [] in
+  (* Pre *)
+  let pres = opt_cons info.pre pres in
+  (* Parameters (type cast + refinements) *)
+  let param_obligations = cast_info_list_to_obligations info.parameters in
+  let pres = append param_obligations pres in
+  (* Post *)
+  let posts = if is_let then opt_cons info.post posts else posts in
+  { pres = pres; posts = posts }
+
+val printout_assertions : string -> assertions -> Tac unit
+let printout_assertions prefix as =
+  let printout_assert qualif i p : Tac unit =
+    printout_term (prefix ^ qualif ^ string_of_int i) p
+  in
+  printout_string (prefix ^ ":num_pres") (string_of_int (List.length as.pres));
+  iteri (printout_assert ":pre") as.pres;
+  printout_string (prefix ^ ":num_posts") (string_of_int (List.length as.posts));
+  iteri (printout_assert ":post") as.posts
 
 /// The tactic to be called by the emacs commands
-val dprint_eterm : term -> option string -> term -> Tac unit
+val dprint_eterm : term -> term -> Tac unit
 
 #push-options "--ifuel 1"
-let dprint_eterm t ret_arg_name ret_arg =
+let dprint_eterm t ret_arg =
   let e = top_env () in
   match get_eterm_info e t with
   | None ->
@@ -576,8 +648,8 @@ let dprint_eterm t ret_arg_name ret_arg =
            (term_to_string t) ^ "'")
   | Some info ->
     let e = top_env () in
-    let e', info' = instantiate_refinements e info ret_arg_name ret_arg in
-    print_eterm_info e' info' ret_arg_name ret_arg
+    let info' = instantiate_refinements e info ret_arg in
+    print_eterm_info e info' ret_arg
 #pop-options
 
 let _debug_print_var (name : string) (t : term) : Tac unit =
@@ -624,11 +696,6 @@ let test0 () : Lemma(3 >= 2) =
     print ("- qualif: " ^ term_construct (cur_goal ()));
     tadmit_no_warning())
 
-//binders_of_env
-//lookup_typ
-//lookup_attr
-//all_defs_in_env  
-
 #push-options "--ifuel 1"
 let print_binder_info (full : bool) (b : binder) : Tac unit =
   let bv, a = inspect_binder b in
@@ -650,8 +717,7 @@ let print_binder_info (full : bool) (b : binder) : Tac unit =
     )
   else print (binder_to_string b)
 
-let print_binders_info (full : bool) : Tac unit =
-  let e = top_env () in
+let print_binders_info (full : bool) (e:env) : Tac unit =
   iter (print_binder_info full) (binders_of_env e)
 
 (*** Alternative: post-processing *)
@@ -659,10 +725,6 @@ let print_binders_info (full : bool) : Tac unit =
 /// We declare some identifiers that we will use to guide the meta processing
 assume type meta_info
 assume val focus_on_term : meta_info
-
-exception MetaAnalysis of string
-let mfail str =
-  raise (MetaAnalysis str)
 
 //type amap 'a 'b = list 'a
 
@@ -776,19 +838,14 @@ let rec explore_term #a f x ge t =
     | Tv_Const _ -> x, Continue
     | Tv_Uvar _ _ -> x, Continue
     | Tv_Let recf attrs bv def body ->
-      (* We need to check if the let definition is a meta identifier *)
-//      if term_eq def (`focus_on_term) then
-//        begin
-//        (* TODO: process *)
-//        print ("[> Focus on term: " ^ term_to_string body);
-//        x
-//        end
-//      else
       let bvv = inspect_bv bv in
+      (* Explore the binding type *)
       let x', flag' = explore_term f x ge bvv.bv_sort in
       if flag' = Continue then
-        let x'', flag'' = explore_term f x' ge body in
+        (* Explore the binding definition *)
+        let x'', flag'' = explore_term f x' ge def in
         if flag'' = Continue then
+          (* Explore the next subterm *)
           let ge' = genv_push_bv bv (Some def) ge in
           explore_term f x ge' body
         else x'', convert_ctrl_flag flag''
@@ -797,10 +854,12 @@ let rec explore_term #a f x ge t =
       let explore_branch (x_flag : a & ctrl_flag) (br : branch) : Tac (a & ctrl_flag)=
         let x, flag = x_flag in
         if flag = Continue then
-          let pat, t = br in
+          let pat, branch_body = br in
+          (* Explore the pattern *)
           let ge', x', flag' = explore_pattern #a f x ge pat in
           if flag' = Continue then
-            explore_term #a f x' ge' t
+            (* Explore the branch body *)
+            explore_term #a f x' ge' branch_body
           else x', convert_ctrl_flag flag'
         (* Don't convert the flag *)
         else x, flag
@@ -871,7 +930,33 @@ let analyze_effectful_term () ge t =
      if term_eq def (`focus_on_term) then
        begin
        print ("[> Focus on term: " ^ term_to_string body);
-       (), Abort
+       print ("[> Environment information: ");
+       print_binders_info false ge.env;
+       (* Start by analyzing the effectful term and checking whether it is
+        * a 'let' or not *)
+       let opt_info, ret_arg, is_let =
+         begin match inspect body with
+         | Tv_Let _ _ fbv fterm _ ->
+           let ret_arg = pack (Tv_Var fbv) in
+           get_eterm_info ge.env fterm, ret_arg, true
+         | _ -> get_eterm_info ge.env body, body, true
+         end
+       in
+       (* Instantiate the refinements *)
+       begin match opt_info with
+       | Some info ->
+         let inst_info = instantiate_refinements ge.env info ret_arg in
+         (* Simplify and filter *)
+         let sinfo = simplify_eterm_info ge.env [primops; simplify] inst_info in
+         (* Convert to a list of assertions *)
+         let assertions = eterm_info_to_assertions is_let ge.env sinfo in
+         (* Print *)
+         printout_assertions "ainfo" assertions;
+         (), Abort
+       | _ ->
+         mfail ("[> analyze_effectful_term: could not retrieve info from: " ^
+                term_to_string body)
+       end
        end
      else (), Continue
   | _ -> (), Continue
@@ -882,7 +967,7 @@ let pp_focused_term () =
 
 (*** Tests *)
 (**** Post-processing *)
-
+//#push-options "--admit_smt_queries true"
 [@(postprocess_with pp_focused_term)]
 let pp_test1 () : Tot nat =
   let x = 1 in
@@ -904,7 +989,7 @@ let test1 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
   (requires (x % 3 = 0))
   (ensures (fun n -> n % 2 = 0)) =
   test_lemma1 x; (**)
-  run_tactic (fun _ -> print_binders_info true);
+  run_tactic (fun _ -> print_binders_info true (top_env()));
   17
 
 let test2 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
@@ -916,7 +1001,7 @@ let test2 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
 let test3 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
   Lemma (requires x % 2 = 0) (ensures x + y + z >= 26) =
   (* The pre and the post are put together in a conjunction *)
-  run_tactic (fun _ -> print_binders_info true)
+  run_tactic (fun _ -> print_binders_info true (top_env()))
 
 let test4 (x : nat{x >= 4}) :
   ST.Stack nat
@@ -924,7 +1009,7 @@ let test4 (x : nat{x >= 4}) :
   (ensures (fun h1 y h2 -> y % 3 = 0)) =
   (* Look after FStar.Pervasives.st_post_h FStar.Monotonic.HyperStack.mem Prims.nat
    * and FStar.Monotonic.HyperStack.mem *)
-  run_tactic (fun _ -> print_binders_info true);
+  run_tactic (fun _ -> print_binders_info true (top_env()));
   3
 
 let test5 (x : nat{x >= 4}) :
@@ -934,7 +1019,7 @@ let test5 (x : nat{x >= 4}) :
   (* Shadowing: we can't use the pre anymore... *)
   let x = 5 in
   test_lemma1 x;
-  run_tactic (fun _ -> print_binders_info false);
+  run_tactic (fun _ -> print_binders_info false (top_env()));
   3
 
 let test5_1 (x : nat{x >= 4}) :
@@ -944,7 +1029,7 @@ let test5_1 (x : nat{x >= 4}) :
   (* When using ``synth``, we don't see the same thing *)
   let x = 5 in
   test_lemma1 x;
-  let _ : unit = _ by (print_binders_info false; exact (`())) in
+  let _ : unit = _ by (print_binders_info false (top_env()); exact (`())) in
   3
 
 (* Playing with module definitions *)
@@ -973,7 +1058,7 @@ val test6 (x : nat{x >= 4}) :
 
 (* It's ok: the pre references y *)
 let test6 y =
-  run_tactic (fun _ -> print_binders_info false);
+  run_tactic (fun _ -> print_binders_info false (top_env()));
   3
 
 (* TODO: what is ``lookup_attr`` used for? *)
