@@ -499,13 +499,20 @@ and explore_pattern dbg #a f x ge pat =
 /// Returns the list of variables free in a term
 val free_in : term -> Tac (list bv)
 let free_in t =
+  let same_name (bv1 bv2 : bv) : Tot bool =
+    name_of_bv bv1 = name_of_bv bv2
+  in
   let update_free (fl:list bv) (ge:genv) (c:option typ_or_comp) (tv:term_view) :
     Tac (list bv & ctrl_flag) =
     match tv with
     | Tv_Var bv | Tv_BVar bv ->
       let bvv = inspect_bv bv in
+      (* Check if the binding was not introduced during the traversal *)
       begin match bind_map_get_from_name bvv.bv_ppname ge.bmap with
-      | None -> bv :: fl, Continue
+      | None ->
+        (* Check if we didn't already count the binding *)
+        let fl' = if Some? (List.Tot.tryFind (same_name bv) fl) then fl else bv :: fl in
+        fl', Continue
       | Some _ -> fl, Continue
       end
     | _ -> fl, Continue
@@ -835,6 +842,9 @@ let subst_with_fresh_vars ge t bl =
 val term_to_abs_shadowed_term (ge : genv) (t : term) : Tac (genv & abs_term)
 let term_to_abs_shadowed_term ge t =
   let free_vars = free_in t in (* *)
+//  (* TODO: remove *)
+//  print ("term_to_abs_shadowed_term: num free vars: " ^ string_of_int (List.length free_vars));
+//  iter (fun bv -> print (bv_to_string bv)) free_vars;
   let free_vars = find_shadowed_bvs ge free_vars in
   (* The shadowed variables *)
   let shad_vars = List.Tot.filter (fun (bv, b) -> b) free_vars in
@@ -1656,6 +1666,19 @@ let pp_test6 () :
   x
 
 /// Tests with shadowed dependent types
+type ty1 (a : Type) : Type0 = list a
+type ty2 (a b : Type0) = list a & option b
+
+(* TODO HERE *)
+/// Actually, it's ok
+[@(postprocess_with (pp_focused_term true))]
+let pp_test7 (a : Type) (x : ty1 a) :
+  Pure (ty1 a)
+  (requires x == x /\ a == a)
+  (ensures fun x' -> x == x') =
+  let a = nat in
+  let _ = focus_on_term in
+  x
 
 (**** Wrapping with tactics *)
 
