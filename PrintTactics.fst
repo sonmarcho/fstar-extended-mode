@@ -2,6 +2,7 @@ module PrintTactics
 
 module HS = FStar.HyperStack
 module ST = FStar.HyperStack.ST
+module B = LowStar.Buffer
 
 open FStar.List
 open FStar.Tactics
@@ -60,6 +61,12 @@ let test_fun5 (n : nat{n >= 2}) :
 let test_fun6 (n1 : nat{n1 >= 4}) (n2 : nat{n2 >= 8}) (n3 : nat{n3 >= 10}) :
   Tot (n:int{n >= 80}) =
   (n1 + n2) * n3
+
+let test_stack1 (n : nat) :
+  ST.Stack (n':int{n' >= 0})
+  (requires (fun h0 -> n >= 1 /\ B.live h0 (B.null #nat)))
+  (ensures (fun h0 n' h1 -> B.modifies B.loc_none h0 h1 /\ n' >= n)) =
+  n + 1
 
 let test_lemma1 (n : nat) :
   Lemma (n * n >= 0) = ()
@@ -392,6 +399,9 @@ noeq type assertions = {
   posts : list proposition;
 }
 
+let mk_assertions pres posts : assertions =
+  Mkassertions pres posts
+
 (***** Types, casts and refinements *)
 
 let has_refinement (ty:type_info) : Tot bool =
@@ -661,8 +671,8 @@ let opt_term_to_prop opt_t params_info =
 /// the environment in the return type).
 /// The ``bind_var`` parameter is a variable if the studied term was bound in a let
 /// expression.
-val eterm_info_to_propositions : env -> eterm_info -> option term -> Tac (env & assertions)
-let eterm_info_to_propositions e info bind_var =
+val eterm_info_to_assertions : env -> eterm_info -> option term -> Tac (env & assertions)
+let eterm_info_to_assertions e info bind_var =
   (* Introduce additional variables to instantiate the return type refinement,
    * the precondition, the postcondition and the goal *)
   (* First, the return value: returns an updated env, the value to use for
@@ -762,9 +772,15 @@ let simp_filter_proposition (e:env) (steps:list norm_step) (p:proposition) :
     let prop3 = mk_e_app prop2 ((map (fun b -> pack (Tv_Var (bv_of_binder b)))) p.abs) in
     [{ p with prop = prop3 }]
 
-let simpl_filter_propositions (e:env) (steps:list norm_step) (pl:list proposition) :
+let simp_filter_propositions (e:env) (steps:list norm_step) (pl:list proposition) :
   Tac (list proposition) =
   List.flatten (map (simp_filter_proposition e steps) pl)
+
+let simp_filter_assertions (e:env) (steps:list norm_step) (a:assertions) :
+  Tac assertions =
+  let pres = simp_filter_propositions e steps a.pres in
+  let posts = simp_filter_propositions e steps a.posts in
+  mk_assertions pres posts
 
 (**** Step 4 *)
 /// Output the resulting information
@@ -800,24 +816,6 @@ let printout_assertions (prefix:string) (a:assertions) : Tac unit =
   printout_propositions (prefix ^ ":pres") a.pres;
   printout_propositions (prefix ^ ":posts") a.posts;
   print (prefix ^ ":END")
-
-
-/// The tactic to be called by the emacs commands
-val dprint_eterm : term -> term -> Tac unit
-
-#push-options "--ifuel 1"
-let dprint_eterm t ret_arg =
-  let e = top_env () in
-  match get_eterm_info e t with
-  | None ->
-    (* TODO: fail *)
-    print ("dprint_eterm: could not retrieve effect information from: '" ^
-           (term_to_string t) ^ "'")
-  | Some info ->
-    let e = top_env () in
-    let info' = instantiate_propositions e info ret_arg in
-    print_eterm_info e info' ret_arg
-#pop-options
 
 let _debug_print_var (name : string) (t : term) : Tac unit =
   print ("_debug_print_var: " ^ name ^ ": " ^ term_to_string t);
@@ -892,8 +890,6 @@ let print_binders_info (full : bool) (e:env) : Tac unit =
 /// We declare some identifiers that we will use to guide the meta processing
 assume type meta_info
 assume val focus_on_term : meta_info
-
-//type amap 'a 'b = list 'a
 
 /// A map linking variables to terms. For now we use a list to define it, because
 /// there shouldn't be too many bindings.
@@ -1088,9 +1084,9 @@ let pp_explore (#a : Type0) (f : a -> genv -> term_view -> Tac (a & ctrl_flag))
 
 /// Effectful term analysis: analyze a term in order to print propertly instantiated
 /// pre/postconditions and type conditions.
-val analyze_effectful_term : unit -> genv -> term_view -> Tac (unit & ctrl_flag)
+val analyze_effectful_term : bool -> unit -> genv -> term_view -> Tac (unit & ctrl_flag)
 
-let analyze_effectful_term () ge t =
+let analyze_effectful_term dbg () ge t =
   match t with
   | Tv_Let recf attrs bv def body ->
     (* We need to check if the let definition is a meta identifier *)
@@ -1101,41 +1097,34 @@ let analyze_effectful_term () ge t =
        print_binders_info false ge.env;
        (* Start by analyzing the effectful term and checking whether it is
         * a 'let' or not *)
-       let opt_info, ret_arg, is_let =
+       let ge1, info, ret_arg, is_let =
          begin match inspect body with
          | Tv_Let _ _ fbv fterm _ ->
            let ret_arg = pack (Tv_Var fbv) in
-           get_eterm_info ge.env fterm, ret_arg, true
-         | _ -> get_eterm_info ge.env body, body, true
+           genv_push_bv fbv None ge, get_eterm_info ge.env fterm, Some ret_arg, true
+         | _ -> ge, get_eterm_info ge.env body, None, true
          end
        in
        (* Instantiate the refinements *)
-       begin match opt_info with
-       | Some info ->
-         let inst_info = instantiate_propositions ge.env info ret_arg in
-         (* Simplify and filter *)
-         let sinfo = simplify_eterm_info ge.env [primops; simplify] inst_info in
-         (* Convert to a list of assertions *)
-         let assertions = eterm_info_to_assertions is_let ge.env sinfo in
-         (* Print *)
-         printout_assertions "ainfo" assertions;
-         (), Abort
-       | _ ->
-         mfail ("[> analyze_effectful_term: could not retrieve info from: " ^
-                term_to_string body)
-       end
+       let e2, asserts = eterm_info_to_assertions ge1.env info ret_arg in
+       (* Simplify and filter *)
+       let sasserts = simp_filter_assertions e2 [primops; simplify] asserts in
+//         (* Convert to a list of assertions *)
+       (* Print *)
+       printout_assertions "ainfo" sasserts;
+       (), Abort
        end
      else (), Continue
   | _ -> (), Continue
 
-val pp_focused_term : unit -> Tac unit
-let pp_focused_term () =
-  pp_explore analyze_effectful_term ()
+val pp_focused_term : bool -> unit -> Tac unit
+let pp_focused_term dbg () =
+  pp_explore (analyze_effectful_term dbg) ()
 
 (*** Tests *)
 (**** Post-processing *)
 //#push-options "--admit_smt_queries true"
-[@(postprocess_with pp_focused_term)]
+[@(postprocess_with (pp_focused_term false))]
 let pp_test1 () : Tot nat =
   let x = 1 in
   let y = 2 in
@@ -1143,7 +1132,39 @@ let pp_test1 () : Tot nat =
     let _ = focus_on_term in
     test_fun1 (3 * x + y)
   else 0
-  
+
+[@(postprocess_with (pp_focused_term false))]
+let pp_test2 () : Tot nat =
+  let x = 4 in
+  let y = 9 in
+  let z = 11 in
+  if x <= y then
+    let _ = focus_on_term in
+    test_fun6 x y z
+  else 0
+
+[@(postprocess_with (pp_focused_term false))]
+let pp_test3 () : Tot nat =
+  let x = 4 in
+  let y = 9 in
+  let z = 11 in
+  if x <= y then
+    let _ = focus_on_term in
+    let w = test_fun6 x y z in
+    w
+  else 0
+
+[@(postprocess_with (pp_focused_term true))]
+let pp_test4 () :
+  ST.Stack nat
+  (requires (fun _ -> True))
+  (ensures (fun _ _ _ -> True)) =
+  let x = 2 in
+  let _ = focus_on_term in
+  let w = test_stack1 x in
+  w
+
+
 
 (**** Wrapping with tactics *)
 
