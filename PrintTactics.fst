@@ -31,6 +31,7 @@ let rec mk_abs (t : term) (args : list binder) : Tac term (decreases args) =
     let t' = mk_abs t args' in
     pack (Tv_Abs a t')
 
+(*** General utilities *)
 /// Some debugging facilities
 let print_dbg (debug : bool) (s : string) : Tac unit =
   if debug then print s
@@ -52,70 +53,9 @@ let acomp_to_string (c:comp) : Tot string =
     let args_str = List.Tot.fold_left (fun x y -> x ^ y) "" args_str in
     "C_Eff (" ^ flatten_name eff_name ^ ") (" ^ term_to_string result ^ ")" ^ args_str
 
-
-let test_fun1 (n : nat) :
-  Pure nat
-  (requires (n >= 4))
-  (ensures (fun n' -> n' >= 8)) =
-  2 * n
-
-let test_fun2 (n : nat) :
-  ST.Stack nat
-  (requires (fun h1 -> n >= 4))
-  (ensures (fun h1 n' h2 -> n' >= 8)) =
-  2 * n
-
-let test_fun3 (n : nat) :
-  ST.ST nat
-  (requires (fun h1 -> n >= 4))
-  (ensures (fun h1 n' h2 -> n' >= 8)) =
-  2 * n
-
-let test_fun4 (n : nat{n >= 2}) :
-  Tot (n':nat{n' >= 8}) =
-  4 * n
-
-let test_fun5 (n : nat{n >= 2}) :
-  Tot (p:(nat & int){let n1, n2 = p in n1 >= 8 /\ n2 >= 2}) =
-  4 * n, 2
-
-let test_fun6 (n1 : nat{n1 >= 4}) (n2 : nat{n2 >= 8}) (n3 : nat{n3 >= 10}) :
-  Tot (n:int{n >= 80}) =
-  (n1 + n2) * n3
-
-let test_stack1 (n : nat) :
-  ST.Stack (n':int{n' >= 0})
-  (requires (fun h0 -> n >= 1 /\ B.live h0 (B.null #nat)))
-  (ensures (fun h0 n' h1 -> B.modifies B.loc_none h0 h1 /\ n' >= n)) =
-  n + 1
-
-let test_lemma1 (n : nat) :
-  Lemma (n * n >= 0) = ()
-
-let test_lemma2 (n : nat) :
-  Lemma
-  (requires (n >= 4 /\ True))
-  (ensures (2 * n >= 8)) = ()
-
-let predicate_with_a_very_long_name_to_ensure_break_line (n : nat) : Type0 =
-  n >= 4
-
-let test_lemma3 (n : int{n >= 0}) :
-  Lemma
-  (requires (
-    n >= 4 /\ n * n >= 0 /\ n >= 0 /\ n * n + n + 3 >= 0 /\
-    predicate_with_a_very_long_name_to_ensure_break_line n))
-  (ensures (2 * n >= 8)) = ()
-
-let test_lemma4 (n1 : nat{n1 >= 3}) (n2 : int{n2 >= 5}) (n3 n4 n5 : nat):
-  Lemma
-  (requires (n3 + n4 + n5 >= 1))
-  (ensures (n1 * n2 * (n3 + n4 + n5) >= 15)) = ()
-
 exception MetaAnalysis of string
 let mfail str =
   raise (MetaAnalysis str)
-
 
 /// A map linking variables to terms. For now we use a list to define it, because
 /// there shouldn't be too many bindings.
@@ -173,6 +113,28 @@ let genv_push_binder (b:binder) (t:option term) (e:genv) : Tac genv =
     let bmap' = bind_map_push bv (pack (Tv_Var bv)) e.bmap in
     mk_genv e' bmap'
 
+
+/// Check if a binder is shadowed by another more recent binder
+let bv_is_shadowed (ge : genv) (bv : bv) : Tot bool =
+  let bl = List.Tot.map fst ge.bmap in
+  let bvv = inspect_bv bv in
+  let opt_res = bind_map_get_from_name bvv.bv_ppname ge.bmap in
+  match opt_res with
+  | None -> false (* Actually shouldn't happen if the environment was correctly updated *)
+  | Some (bv', _) ->
+    let bvv' = inspect_bv bv' in
+    (* Check if it is the same binder - we don't check the type *)
+    if bvv'.bv_index = bvv.bv_index then false
+    else true
+
+let binder_is_shadowed (ge : genv) (b : binder) : Tot bool =
+  bv_is_shadowed ge (bv_of_binder b)
+
+let find_shadowed_bvs (ge : genv) (bl : list bv) : Tot (list (bv & bool)) =
+  List.Tot.map (fun b -> b, bv_is_shadowed ge b) bl
+
+let find_shadowed_binders (ge : genv) (bl : list binder) : Tot (list (binder & bool)) =
+  List.Tot.map (fun b -> b, binder_is_shadowed ge b) bl
 
 /// Some constants
 let prims_true_qn = "Prims.l_True"
@@ -306,16 +268,6 @@ let get_type_info_from_type (ty:term) : Tac type_info =
   let refin = get_rtype_info_from_type ty in
   mk_type_info ty refin
 
-/// Cast information
-noeq type cast_info = {
-  term : term;
-  p_ty : option type_info; // The type of the term
-  exp_ty : option type_info; // The type of the expected parameter
-}
-
-let mk_cast_info t p_ty exp_ty : cast_info =
-  Mkcast_info t p_ty exp_ty
-
 val get_total_or_gtotal_ret_type : comp -> Tot (option typ)
 let get_total_or_gtotal_ret_type c =
   match inspect_comp c with
@@ -370,6 +322,215 @@ let abs_update_opt_typ_or_comp b opt_c =
   | None -> None
   | Some c -> Some (abs_update_typ_or_comp b c)
 
+/// Exploring a term
+
+let convert_ctrl_flag (flag : ctrl_flag) =
+  match flag with
+  | Continue -> Continue
+  | Skip -> Continue
+  | Abort -> Abort
+
+/// TODO: for now I need to use universe 0 for type a because otherwise it doesn't
+/// type check
+/// ctrl_flag:
+/// - Continue: continue exploring the term
+/// - Skip: don't explore the sub-terms of this term
+/// - Abort: stop exploration
+/// TODO: we might want something more precise (like: don't explore the type of the
+/// ascription but explore its body)
+/// Note that ``explore_term`` doesn't use the environment parameter besides pushing
+/// binders and passing it to ``f``, which means that you can give it arbitrary
+/// environments, ``explore_term`` itself won't fail (but the passed function might).
+val explore_term (dbg : bool)
+                 (#a : Type0) (f : a -> genv -> option typ_or_comp -> term_view -> Tac (a & ctrl_flag))
+                 (x : a) (ge:genv) (c:option typ_or_comp) (t:term) :
+  Tac (a & ctrl_flag)
+
+val explore_pattern (dbg : bool)
+                    (#a : Type0) (f : a -> genv -> option typ_or_comp -> term_view -> Tac (a & ctrl_flag))
+                    (x : a) (ge:genv) (pat:pattern) :
+  Tac (genv & a & ctrl_flag)
+
+(* TODO: carry around the list of encompassing terms *)
+let rec explore_term dbg #a f x ge c t =
+  if dbg then
+    begin
+    print ("[> explore_term: " ^ term_construct t ^ ":\n" ^ term_to_string t)
+    end;
+  let tv = inspect t in
+  let x', flag = f x ge c tv in
+  if flag = Continue then
+    begin match tv with
+    | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> x', Continue
+    | Tv_App hd (a,qual) ->
+      let x', flag' = explore_term dbg f x ge None a in
+      if flag' = Continue then
+        explore_term dbg f x' ge None hd
+      else x', convert_ctrl_flag flag'
+    | Tv_Abs br body ->
+      (* We first explore the type of the binder - the user might want to
+       * check information inside the binder definition *)
+      let bv = bv_of_binder br in
+      let bvv = inspect_bv bv in
+      let x', flag' = explore_term dbg f x ge None bvv.bv_sort in
+      if flag' = Continue then
+        let ge' = genv_push_binder br None ge in
+        let c' = abs_update_opt_typ_or_comp br c in
+        explore_term dbg f x' ge' c' body
+      else x', convert_ctrl_flag flag'
+    | Tv_Arrow br c -> x, Continue (* TODO: we might want to explore that *)
+    | Tv_Type () -> x, Continue
+    | Tv_Refine bv ref ->
+      let bvv = inspect_bv bv in
+      let x', flag' = explore_term dbg f x ge None bvv.bv_sort in
+      if flag' = Continue then
+        let ge' = genv_push_bv bv None ge in
+        explore_term dbg f x' ge' None ref
+      else x', convert_ctrl_flag flag'
+    | Tv_Const _ -> x, Continue
+    | Tv_Uvar _ _ -> x, Continue
+    | Tv_Let recf attrs bv def body ->
+      let bvv = inspect_bv bv in
+      (* Explore the binding type *)
+      let x', flag' = explore_term dbg f x ge None bvv.bv_sort in
+      if flag' = Continue then
+        (* Explore the binding definition *)
+        let x'', flag'' = explore_term dbg f x' ge None def in
+        if flag'' = Continue then
+          (* Explore the next subterm *)
+          let ge' = genv_push_bv bv (Some def) ge in
+          explore_term dbg f x ge' c body
+        else x'', convert_ctrl_flag flag''
+      else x', convert_ctrl_flag flag'
+    | Tv_Match scrutinee branches ->
+      let explore_branch (x_flag : a & ctrl_flag) (br : branch) : Tac (a & ctrl_flag)=
+        let x, flag = x_flag in
+        if flag = Continue then
+          let pat, branch_body = br in
+          (* Explore the pattern *)
+          let ge', x', flag' = explore_pattern dbg #a f x ge pat in
+          if flag' = Continue then
+            (* Explore the branch body *)
+            explore_term dbg #a f x' ge' c branch_body
+          else x', convert_ctrl_flag flag'
+        (* Don't convert the flag *)
+        else x, flag
+      in
+      let x' = explore_term dbg #a f x ge None scrutinee in
+      fold_left explore_branch x' branches
+    | Tv_AscribedT e ty tac ->
+      let c' = Some (TC_Typ ty []) in
+      let x', flag = explore_term dbg #a f x ge None ty in
+      if flag = Continue then
+        explore_term dbg #a f x' ge c' e
+      else x', convert_ctrl_flag flag
+    | Tv_AscribedC e c' tac ->
+      (* TODO: explore the comp *)
+      explore_term dbg #a f x ge (Some (TC_Comp c' [])) e
+    | _ ->
+      (* Unknown *)
+      x, Continue
+    end
+  else x', convert_ctrl_flag flag
+
+and explore_pattern dbg #a f x ge pat =
+  match pat with
+  | Pat_Constant _ -> ge, x, Continue
+  | Pat_Cons fv patterns ->
+    let explore_pat ge_x_flag pat =
+      let ge, x, flag = ge_x_flag in
+      let pat', _ = pat in
+      if flag = Continue then
+        explore_pattern dbg #a f x ge pat'
+      else
+        (* Don't convert the flag *)
+        ge, x, flag
+    in
+    fold_left explore_pat (ge, x, Continue) patterns
+  | Pat_Var bv | Pat_Wild bv ->
+    let ge' = genv_push_bv bv None ge in
+    ge', x, Continue
+  | Pat_Dot_Term bv t ->
+    (* TODO: I'm not sure what this is *)
+    let ge' = genv_push_bv bv None ge in
+    ge', x, Continue
+
+/// Returns the list of variables free in a term
+val free_in : term -> Tac (list bv)
+let free_in t =
+  let update_free (fl:list bv) (ge:genv) (c:option typ_or_comp) (tv:term_view) :
+    Tac (list bv & ctrl_flag) =
+    match tv with
+    | Tv_Var bv | Tv_BVar bv ->
+      let bvv = inspect_bv bv in
+      begin match bind_map_get_from_name bvv.bv_ppname ge.bmap with
+      | None -> bv :: fl, Continue
+      | Some _ -> fl, Continue
+      end
+    | _ -> fl, Continue
+  in
+  let e = top_env () in (* we actually don't care about the environment *)
+  let ge = mk_genv e [] in
+  fst (explore_term false update_free [] ge None t)  
+
+
+(*** Effectful term analysis *)
+/// Analyze a term to retrieve its effectful information
+
+/// The type to model a term containing variables which may need to be abstracted.
+noeq type abs_term = {
+  (* The proposition body *)
+  body : term;
+  (* The parameters which must be abstracted. It happens that we need to
+   * use variables that don't appear in the user code (for example,
+   * stack memories for the pre and post-condition of stateful functions),
+   * or which have been shadowed once we reach the point where we introduce
+   * them.
+   * In this case, whenever we output the term, we write its content as an
+   * asbtraction applied to those missing parameters. For instance, in the
+   * case of the assertion introduced for a post-condition:
+   * [> assert((fun h1 h2 -> post) h1 h2);
+   * Besides the informative goal, the user can replace those parameters (h1
+   * and h2 above) by the proper ones then normalize the assertion by using
+   * the appropriate command to get a valid assertion.
+   *)
+  abs : list binder;
+}
+
+type proposition = abs_term
+
+/// Cast information
+noeq type cast_info = {
+  term : term;
+  p_ty : option type_info; // The type of the term
+  exp_ty : option type_info; // The type of the expected parameter
+}
+
+let mk_cast_info t p_ty exp_ty : cast_info =
+  Mkcast_info t p_ty exp_ty
+
+/// Convert a ``typ_or_comp`` to cast information
+noeq type comp_info = {
+  cc_pre : option proposition;
+  cc_ret_type : option abs_term;
+  cc_ret_refin : option proposition; (* the type should be: return_type -> Type *)
+  cc_post : option proposition;
+}
+
+let mk_comp_info = Mkcomp_info
+
+/// Extracts the effectful information from a computation
+// TODO: insert in eterm_info?
+noeq type effect_info = {
+  ei_type : effect_type;
+  ei_ret_type : type_info;
+  ei_pre : option term;
+  ei_post : option term;
+}
+
+let mk_effect_info = Mkeffect_info
+
+
 /// Effectful term information
 noeq type eterm_info = {
   etype : effect_type;
@@ -383,8 +544,6 @@ noeq type eterm_info = {
 
 let mk_eterm_info = Mketerm_info
 
-(*** Effectful term analysis *)
-/// Analyze a term to retrieve its effectful information
 
 (**** Step 1 *)
 /// Decompose a function application between its body and parameters
@@ -421,18 +580,6 @@ let rec decompose_application_aux (e : env) (t : term) :
 let decompose_application e t =
   let hd, params = decompose_application_aux e t in
   hd, List.Tot.rev params
-
-/// Extracts the effectful information from a computation
-
-// TODO: insert in eterm_info?
-noeq type effect_info = {
-  ei_type : effect_type;
-  ei_ret_type : type_info;
-  ei_pre : option term;
-  ei_post : option term;
-}
-
-let mk_effect_info = Mkeffect_info
 
 /// Computes an effect type, its return type and its (optional) pre and post
 val comp_view_to_effect_info : comp_view -> Tac (option effect_info)
@@ -473,10 +620,10 @@ let comp_to_effect_info c =
   comp_view_to_effect_info cv
 
 /// Returns the effectful information about a term
-val get_eterm_info : env -> term -> Tac eterm_info
+val compute_eterm_info : env -> term -> Tac eterm_info
 
 #push-options "--ifuel 2"
-let get_eterm_info (e:env) (t : term) =
+let compute_eterm_info (e:env) (t : term) =
   (* Decompose the term if it is a function application *)
   let hd, parameters = decompose_application e t in
   try
@@ -484,60 +631,16 @@ let get_eterm_info (e:env) (t : term) =
     let c : comp = tcc e t in
     let opt_einfo = comp_to_effect_info c in
     match opt_einfo with
-    | None -> mfail ("get_eterm_info: failed on: " ^ term_to_string t)
+    | None -> mfail ("compute_eterm_info: failed on: " ^ term_to_string t)
     | Some einfo ->
       mk_eterm_info einfo.ei_type einfo.ei_pre einfo.ei_post einfo.ei_ret_type
                     hd parameters
     end
   with
   | TacticFailure msg ->
-    mfail ("get_eterm_info: failure: '" ^ msg ^ "'")
+    mfail ("compute_eterm_info: failure: '" ^ msg ^ "'")
   | e -> raise e
 #pop-options
-
-/// Adds the current goal information to an ``eterm_info`` (if the term is a returned value)
-val get_goal_info : eterm_info -> Tac eterm_info
-
-/// TODO:
-let get_goal_info info =
-  let env = cur_env () in
-  let goal = cur_goal () in
-  info
-
-(**** Step 2 *)
-/// The retrieved type refinements and post-conditions are not instantiated (they
-/// are lambda functions): instantiate them to get propositions.
-
-/// The type to model a term containing variables which may need to be abstracted.
-noeq type abs_term = {
-  (* The proposition body *)
-  body : term;
-  (* The parameters which must be abstracted. It happens that we need to
-   * use variables that don't appear in the user code (for example,
-   * stack memories for the pre and post-condition of stateful functions),
-   * or which have been shadowed once we reach the point where we introduce
-   * them.
-   * In this case, whenever we output the term, we write its content as an
-   * asbtraction applied to those missing parameters. For instance, in the
-   * case of the assertion introduced for a post-condition:
-   * [> assert((fun h1 h2 -> post) h1 h2);
-   * Besides the informative goal, the user can replace those parameters (h1
-   * and h2 above) by the proper ones then normalize the assertion by using
-   * the appropriate command to get a valid assertion.
-   *)
-  abs : list binder;
-}
-
-type proposition = abs_term
-
-/// Propositions split between pre and post assertions
-noeq type assertions = {
-  pres : list proposition;
-  posts : list proposition;
-}
-
-let mk_assertions pres posts : assertions =
-  Mkassertions pres posts
 
 (***** Types, casts and refinements *)
 
@@ -606,6 +709,62 @@ let opt_term_to_opt_abs_term opt_t params abs_params =
   match opt_t with
   | Some t -> Some (term_to_abs_term t params abs_params)
   | None -> None  
+
+/// Generates an ``abs_term`` from a ``term`` where the abstracted parameters are
+/// the variables free in the term but shadowed in the current environments.
+/// Note that we need to provide two environments: the current environment, and
+/// another in which the term typed, and from which the current environment was
+/// produced by pushing binders.
+val term_to_abs_shadowed_term (ge : genv) (t : term) : Tac abs_term
+let term_to_abs_shadowed_term ge t =
+  let free_vars = free_in t in
+  let free_vars = find_shadowed_bvs ge free_vars in
+  let abs_vars = List.Tot.filter (fun (bv, b) -> b) free_vars in
+  let abs_vars = List.Tot.map (fun (bv, _) -> pack_binder bv Q_Explicit) abs_vars in
+  term_to_abs_term t [] abs_vars
+
+val opt_term_to_opt_abs_shadowed_term (ge : genv) (opt_t : option term) : Tac (option abs_term)
+let opt_term_to_opt_abs_shadowed_term ge opt_t =
+  match opt_t with
+  | None -> None
+  | Some t -> Some (term_to_abs_shadowed_term ge t)
+
+/// Auxiliary function: convert type information to a ``comp_info``
+let _typ_to_comp_info (ge : genv) (tinfo : type_info) (m : list (binder & binder)) :
+  Tac comp_info =
+  let rty = get_rawest_type tinfo in
+  let refin = get_opt_refinment tinfo in
+  let rty = term_to_abs_shadowed_term ge rty in
+  let refin = opt_term_to_opt_abs_shadowed_term ge refin in
+  mk_comp_info None (Some rty) refin None  
+
+let typ_or_comp_to_comp_info (ge : genv) (c : typ_or_comp) : Tac comp_info =
+  match c with
+  | TC_Typ ty m ->
+    let tinfo = get_type_info_from_type ty in
+    _typ_to_comp_info ge tinfo m
+  | TC_Comp cv m ->
+    let opt_einfo = comp_to_effect_info cv in
+    match opt_einfo with
+    | None -> mfail ("typ_or_comp_to_comp_info failed on: " ^ acomp_to_string cv)
+    | Some einfo ->
+      let pre = opt_term_to_opt_abs_shadowed_term ge einfo.ei_pre in
+      let post = opt_term_to_opt_abs_shadowed_term ge einfo.ei_post in
+      let cci0 = _typ_to_comp_info ge einfo.ei_ret_type m in
+      { cci0 with cc_pre = pre; cc_post = post }
+
+(**** Step 2 *)
+/// The retrieved type refinements and post-conditions are not instantiated (they
+/// are lambda functions): instantiate them to get propositions.
+
+/// Propositions split between pre and post assertions
+noeq type assertions = {
+  pres : list proposition;
+  posts : list proposition;
+}
+
+let mk_assertions pres posts : assertions =
+  Mkassertions pres posts
 
 /// Generate the propositions equivalent to a correct type cast.
 /// Note that the type refinements need to be instantiated.
@@ -910,13 +1069,64 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
   let post_prop = opt_term_to_opt_abs_term opt_post post_values post_binders in
   ge1, pre_prop, post_prop
 
+/// Instantiate optional pre and post conditions which may contain abstracted
+/// parameters
+val abs_pre_post_to_propositions :
+     dbg:bool
+  -> ge:genv
+  -> etype:effect_type
+  -> ret_value:term
+  -> ret_abs_binder:option binder
+  -> ret_type:type_info
+  -> opt_pre:option abs_term
+  -> opt_post:option abs_term
+  -> Tac (genv & option proposition & option proposition)
+
+let abs_pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt_post =
+  (* Start by normalizing the pre and the post so that the abstractions get
+   * simplified (we will put them back later) *)
+  let simpl opt_p : Tac (option proposition) = 
+    match opt_p with
+    | None -> None
+    | Some p -> Some ({ p with body = norm_term_env ge0.env [] p.body })
+  in
+  let get_opt_body opt_p : Tac (option term) =
+    match opt_p with
+    | None -> None
+    | Some p -> Some p.body
+  in
+  let get_opt_abs opt_p : Tac (list binder) =
+    match opt_p with
+    | None -> []
+    | Some p -> p.abs
+  in
+  let opt_pre1 = simpl opt_pre in
+  let opt_post1 = simpl opt_post in
+  (* Instantiate the remaining parameters *)
+  let ge1, opt_pre2, opt_post2 = 
+    pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type
+                             (get_opt_body opt_pre1) (get_opt_body opt_post1) in
+  (* Reintroduce the abstracted parameters *)
+  let opt_pre3 = simpl opt_pre2 in
+  let pre_abs1 = get_opt_abs opt_pre in
+  let pre_abs2 = get_opt_abs opt_pre2 in
+  let pre_abs3 = List.Tot.append pre_abs1 pre_abs2 in
+  let opt_pre4 = opt_term_to_opt_abs_term (get_opt_body opt_pre3) [] pre_abs3 in
+  let opt_post3 = simpl opt_post2 in
+  let post_abs1 = get_opt_abs opt_post in
+  let post_abs2 = get_opt_abs opt_post2 in
+  let post_abs3 = List.Tot.append post_abs1 post_abs2 in
+  let opt_post4 = opt_term_to_opt_abs_term (get_opt_body opt_post3) [] post_abs3 in
+  ge1, opt_pre4, opt_post4
+
+(* TODO HERE *)
 /// Convert effectful type information to a list of propositions. May have to
 /// introduce additional binders for the preconditions/postconditions/goal (hence
 /// the environment in the return type).
 /// The ``bind_var`` parameter is a variable if the studied term was bound in a let
 /// expression.
-val eterm_info_to_assertions : bool -> genv -> term -> eterm_info -> option term -> option typ_or_comp -> Tac (genv & assertions)
-let eterm_info_to_assertions dbg ge t info bind_var opt_c =
+val eterm_info_to_assertions : bool -> genv -> term -> bool -> eterm_info -> option term -> option typ_or_comp -> Tac (genv & assertions)
+let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
   print_dbg dbg "[> eterm_info_to_assertions";
   (* Introduce additional variables to instantiate the return type refinement,
    * the precondition, the postcondition and the goal *)
@@ -936,9 +1146,24 @@ let eterm_info_to_assertions dbg ge t info bind_var opt_c =
         genv_push_binder b None ge, tm, Some b
       else ge, t, None
   in
-  (* Instantiate the pre and post-conditions and by introducing the necessary variables *)
-  let ge', pre_prop, post_prop =
+  (* Instantiate the pre and post-conditions by introducing the necessary variables *)
+  let ge1, pre_prop, post_prop =
     pre_post_to_propositions dbg ge0 info.etype v b info.ret_type info.pre info.post in
+  (* Compute and instantiate the global pre and post-conditions *)
+  (* TODO: return type *)
+  let ge2, gpre_prop, gpost_prop =
+    match opt_c with
+    | None -> ge1, None, None
+    | Some c ->
+      let ci = typ_or_comp_to_comp_info ge1 c in
+      (* Precondition, post-condition *)
+      (* TODO: not sure about the return type: maybe catch failures *)
+      let ge2, gpre_prop, gpost_prop =
+        abs_pre_post_to_propositions dbg ge1 info.etype v b info.ret_type
+                                     ci.cc_pre ci.cc_post in
+      (* Return type: TODO *)
+      ge2, gpre_prop, gpost_prop
+  in
   (* Generate the propositions: *)
   (* - from the parameters' cast info *)
   let params_props = cast_info_list_to_propositions info.parameters in
@@ -947,9 +1172,9 @@ let eterm_info_to_assertions dbg ge t info bind_var opt_c =
     if E_Lemma? info.etype then [], [] else [v], (match b with | Some b -> [b] | None -> []) in
   let ret_refin_prop = opt_term_to_opt_abs_term (get_opt_refinment info.ret_type) ret_values ret_binders in
   (* Concatenate, revert and return *)
-  let pres = List.Tot.rev (opt_cons pre_prop params_props) in
-  let posts = opt_cons ret_refin_prop (opt_cons post_prop []) in
-  ge', { pres = pres; posts = posts }
+  let pres = opt_cons gpre_prop (List.Tot.rev (opt_cons pre_prop params_props)) in
+  let posts = opt_cons ret_refin_prop (opt_cons post_prop (opt_cons gpost_prop [])) in
+  ge1, { pres = pres; posts = posts }
 
 (**** Step 3 *)
 /// Simplify the propositions and filter the trivial ones.
@@ -1083,235 +1308,11 @@ let print_binder_info (full : bool) (b : binder) : Tac unit =
 let print_binders_info (full : bool) (e:env) : Tac unit =
   iter (print_binder_info full) (binders_of_env e)
 
-(*** Alternative: post-processing *)
+(*** Post-processing tactics *)
 
 /// We declare some identifiers that we will use to guide the meta processing
 assume type meta_info
 assume val focus_on_term : meta_info
-
-let convert_ctrl_flag (flag : ctrl_flag) =
-  match flag with
-  | Continue -> Continue
-  | Skip -> Continue
-  | Abort -> Abort
-
-/// Check if a binder is shadowed by another more recent binder
-let bv_is_shadowed (ge : genv) (bv : bv) : Tot bool =
-  let bl = List.Tot.map fst ge.bmap in
-  let bvv = inspect_bv bv in
-  let opt_res = bind_map_get_from_name bvv.bv_ppname ge.bmap in
-  match opt_res with
-  | None -> false (* Actually shouldn't happen if the environment was correctly updated *)
-  | Some (bv', _) ->
-    let bvv' = inspect_bv bv' in
-    (* Check if it is the same binder - we don't check the type *)
-    if bvv'.bv_index = bvv.bv_index then false
-    else true
-
-let binder_is_shadowed (ge : genv) (b : binder) : Tot bool =
-  bv_is_shadowed ge (bv_of_binder b)
-
-let find_shadowed_bvs (ge : genv) (bl : list bv) : Tot (list (bv & bool)) =
-  List.Tot.map (fun b -> b, bv_is_shadowed ge b) bl
-
-let find_shadowed_binders (ge : genv) (bl : list binder) : Tot (list (binder & bool)) =
-  List.Tot.map (fun b -> b, binder_is_shadowed ge b) bl
-
-/// TODO: for now I need to use universe 0 for type a because otherwise it doesn't
-/// type check
-/// ctrl_flag:
-/// - Continue: continue exploring the term
-/// - Skip: don't explore the sub-terms of this term
-/// - Abort: stop exploration
-/// TODO: we might want something more precise (like: don't explore the type of the
-/// ascription but explore its body)
-/// Note that ``explore_term`` doesn't use the environment parameter besides pushing
-/// binders and passing it to ``f``, which means that you can give it arbitrary
-/// environments, ``explore_term`` itself won't fail (but the passed function might).
-val explore_term (dbg : bool)
-                 (#a : Type0) (f : a -> genv -> option typ_or_comp -> term_view -> Tac (a & ctrl_flag))
-                 (x : a) (ge:genv) (c:option typ_or_comp) (t:term) :
-  Tac (a & ctrl_flag)
-
-val explore_pattern (dbg : bool)
-                    (#a : Type0) (f : a -> genv -> option typ_or_comp -> term_view -> Tac (a & ctrl_flag))
-                    (x : a) (ge:genv) (pat:pattern) :
-  Tac (genv & a & ctrl_flag)
-
-(* TODO: carry around the list of encompassing terms *)
-let rec explore_term dbg #a f x ge c t =
-  if dbg then
-    begin
-    print ("[> explore_term: " ^ term_construct t ^ ":\n" ^ term_to_string t)
-    end;
-  let tv = inspect t in
-  let x', flag = f x ge c tv in
-  if flag = Continue then
-    begin match tv with
-    | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> x', Continue
-    | Tv_App hd (a,qual) ->
-      let x', flag' = explore_term dbg f x ge None a in
-      if flag' = Continue then
-        explore_term dbg f x' ge None hd
-      else x', convert_ctrl_flag flag'
-    | Tv_Abs br body ->
-      (* We first explore the type of the binder - the user might want to
-       * check information inside the binder definition *)
-      let bv = bv_of_binder br in
-      let bvv = inspect_bv bv in
-      let x', flag' = explore_term dbg f x ge None bvv.bv_sort in
-      if flag' = Continue then
-        let ge' = genv_push_binder br None ge in
-        let c' = abs_update_opt_typ_or_comp br c in
-        explore_term dbg f x' ge' c' body
-      else x', convert_ctrl_flag flag'
-    | Tv_Arrow br c -> x, Continue (* TODO: we might want to explore that *)
-    | Tv_Type () -> x, Continue
-    | Tv_Refine bv ref ->
-      let bvv = inspect_bv bv in
-      let x', flag' = explore_term dbg f x ge None bvv.bv_sort in
-      if flag' = Continue then
-        let ge' = genv_push_bv bv None ge in
-        explore_term dbg f x' ge' None ref
-      else x', convert_ctrl_flag flag'
-    | Tv_Const _ -> x, Continue
-    | Tv_Uvar _ _ -> x, Continue
-    | Tv_Let recf attrs bv def body ->
-      let bvv = inspect_bv bv in
-      (* Explore the binding type *)
-      let x', flag' = explore_term dbg f x ge None bvv.bv_sort in
-      if flag' = Continue then
-        (* Explore the binding definition *)
-        let x'', flag'' = explore_term dbg f x' ge None def in
-        if flag'' = Continue then
-          (* Explore the next subterm *)
-          let ge' = genv_push_bv bv (Some def) ge in
-          explore_term dbg f x ge' c body
-        else x'', convert_ctrl_flag flag''
-      else x', convert_ctrl_flag flag'
-    | Tv_Match scrutinee branches ->
-      let explore_branch (x_flag : a & ctrl_flag) (br : branch) : Tac (a & ctrl_flag)=
-        let x, flag = x_flag in
-        if flag = Continue then
-          let pat, branch_body = br in
-          (* Explore the pattern *)
-          let ge', x', flag' = explore_pattern dbg #a f x ge pat in
-          if flag' = Continue then
-            (* Explore the branch body *)
-            explore_term dbg #a f x' ge' c branch_body
-          else x', convert_ctrl_flag flag'
-        (* Don't convert the flag *)
-        else x, flag
-      in
-      let x' = explore_term dbg #a f x ge None scrutinee in
-      fold_left explore_branch x' branches
-    | Tv_AscribedT e ty tac ->
-      let c' = Some (TC_Typ ty []) in
-      let x', flag = explore_term dbg #a f x ge None ty in
-      if flag = Continue then
-        explore_term dbg #a f x' ge c' e
-      else x', convert_ctrl_flag flag
-    | Tv_AscribedC e c' tac ->
-      (* TODO: explore the comp *)
-      explore_term dbg #a f x ge (Some (TC_Comp c' [])) e
-    | _ ->
-      (* Unknown *)
-      x, Continue
-    end
-  else x', convert_ctrl_flag flag
-
-and explore_pattern dbg #a f x ge pat =
-  match pat with
-  | Pat_Constant _ -> ge, x, Continue
-  | Pat_Cons fv patterns ->
-    let explore_pat ge_x_flag pat =
-      let ge, x, flag = ge_x_flag in
-      let pat', _ = pat in
-      if flag = Continue then
-        explore_pattern dbg #a f x ge pat'
-      else
-        (* Don't convert the flag *)
-        ge, x, flag
-    in
-    fold_left explore_pat (ge, x, Continue) patterns
-  | Pat_Var bv | Pat_Wild bv ->
-    let ge' = genv_push_bv bv None ge in
-    ge', x, Continue
-  | Pat_Dot_Term bv t ->
-    (* TODO: I'm not sure what this is *)
-    let ge' = genv_push_bv bv None ge in
-    ge', x, Continue
-
-/// Returns the list of variables free in a term
-val free_in : term -> Tac (list bv)
-let free_in t =
-  let update_free (fl:list bv) (ge:genv) (c:option typ_or_comp) (tv:term_view) :
-    Tac (list bv & ctrl_flag) =
-    match tv with
-    | Tv_Var bv | Tv_BVar bv ->
-      let bvv = inspect_bv bv in
-      begin match bind_map_get_from_name bvv.bv_ppname ge.bmap with
-      | None -> bv :: fl, Continue
-      | Some _ -> fl, Continue
-      end
-    | _ -> fl, Continue
-  in
-  let e = top_env () in (* we actually don't care about the environment *)
-  let ge = mk_genv e [] in
-  fst (explore_term false update_free [] ge None t)  
-
-/// Convert a ``typ_or_comp`` to cast information
-noeq type comp_cast_info = {
-  cc_pre : option proposition;
-  cc_ret_type : option abs_term;
-  cc_ret_refin : option proposition; (* the type should be: return_type -> Type *)
-  cc_post : option proposition;
-}
-
-let mk_comp_cast_info = Mkcomp_cast_info
-
-/// Generates an ``abs_term`` from a ``term`` where the abstracted parameters are
-/// the variables free in the term but shadowed in the current environments.
-/// Note that we need to provide two environments: the current environment, and
-/// another in which the term typed, and from which the current environment was
-/// produced by pushing binders.
-val term_to_abs_shadowed_term (ge : genv) (t : term) : Tac abs_term
-let term_to_abs_shadowed_term ge t =
-  let free_vars = free_in t in
-  let free_vars = find_shadowed_bvs ge free_vars in
-  let abs_vars = List.Tot.filter (fun (bv, b) -> b) free_vars in
-  let abs_vars = List.Tot.map (fun (bv, _) -> pack_binder bv Q_Explicit) abs_vars in
-  term_to_abs_term t [] abs_vars
-
-val opt_term_to_opt_abs_shadowed_term (ge : genv) (opt_t : option term) : Tac (option abs_term)
-let opt_term_to_opt_abs_shadowed_term ge opt_t =
-  match opt_t with
-  | None -> None
-  | Some t -> Some (term_to_abs_shadowed_term ge t)
-
-/// Auxiliary function: convert type information to a ``comp_cast_info``
-let _typ_to_comp_cast_info (ge : genv) (tinfo : type_info) (m : list (binder & binder)) :
-  Tac comp_cast_info =
-  let rty = get_rawest_type tinfo in
-  let refin = get_opt_refinment tinfo in
-  let rty = term_to_abs_shadowed_term ge rty in
-  let refin = opt_term_to_opt_abs_shadowed_term ge refin in
-  mk_comp_cast_info None (Some rty) refin None  
-
-let typ_or_comp_to_comp_cast_info (ge : genv) (c : typ_or_comp) : Tac comp_cast_info =
-  match c with
-  | TC_Typ ty m ->
-    let tinfo = get_type_info_from_type ty in
-    _typ_to_comp_cast_info ge tinfo m
-  | TC_Comp cv m ->
-    let opt_einfo = comp_to_effect_info cv in
-    match opt_einfo with
-    | None -> mfail ("typ_or_comp_to_comp_cast_info failed on: " ^ acomp_to_string cv)
-    | Some einfo ->
-      let pre = opt_term_to_opt_abs_shadowed_term ge einfo.ei_pre in
-      let post = opt_term_to_opt_abs_shadowed_term ge einfo.ei_post in
-      let cci0 = _typ_to_comp_cast_info ge einfo.ei_ret_type m in
-      { cci0 with cc_pre = pre; cc_post = post }
 
 let pp_explore (dbg : bool)
                (#a : Type0) (f : a -> genv -> option typ_or_comp -> term_view -> Tac (a & ctrl_flag))
@@ -1367,14 +1368,15 @@ let analyze_effectful_term dbg () ge opt_c t =
          begin match inspect body with
          | Tv_Let _ _ fbv fterm _ ->
            let ret_arg = pack (Tv_Var fbv) in
-           genv_push_bv fbv None ge, fterm, get_eterm_info ge.env fterm, Some ret_arg, true
-         | _ -> ge, body, get_eterm_info ge.env body, None, true
+           genv_push_bv fbv None ge, fterm, compute_eterm_info ge.env fterm, Some ret_arg, true
+         | _ -> ge, body, compute_eterm_info ge.env body, None, true
          end
        in
        (* We use the target computation only if the studied term is binded in a let *)
        let opt_c1 = if is_let then None else opt_c in
        (* Instantiate the refinements *)
-       let ge2, asserts = eterm_info_to_assertions dbg ge1 studied_term info ret_arg opt_c1 in
+       let ge2, asserts =
+         eterm_info_to_assertions dbg ge1 studied_term is_let info ret_arg opt_c1 in
        (* Simplify and filter *)
        let sasserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
        (* Print *)
@@ -1389,6 +1391,66 @@ let pp_focused_term dbg () =
   pp_explore dbg (analyze_effectful_term dbg) ()
 
 (*** Tests *)
+(**** Miscelleanous functions *)
+let test_fun1 (n : nat) :
+  Pure nat
+  (requires (n >= 4))
+  (ensures (fun n' -> n' >= 8)) =
+  2 * n
+
+let test_fun2 (n : nat) :
+  ST.Stack nat
+  (requires (fun h1 -> n >= 4))
+  (ensures (fun h1 n' h2 -> n' >= 8)) =
+  2 * n
+
+let test_fun3 (n : nat) :
+  ST.ST nat
+  (requires (fun h1 -> n >= 4))
+  (ensures (fun h1 n' h2 -> n' >= 8)) =
+  2 * n
+
+let test_fun4 (n : nat{n >= 2}) :
+  Tot (n':nat{n' >= 8}) =
+  4 * n
+
+let test_fun5 (n : nat{n >= 2}) :
+  Tot (p:(nat & int){let n1, n2 = p in n1 >= 8 /\ n2 >= 2}) =
+  4 * n, 2
+
+let test_fun6 (n1 : nat{n1 >= 4}) (n2 : nat{n2 >= 8}) (n3 : nat{n3 >= 10}) :
+  Tot (n:int{n >= 80}) =
+  (n1 + n2) * n3
+
+let test_stack1 (n : nat) :
+  ST.Stack (n':int{n' >= 0})
+  (requires (fun h0 -> n >= 1 /\ B.live h0 (B.null #nat)))
+  (ensures (fun h0 n' h1 -> B.modifies B.loc_none h0 h1 /\ n' >= n)) =
+  n + 1
+
+let test_lemma1 (n : nat) :
+  Lemma (n * n >= 0) = ()
+
+let test_lemma2 (n : nat) :
+  Lemma
+  (requires (n >= 4 /\ True))
+  (ensures (2 * n >= 8)) = ()
+
+let predicate_with_a_very_long_name_to_ensure_break_line (n : nat) : Type0 =
+  n >= 4
+
+let test_lemma3 (n : int{n >= 0}) :
+  Lemma
+  (requires (
+    n >= 4 /\ n * n >= 0 /\ n >= 0 /\ n * n + n + 3 >= 0 /\
+    predicate_with_a_very_long_name_to_ensure_break_line n))
+  (ensures (2 * n >= 8)) = ()
+
+let test_lemma4 (n1 : nat{n1 >= 3}) (n2 : int{n2 >= 5}) (n3 n4 n5 : nat):
+  Lemma
+  (requires (n3 + n4 + n5 >= 1))
+  (ensures (n1 * n2 * (n3 + n4 + n5) >= 15)) = ()
+
 (**** Post-processing *)
 //#push-options "--admit_smt_queries true"
 [@(postprocess_with (pp_focused_term false))]
