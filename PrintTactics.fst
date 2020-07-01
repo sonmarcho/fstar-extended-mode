@@ -342,8 +342,7 @@ let get_eterm_info (e:env) (t : term) =
       | E_Pure, [(pre, _); (post, _)] ->
         mk_eterm_info t E_Pure (Some pre) (Some post) ret_type_info hd parameters None None
       | E_Stack, [(pre, _); (post, _)] ->
-        (* TODO: E_Stack *)
-        mk_eterm_info t E_Unknown (Some pre) (Some post) ret_type_info hd parameters None None
+        mk_eterm_info t E_Stack (Some pre) (Some post) ret_type_info hd parameters None None
       | E_ST, [(pre, _); (post, _)] ->
         mk_eterm_info t E_ST (Some pre) (Some post) ret_type_info hd parameters None None
       (* If the effect is unknown and there are two parameters or less, we make the
@@ -552,52 +551,9 @@ let get_total_or_gtotal_ret_type c =
   | C_Total ret_ty _ | C_GTotal ret_ty _ -> Some ret_ty
   | _ -> None
 
-(* val check_pre_type : env -> term -> Tac pre_post_type
-let check_pre_type e pre =
-  match safe_tc e pre with
-  | None -> PP_Unknown
-  | Some ty ->
-    match inspect ty with
-    | Tv_Arrow b c ->
-      (* Not sure if the comp check is necessary *)
-      if Some? (get_total_or_gtotal_ret_type c) then PP_State (type_of_binder b)
-      else PP_Unknown
-    | _ -> PP_Pure
-
-val check_post_type : env -> term -> term -> Tac pre_post_type
-let check_post_type e ret_type post =
-  let get_tot_ret_type c : Tac (option term_view) =
-    match get_total_or_gtotal_ret_type c with
-    | Some ret_ty -> Some (inspect ret_ty)
-    | None -> None
-  in
-  match safe_tc e post with
-  | None -> PP_Unknown
-  | Some ty ->
-    (* The initial state or the return value *)
-    match inspect ty with
-    | Tv_Arrow b0 c0 ->
-      begin match get_tot_ret_type c0 with
-      | None -> PP_Unknown
-      (* If arrow: the post-condition is for a stateful effect, and the binder
-       * we get here gives us the type of the return value *)
-      | Some (Tv_Arrow b1 c1) ->
-        (* Check that there is a third arrow for the new state *)
-        begin match get_tot_ret_type c1 with
-        | None -> PP_Unknown
-        | Some (Tv_Arrow b2 c2) ->
-          (* Just check that the types are coherent: return type, but also states *)
-          if term_eq ret_type (type_of_binder b1) &&
-             term_eq (type_of_binder b0) (type_of_binder b2)
-          then PP_Pure else PP_Unknown
-        | _ -> PP_Unknown
-        end
-      (* Otherwise, it is the post-condition of a pure effect *)
-      | Some _ ->
-        (* Check that the return value type is consistent *)
-        if term_eq ret_type (type_of_binder b0) then PP_Pure else PP_Unknown
-      end
-    | _ -> PP_Unknown *)
+val is_total_or_gtotal : comp -> Tot bool
+let is_total_or_gtotal c =
+  Some? (get_total_or_gtotal_ret_type c)
 
 val check_pre_type : bool -> env -> term -> Tac pre_post_type
 let check_pre_type dbg e pre =
@@ -608,12 +564,24 @@ let check_pre_type dbg e pre =
     PP_Unknown
   | Some ty ->
     print_dbg dbg "safe_tc succeeded";
-    match inspect ty with
-    | Tv_Arrow b c ->
-      (* Not sure if the comp check is necessary *)
-      if Some? (get_total_or_gtotal_ret_type c) then PP_State (type_of_binder b)
-      else PP_Unknown
-    | _ -> PP_Pure
+    let brs, c = collect_arr_bs ty in
+    print_dbg dbg ("num binders: " ^ string_of_int (List.Tot.length brs));
+    match brs, is_total_or_gtotal c with
+    | [], true ->
+      print_dbg dbg "PP_Pure";
+      PP_Pure
+    | [b], true ->
+      print_dbg dbg ("PP_State " ^ (term_to_string (type_of_binder b)));
+      PP_State (type_of_binder b)
+    | _ ->
+      print_dbg dbg "PP_Unknown";
+      PP_Unknown
+
+val opt_remove_refin : typ -> Tac typ
+let opt_remove_refin ty =
+  match inspect ty with
+  | Tv_Refine bv _ -> (inspect_bv bv).bv_sort
+  | _ -> ty
 
 val check_post_type : bool -> env -> term -> term -> Tac pre_post_type
 let check_post_type dbg e ret_type post =
@@ -629,30 +597,42 @@ let check_post_type dbg e ret_type post =
     PP_Unknown
   | Some ty ->
     print_dbg dbg "safe_tc succeeded";
-    (* The initial state or the return value *)
-    match inspect ty with
-    | Tv_Arrow b0 c0 ->
-      begin match get_tot_ret_type c0 with
-      | None -> PP_Unknown
-      (* If arrow: the post-condition is for a stateful effect, and the binder
-       * we get here gives us the type of the return value *)
-      | Some (Tv_Arrow b1 c1) ->
-        (* Check that there is a third arrow for the new state *)
-        begin match get_tot_ret_type c1 with
-        | None -> PP_Unknown
-        | Some (Tv_Arrow b2 c2) ->
-          (* Just check that the types are coherent: return type, but also states *)
-          if term_eq ret_type (type_of_binder b1) &&
-             term_eq (type_of_binder b0) (type_of_binder b2)
-          then PP_Pure else PP_Unknown
-        | _ -> PP_Unknown
+    let brs, c = collect_arr_bs ty in
+    print_dbg dbg ("num binders: " ^ string_of_int (List.Tot.length brs));
+    match brs, is_total_or_gtotal c with
+    | [r], true ->
+      (* Pure *)
+      print_dbg dbg "PP_Pure";
+      PP_Pure
+    | [s1; r; s2], true ->
+      (* Stateful: check that the state types are coherent *)
+      let r_ty = type_of_binder r in
+      let s1_ty = type_of_binder s1 in
+      (* After testing with Stack: the second state seems to have a refinement
+       * (which gives the postcondition) *)
+      let s2_ty = opt_remove_refin (type_of_binder s2) in
+      let ret_type_eq = term_eq ret_type r_ty in
+      let state_type_eq = term_eq s1_ty s2_ty in
+      print_dbg dbg ("- ret type:\n-- target: " ^ term_to_string ret_type ^
+                     "\n-- binder: " ^ term_to_string r_ty);
+      print_dbg dbg ("- state types:\n-- binder1: " ^ term_to_string s1_ty ^
+                     "\n-- binder2: " ^ term_to_string s2_ty);
+      print_dbg dbg ("- ret type equality: " ^ string_of_bool ret_type_eq);
+      print_dbg dbg ("- state types equality: " ^ string_of_bool state_type_eq);
+      if ret_type_eq && state_type_eq
+      then
+        begin
+        print_dbg dbg ("PP_State" ^ term_to_string (type_of_binder s1));
+        PP_State (type_of_binder s1)
         end
-      (* Otherwise, it is the post-condition of a pure effect *)
-      | Some _ ->
-        (* Check that the return value type is consistent *)
-        if term_eq ret_type (type_of_binder b0) then PP_Pure else PP_Unknown
-      end
-    | _ -> PP_Unknown
+      else
+        begin
+        print_dbg dbg "PP_Unknown";
+        PP_Unknown
+        end
+    | _ ->
+      print_dbg dbg "PP_Unknown";
+      PP_Unknown
 
 val check_pre_post_type : bool -> env -> term -> term -> term -> Tac pre_post_type
 let check_pre_post_type dbg e pre ret_type post =
@@ -677,10 +657,10 @@ let check_opt_pre_post_type dbg e opt_pre ret_type opt_post =
     Some (check_pre_post_type dbg e pre ret_type post)
   | Some pre, None ->
     print_dbg dbg "Some pre, None";
-    Some (check_pre_type e pre)
+    Some (check_pre_type dbg e pre)
   | None, Some post ->
     print_dbg dbg "None, Some post";
-    Some (check_post_type e ret_type post)
+    Some (check_post_type dbg e ret_type post)
   | None, None ->
     print_dbg dbg "None, None";
     None
@@ -1260,9 +1240,6 @@ let pp_test5 () :
   let x = 2 in
   let _ = focus_on_term in
   test_stack1 x
-
-(* (setq message-log-max 10000) *)
-
 
 (**** Wrapping with tactics *)
 
