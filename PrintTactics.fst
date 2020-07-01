@@ -766,16 +766,10 @@ let simpl_filter_propositions (e:env) (steps:list norm_step) (pl:list propositio
   Tac (list proposition) =
   List.flatten (map (simp_filter_proposition e steps) pl)
 
-
 (**** Step 4 *)
 /// Output the resulting information
 /// Originally: we output the ``eterm_info`` and let the emacs commands do some
-/// filtering and formatting. Now, we convert to a an ``assertions``.
-
-noeq type assertions = {
-  pres : list term;
-  posts : list term;
-}
+/// filtering and formatting. Now, we convert ``eterm_info`` to a ``assertions``.
 
 let printout_string (prefix data:string) : Tac unit =
   (* Export all at once - actually I'm not sure it is not possible for external
@@ -790,115 +784,23 @@ let printout_opt_term (prefix:string) (t:option term) : Tac unit =
   | Some t' -> printout_term prefix t'
   | None -> printout_string prefix ""
 
-let printout_opt_type (prefix:string) (ty:option type_info) : Tac unit =
-  let ty, rty_raw, rty_refin =
-    match ty with
-    | Some ty' ->
-      begin match ty'.rty with
-      | Some rty' -> Some ty'.ty, Some rty'.raw, Some rty'.refin
-      | _ -> Some ty'.ty, None, None
-      end
-    | _ -> None, None, None
+let printout_proposition (prefix:string) (p:proposition) : Tac unit =
+  printout_term prefix p.prop
+
+let printout_propositions (prefix:string) (pl:list proposition) : Tac unit =
+  let print_prop i p =
+    let prefix' = prefix ^ ":prop" ^ string_of_int i in
+    printout_proposition prefix' p
   in
-  printout_opt_term (prefix ^ ":ty") ty;
-  printout_opt_term (prefix ^ ":rty_raw") rty_raw;
-  printout_opt_term (prefix ^ ":rty_refin") rty_refin
+  printout_string (prefix ^ ":num") (string_of_int (List.Tot.length pl));
+  iteri print_prop pl
 
-let printout_parameter (prefix:string) (index:int) (p:cast_info) : Tac unit =
-  let p_prefix = prefix ^ ":param" ^ string_of_int index in
-  printout_term (p_prefix ^ ":term") p.term;
-  printout_opt_type (p_prefix ^ ":p_ty") p.p_ty;
-  printout_opt_type (p_prefix ^ ":e_ty") p.exp_ty;
-  printout_string (p_prefix ^ ":types_comparison")
-                  (type_comparison_to_string (compare_cast_types p))
-
-let printout_parameters (prefix:string) (parameters:list cast_info) : Tac unit =
-  printout_string (prefix ^ ":num") (string_of_int (List.length parameters));
-  iteri (printout_parameter prefix) parameters
-
-/// Print the effectful information about a term in a format convenient to
-/// use for the emacs commands
-val print_eterm_info : env -> eterm_info -> term -> Tac unit
-
-let print_eterm_info e info ret_arg =
-    print ("ret_arg: " ^ term_to_string ret_arg);
-    let sinfo = simplify_eterm_info e [primops; simplify] info in
-    (* Print the information *)
-    print ("eterm_info:BEGIN");
-    printout_string "eterm_info:etype" (effect_type_to_string info.etype);
-    printout_opt_term "eterm_info:pre" sinfo.pre;
-    printout_opt_term "eterm_info:post" sinfo.post;
-    printout_opt_type "eterm_info:ret_type" sinfo.ret_type;
-    printout_parameters "eterm_info:parameters" sinfo.parameters;
-    printout_opt_term "eterm_info:goal" sinfo.goal;
-    print ("eterm_info:END")
-
-let opt_cons (#a : Type) (opt_x : option a) (ls : list a) : Tot (list a) =
-  match opt_x with
-  | Some x -> x :: ls
-  | None -> ls
-
-(* TODO HERE *)
-val cast_info_to_obligations : cast_info -> Tac (list term)
-let cast_info_to_obligations ci =
-  match compare_cast_types ci with
-  | Refines -> []
-  | Same_raw_type ->
-    let refin = get_refinement (Some?.v ci.exp_ty) in
-    [refin]
-  | Unknown ->
-    match ci.p_ty, ci.exp_ty with
-    | Some p_ty, Some e_ty ->
-      let p_rty = get_rawest_type p_ty in
-      let e_rty = get_rawest_type e_ty in
-      (* For the type cast, we generate an assertion of the form:
-       * [> has_type (p <: type_of_p) expected_type
-       * The reason is that we want the user which parameter is concerned (hence
-       * the ``has_type``), and which types should be related (hence the
-       * ascription).
-       *)
-      let ascr_term = pack (Tv_AscribedT ci.term p_rty None) in
-      let has_type_params = [(p_rty, Q_Implicit); (ascr_term, Q_Explicit); (e_rty, Q_Explicit)] in
-      let type_cast = mk_app (`has_type) has_type_params in
-      let opt_refin = get_opt_refinment e_ty in
-      opt_cons opt_refin [type_cast]
-    | _ -> []
-
-/// Generates a list of obligations from a list of ``cast_info``. Note that
-/// the user should revert the list before printing the obligations.
-val cast_info_list_to_obligations : list cast_info -> Tac (list term)
-let cast_info_list_to_obligations ls =
-  let lsl = map cast_info_to_obligations ls in
-  flatten lsl
-
-/// Convert the effectful information about a term to a list of assertions, split
-/// betweens the assertions to place before the term and the assertions to place
-/// after.
-val eterm_info_to_assertions : bool -> env -> eterm_info -> Tac assertions
-let eterm_info_to_assertions is_let e info =
-  let pres : list term = [] in
-  let posts : list term = [] in
-  (* Pre *)
-  let pres = opt_cons info.pre pres in
-  (* Parameters (type cast + refinements) *)
-  let param_obligations = cast_info_list_to_obligations info.parameters in
-  let pres = append param_obligations pres in
-  (* Post *)
-  let posts = if is_let then opt_cons info.post posts else posts in
-  { pres = pres; posts = posts }
-
-val printout_assertions : string -> assertions -> Tac unit
-let printout_assertions prefix as =
-  let printout_assert qualif i p : Tac unit =
-    printout_term (prefix ^ qualif ^ string_of_int i) p
-  in
+let printout_assertions (prefix:string) (a:assertions) : Tac unit =
   print (prefix ^ ":BEGIN");
-  printout_string (prefix ^ ":num_pres") (string_of_int (List.length as.pres));
-  iteri (printout_assert ":pre") as.pres;
-  printout_string (prefix ^ ":num_posts") (string_of_int (List.length as.posts));
-  iteri (printout_assert ":post") as.posts;
+  printout_propositions (prefix ^ ":pres") a.pres;
+  printout_propositions (prefix ^ ":posts") a.posts;
   print (prefix ^ ":END")
-  
+
 
 /// The tactic to be called by the emacs commands
 val dprint_eterm : term -> term -> Tac unit
