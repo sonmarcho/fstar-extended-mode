@@ -24,12 +24,12 @@ let iteri f x = iteri_aux 0 f x
 #pop-options
 
 (* TODO: move to FStar.Reflection.Derived.fst *)
-let rec mk_abs (t : term) (args : list binder) : Tot term (decreases args) =
+let rec mk_abs (t : term) (args : list binder) : Tac term (decreases args) =
   match args with
   | [] -> t
   | a :: args' ->
     let t' = mk_abs t args' in
-    pack_ln (Tv_Abs a t')
+    pack (Tv_Abs a t')
 
 
 let test_fun1 (n : nat) :
