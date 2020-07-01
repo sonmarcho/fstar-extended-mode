@@ -106,10 +106,10 @@ let st_effect_qn = "FStar.HyperStack.ST.ST"
 
 
 /// Return the qualifier of a term as a string
-val term_construct (t : term) : Tac string
+val term_view_construct (t : term_view) : Tac string
 
-let term_construct (t : term) : Tac string =
-  match inspect t with
+let term_view_construct (t : term_view) : Tac string =
+  match t with
   | Tv_Var _ -> "Tv_Var"
   | Tv_BVar _ -> "Tv_BVar"
   | Tv_FVar _ -> "Tv_FVar"
@@ -125,6 +125,11 @@ let term_construct (t : term) : Tac string =
   | Tv_AscribedT _ _ _ -> "Tv_AscribedT"
   | Tv_AscribedC _ _ _ -> "Tv_AScribedC"
   | _ -> "Tv_Unknown"
+
+val term_construct (t : term) : Tac string
+
+let term_construct (t : term) : Tac string =
+  term_view_construct (inspect t)
 
 /// Return the qualifier of a comp as a string
 val comp_qualifier (c : comp) : Tac string
@@ -959,58 +964,64 @@ let convert_ctrl_flag (flag : ctrl_flag) =
 /// - Continue: continue exploring the term
 /// - Skip: don't explore the sub-terms of this term
 /// - Abort: stop exploration
-val explore_term (#a : Type0) (f : a -> genv -> term_view -> Tac (a & ctrl_flag))
+val explore_term (dbg : bool)
+                 (#a : Type0) (f : a -> genv -> term_view -> Tac (a & ctrl_flag))
                  (x : a) (ge:genv) (t:term) :
   Tac (a & ctrl_flag)
 
-val explore_pattern (#a : Type0) (f : a -> genv -> term_view -> Tac (a & ctrl_flag))
+val explore_pattern (dbg : bool)
+                    (#a : Type0) (f : a -> genv -> term_view -> Tac (a & ctrl_flag))
                     (x : a) (ge:genv) (pat:pattern) :
   Tac (genv & a & ctrl_flag)
 
 (* TODO: carry around the list of encompassing terms *)
-let rec explore_term #a f x ge t =
+let rec explore_term dbg #a f x ge t =
+  if dbg then
+    begin
+    print ("[> explore_term: " ^ term_construct t ^ ":\n" ^ term_to_string t)
+    end;
   let tv = inspect t in
   let x', flag = f x ge tv in
   if flag = Continue then
     begin match tv with
     | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> x', Continue
     | Tv_App hd (a,qual) ->
-      let x', flag' = explore_term f x ge a in
+      let x', flag' = explore_term dbg f x ge a in
       if flag' = Continue then
-        explore_term f x' ge hd
+        explore_term dbg f x' ge hd
       else x', convert_ctrl_flag flag'
     | Tv_Abs br body ->
       (* We first explore the type of the binder - the user might want to
        * check information inside the binder definition *)
       let bv = bv_of_binder br in
       let bvv = inspect_bv bv in
-      let x', flag' = explore_term f x ge bvv.bv_sort in
+      let x', flag' = explore_term dbg f x ge bvv.bv_sort in
       if flag' = Continue then
         let ge' = genv_push_binder br None ge in
-        explore_term f x' ge' body
+        explore_term dbg f x' ge' body
       else x', convert_ctrl_flag flag'
     | Tv_Arrow br c -> x, Continue (* TODO: we might want to explore that *)
     | Tv_Type () -> x, Continue
     | Tv_Refine bv ref ->
       let bvv = inspect_bv bv in
-      let x', flag' = explore_term f x ge bvv.bv_sort in
+      let x', flag' = explore_term dbg f x ge bvv.bv_sort in
       if flag' = Continue then
         let ge' = genv_push_bv bv None ge in
-        explore_term f x' ge' ref
+        explore_term dbg f x' ge' ref
       else x', convert_ctrl_flag flag'
     | Tv_Const _ -> x, Continue
     | Tv_Uvar _ _ -> x, Continue
     | Tv_Let recf attrs bv def body ->
       let bvv = inspect_bv bv in
       (* Explore the binding type *)
-      let x', flag' = explore_term f x ge bvv.bv_sort in
+      let x', flag' = explore_term dbg f x ge bvv.bv_sort in
       if flag' = Continue then
         (* Explore the binding definition *)
-        let x'', flag'' = explore_term f x' ge def in
+        let x'', flag'' = explore_term dbg f x' ge def in
         if flag'' = Continue then
           (* Explore the next subterm *)
           let ge' = genv_push_bv bv (Some def) ge in
-          explore_term f x ge' body
+          explore_term dbg f x ge' body
         else x'', convert_ctrl_flag flag''
       else x', convert_ctrl_flag flag'
     | Tv_Match scrutinee branches ->
@@ -1019,31 +1030,31 @@ let rec explore_term #a f x ge t =
         if flag = Continue then
           let pat, branch_body = br in
           (* Explore the pattern *)
-          let ge', x', flag' = explore_pattern #a f x ge pat in
+          let ge', x', flag' = explore_pattern dbg #a f x ge pat in
           if flag' = Continue then
             (* Explore the branch body *)
-            explore_term #a f x' ge' branch_body
+            explore_term dbg #a f x' ge' branch_body
           else x', convert_ctrl_flag flag'
         (* Don't convert the flag *)
         else x, flag
       in
-      let x' = explore_term #a f x ge scrutinee in
+      let x' = explore_term dbg #a f x ge scrutinee in
       fold_left explore_branch x' branches
     | Tv_AscribedT e ty tac ->
-      let x', flag = explore_term #a f x ge e in
+      let x', flag = explore_term dbg #a f x ge e in
       if flag = Continue then
-        explore_term #a f x' ge ty
+        explore_term dbg #a f x' ge ty
       else x', convert_ctrl_flag flag
     | Tv_AscribedC e c tac ->
       (* TODO: explore the comp *)
-      explore_term #a f x ge e
+      explore_term dbg #a f x ge e
     | _ ->
       (* Unknown *)
       x, Continue
     end
   else x', convert_ctrl_flag flag
 
-and explore_pattern #a f x ge pat =
+and explore_pattern dbg #a f x ge pat =
   match pat with
   | Pat_Constant _ -> ge, x, Continue
   | Pat_Cons fv patterns ->
@@ -1051,7 +1062,7 @@ and explore_pattern #a f x ge pat =
       let ge, x, flag = ge_x_flag in
       let pat', _ = pat in
       if flag = Continue then
-        explore_pattern #a f x ge pat'
+        explore_pattern dbg #a f x ge pat'
       else
         (* Don't convert the flag *)
         ge, x, flag
@@ -1068,29 +1079,44 @@ and explore_pattern #a f x ge pat =
 let print_dbg (debug : bool) (s : string) : Tac unit =
   if debug then print s
 
-let pp_explore (#a : Type0) (f : a -> genv -> term_view -> Tac (a & ctrl_flag))
+let pp_explore (dbg : bool)
+               (#a : Type0) (f : a -> genv -> term_view -> Tac (a & ctrl_flag))
                (x : a) :
   Tac unit =
-  print "[> start_explore_term";
+  print "[> pp_explore";
   let g = cur_goal () in
   let e = cur_env () in
   begin match term_as_formula g with
   | Comp (Eq _) l r ->
     let ge = mk_genv e [] in
-    let x = explore_term #a f x ge l in
+    let x = explore_term dbg #a f x ge l in
     trefl()
   | _ -> mfail "pp_explore: not a squashed equality"
   end
 
 /// Effectful term analysis: analyze a term in order to print propertly instantiated
 /// pre/postconditions and type conditions.
+
+/// Check for meta-identifiers. Note that we can't simply use ``term_eq`` which
+/// sometimes unexpectedly fails (maybe because of information hidden to Meta-F*).
+val is_focus_on_term : term -> Tac bool
+let is_focus_on_term t =
+  match inspect t with
+  | Tv_FVar fv ->
+    if flatten_name (inspect_fv fv) = `%PrintTactics.focus_on_term then true else false
+  | _ -> false
+
 val analyze_effectful_term : bool -> unit -> genv -> term_view -> Tac (unit & ctrl_flag)
 
 let analyze_effectful_term dbg () ge t =
+  if dbg then
+    begin
+    print ("[> analyze_effectful_term: " ^ term_view_construct t ^ ":\n" ^ term_to_string t)
+    end;
   match t with
   | Tv_Let recf attrs bv def body ->
     (* We need to check if the let definition is a meta identifier *)
-     if term_eq def (`focus_on_term) then
+       if is_focus_on_term def then
        begin
        print ("[> Focus on term: " ^ term_to_string body);
        print ("[> Environment information: ");
@@ -1109,7 +1135,6 @@ let analyze_effectful_term dbg () ge t =
        let e2, asserts = eterm_info_to_assertions ge1.env info ret_arg in
        (* Simplify and filter *)
        let sasserts = simp_filter_assertions e2 [primops; simplify] asserts in
-//         (* Convert to a list of assertions *)
        (* Print *)
        printout_assertions "ainfo" sasserts;
        (), Abort
@@ -1119,11 +1144,18 @@ let analyze_effectful_term dbg () ge t =
 
 val pp_focused_term : bool -> unit -> Tac unit
 let pp_focused_term dbg () =
-  pp_explore (analyze_effectful_term dbg) ()
+  pp_explore dbg (analyze_effectful_term dbg) ()
 
 (*** Tests *)
 (**** Post-processing *)
 //#push-options "--admit_smt_queries true"
+[@(postprocess_with (pp_focused_term false))]
+let pp_test0 () : Tot nat =
+  let x = 1 in
+  let y = 2 in
+  let _ = focus_on_term in
+  test_fun1 (3 * x + y)
+
 [@(postprocess_with (pp_focused_term false))]
 let pp_test1 () : Tot nat =
   let x = 1 in
@@ -1154,11 +1186,11 @@ let pp_test3 () : Tot nat =
     w
   else 0
 
-[@(postprocess_with (pp_focused_term true))]
+[@(postprocess_with (pp_focused_term false))]
 let pp_test4 () :
   ST.Stack nat
   (requires (fun _ -> True))
-  (ensures (fun _ _ _ -> True)) =
+  (ensures (fun _ _ _ -> 3 >= 2)) =
   let x = 2 in
   let _ = focus_on_term in
   let w = test_stack1 x in
