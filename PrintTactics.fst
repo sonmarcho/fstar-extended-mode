@@ -116,6 +116,64 @@ exception MetaAnalysis of string
 let mfail str =
   raise (MetaAnalysis str)
 
+
+/// A map linking variables to terms. For now we use a list to define it, because
+/// there shouldn't be too many bindings.
+type bind_map = list (bv & term)
+
+let bind_map_push (b:bv) (t:term) (m:bind_map) = (b,t)::m
+
+let rec bind_map_get (b:bv) (m:bind_map) : Tot (option term) =
+  match m with
+  | [] -> None
+  | (b',t)::m' ->
+    if compare_bv b b' = Order.Eq then Some t else bind_map_get b m'
+
+let rec bind_map_get_from_name (b:string) (m:bind_map) : Tot (option (bv & term)) =
+  match m with
+  | [] -> None
+  | (b',t)::m' ->
+    let b'v = inspect_bv b' in
+    if b'v.bv_ppname = b then Some (b',t) else bind_map_get_from_name b m'
+
+noeq type genv =
+  {
+    env : env;
+    bmap : bind_map;
+  }
+let get_env (e:genv) : env = e.env
+let get_bind_map (e:genv) : bind_map = e.bmap
+let mk_genv env bmap : genv =
+  Mkgenv env bmap
+
+/// Push a binder to a ``genv``. Optionally takes a ``term`` which provides the
+/// term the binder is bound to (in a `let _ = _ in` construct for example).
+let genv_push_bv (b:bv) (t:option term) (e:genv) : Tac genv =
+  match t with
+  | Some t' ->
+    let br = mk_binder b in
+    let e' = push_binder e.env br in
+    let bmap' = bind_map_push b t' e.bmap in
+    mk_genv e' bmap'
+  | None ->
+    let br = mk_binder b in
+    let e' = push_binder e.env br in
+    let bmap' = bind_map_push b (pack (Tv_Var b)) e.bmap in
+    mk_genv e' bmap'
+
+let genv_push_binder (b:binder) (t:option term) (e:genv) : Tac genv =
+  match t with
+  | Some t' ->
+    let e' = push_binder e.env b in
+    let bmap' = bind_map_push (bv_of_binder b) t' e.bmap in
+    mk_genv e' bmap'
+  | None ->
+    let e' = push_binder e.env b in
+    let bv = bv_of_binder b in
+    let bmap' = bind_map_push bv (pack (Tv_Var bv)) e.bmap in
+    mk_genv e' bmap'
+
+
 /// Some constants
 let prims_true_qn = "Prims.l_True"
 let prims_true_term = `Prims.l_True
@@ -258,6 +316,60 @@ noeq type cast_info = {
 let mk_cast_info t p_ty exp_ty : cast_info =
   Mkcast_info t p_ty exp_ty
 
+val get_total_or_gtotal_ret_type : comp -> Tot (option typ)
+let get_total_or_gtotal_ret_type c =
+  match inspect_comp c with
+  | C_Total ret_ty _ | C_GTotal ret_ty _ -> Some ret_ty
+  | _ -> None
+
+val get_comp_ret_type : comp -> Tot typ
+let get_comp_ret_type c =
+  match inspect_comp c with
+  | C_Total ret_ty _ | C_GTotal ret_ty _
+  | C_Eff _ _ ret_ty _ -> ret_ty
+  | C_Lemma _ _ _ -> (`unit)
+
+val is_total_or_gtotal : comp -> Tot bool
+let is_total_or_gtotal c =
+  Some? (get_total_or_gtotal_ret_type c)
+
+
+/// This type is used to store typing information.
+/// We use it mostly to track what the target type/computation type is for
+/// a term being explored. It is especially useful to generate post-conditions,
+/// for example.
+/// Whenever we go inside an abstraction, we store how  we instantiated the outer
+/// lambda (in an order reverse to the instantiation order), so that we can correctly
+/// instantiate the pre/post-conditions and type refinements.
+noeq type typ_or_comp =
+| TC_Typ : v:typ -> m:list (binder & binder) -> typ_or_comp
+| TC_Comp : v:comp -> m:list (binder & binder) -> typ_or_comp
+
+/// Update the current ``typ_or_comp`` before going into the body of an abstraction
+val abs_update_typ_or_comp : binder -> typ_or_comp -> Tac typ_or_comp
+
+let _abs_update_typ (b:binder) (ty:typ) (m:list (binder & binder)) : Tac typ_or_comp =
+  begin match inspect ty with
+  | Tv_Arrow b1 c1 ->
+    TC_Comp c1 ((b1, b) :: m)
+  | _ -> mfail ("abs_update_typ_or_comp: not an arrow: " ^ term_to_string ty)
+  end
+
+let abs_update_typ_or_comp (b:binder) (c : typ_or_comp) : Tac typ_or_comp =
+  match c with
+  | TC_Typ v m -> _abs_update_typ b v m
+  | TC_Comp v m ->
+    (* Note that the computation is not necessarily pure, in which case we might
+     * want to do something with the effect arguments (pre, post...) *)
+    let ty = get_comp_ret_type v in
+    _abs_update_typ b ty m
+
+val abs_update_opt_typ_or_comp : binder -> option typ_or_comp -> Tac (option typ_or_comp)
+let abs_update_opt_typ_or_comp b opt_c =
+  match opt_c with
+  | None -> None
+  | Some c -> Some (abs_update_typ_or_comp b c)
+
 /// Effectful term information
 noeq type eterm_info = {
   etype : effect_type;
@@ -267,12 +379,6 @@ noeq type eterm_info = {
   (* Head and parameters of the decomposition of the term into a function application *)
   head : term;
   parameters : list cast_info;
-  (* The following fields are used when the term is the return value of a
-   * function:
-   * - ``ret_cast``: contains the cast to the function return type
-   * - ``goal``: contains the postcondition of the function *)
-  ret_cast : option cast_info;
-  goal : option term;
 }
 
 let mk_eterm_info = Mketerm_info
@@ -317,25 +423,6 @@ let decompose_application e t =
   hd, List.Tot.rev params
 
 /// Extracts the effectful information from a computation
-
-(*/// Computes an effect type and its (optional) pre and post by using its name and its arguments
-val _get_eff_type_pre_post_from_C_Eff : name -> list argv -> Tot (option (effect_type & option term & option term))
-
-let _get_eff_type_pre_post_from_C_Eff eff_name eff_args =
-  let etype = effect_name_to_type eff_name in
-  begin match etype, eff_args with
-  | E_PURE, [(pre, _)] -> Some (E_PURE, Some pre, None)
-  | E_Pure, [(pre, _); (post, _)]
-  | E_Stack, [(pre, _); (post, _)]
-  | E_ST, [(pre, _); (post, _)] -> Some (etype, Some pre, Some post)
-  (* If the effect is unknown and there are two parameters or less, we make the
-   * guess that the first one is a pre-condition and the second one is a
-   * post-condition *)
-  | E_Unknown, [] -> Some (etype, None, None)
-  | E_Unknown, [(pre, _)] -> Some (etype, Some pre, None)
-  | E_Unknown, [(pre, _); (post, _)] -> Some (etype, Some pre, Some post)
-  | _ -> None
-  end *)
 
 // TODO: insert in eterm_info?
 noeq type effect_info = {
@@ -385,47 +472,6 @@ let comp_to_effect_info c =
   let cv : comp_view = inspect_comp c in
   comp_view_to_effect_info cv
 
-(*  match cv with
-  | C_Total ret_ty decr ->
-    let ret_type_info = get_type_info_from_type ret_ty in
-    mk_eterm_info E_Total None None ret_type_info hd parameters None None
-  | C_GTotal ret_ty decr ->
-    let ret_type_info = get_type_info_from_type ret_ty in
-    mk_eterm_info E_GTotal None None ret_type_info hd parameters None None
-  | C_Lemma pre post patterns ->
-    (* We use unit as the return type information *)
-    mk_eterm_info E_Lemma (Some pre) (Some post) unit_type_info hd parameters None None
-  | C_Eff univs eff_name ret_ty eff_args ->
-    let ret_type_info = get_type_info_from_type ret_ty in
-    match get_eff_type_pre_post eff_name eff_args with
-    | Some (etype, pre, post) ->
-      mk_eterm_info etype pre post ret_type_info hd parameters None None
-    | None ->
-      mfail ("Unknown or inconsistant effect: " ^ (flatten_name eff_name)) *)
-
-(*    (* Handle the common effects *)
-    begin match effect_name_to_type eff_name, eff_args with
-    | E_PURE, [(pre, _)] ->
-      mk_eterm_info E_PURE (Some pre) None ret_type_info hd parameters None None
-    | E_Pure, [(pre, _); (post, _)] ->
-      mk_eterm_info E_Pure (Some pre) (Some post) ret_type_info hd parameters None None
-    | E_Stack, [(pre, _); (post, _)] ->
-      mk_eterm_info E_Stack (Some pre) (Some post) ret_type_info hd parameters None None
-    | E_ST, [(pre, _); (post, _)] ->
-      mk_eterm_info E_ST (Some pre) (Some post) ret_type_info hd parameters None None
-    (* If the effect is unknown and there are two parameters or less, we make the
-     * guess that the first one is a pre-condition and the second one is a
-     * post-condition *)
-    | E_Unknown, [] ->
-      mk_eterm_info E_Unknown None None ret_type_info hd parameters None None
-    | E_Unknown, [(pre, _)] ->
-      mk_eterm_info E_Unknown (Some pre) None ret_type_info hd parameters None None
-    | E_Unknown, [(pre, _); (post, _)] ->
-      mk_eterm_info E_Unknown (Some pre) (Some post) ret_type_info hd parameters None None
-    | _ ->
-      mfail ("Unknown or inconsistant effect: " ^ (flatten_name eff_name))
-    end *)
-
 /// Returns the effectful information about a term
 val get_eterm_info : env -> term -> Tac eterm_info
 
@@ -441,7 +487,7 @@ let get_eterm_info (e:env) (t : term) =
     | None -> mfail ("get_eterm_info: failed on: " ^ term_to_string t)
     | Some einfo ->
       mk_eterm_info einfo.ei_type einfo.ei_pre einfo.ei_post einfo.ei_ret_type
-                    hd parameters None None
+                    hd parameters
     end
   with
   | TacticFailure msg ->
@@ -622,6 +668,12 @@ let push_fresh_binder (e : env) (basename : string) (ty : typ) : Tac (binder & e
   let e' = push_binder e b in
   b, e'
 
+let genv_push_fresh_binder (ge : genv) (basename : string) (ty : typ) : Tac (binder & genv) =
+  let b = fresh_binder ge.env basename ty in
+  let ge' = genv_push_binder b None ge in
+  b, ge'
+
+
 /// When dealing with unknown effects, we try to guess what the pre and post-conditions
 /// are. The effects are indeed very likely to have a pre and a post-condition,
 /// and to be parameterized with an internal effect state, so that the pre and posts
@@ -635,23 +687,6 @@ let push_fresh_binder (e : env) (basename : string) (ty : typ) : Tac (binder & e
 noeq type pre_post_type =
   | PP_Unknown | PP_Pure
   | PP_State : (state_type:term) -> pre_post_type
-
-val get_total_or_gtotal_ret_type : comp -> Tot (option typ)
-let get_total_or_gtotal_ret_type c =
-  match inspect_comp c with
-  | C_Total ret_ty _ | C_GTotal ret_ty _ -> Some ret_ty
-  | _ -> None
-
-val get_comp_ret_type : comp -> Tot typ
-let get_comp_ret_type c =
-  match inspect_comp c with
-  | C_Total ret_ty _ | C_GTotal ret_ty _
-  | C_Eff _ _ ret_ty _ -> ret_ty
-  | C_Lemma _ _ _ -> (`unit)
-
-val is_total_or_gtotal : comp -> Tot bool
-let is_total_or_gtotal c =
-  Some? (get_total_or_gtotal_ret_type c)
 
 val check_pre_type : bool -> env -> term -> Tac pre_post_type
 let check_pre_type dbg e pre =
@@ -771,32 +806,40 @@ let push_two_fresh_vars e0 basename ty =
   let v2 = pack (Tv_Var (bv_of_binder b2)) in
   v1, b1, v2, b2,  e2
 
-val _introduce_variables_for_abs : env -> typ -> Tac (list term & list binder & env)
-let rec _introduce_variables_for_abs e ty =
+val genv_push_two_fresh_vars : genv -> string -> typ -> Tac (term & binder & term & binder & genv)
+let genv_push_two_fresh_vars ge0 basename ty =
+  let b1, ge1 = genv_push_fresh_binder ge0 basename ty in
+  let b2, ge2 = genv_push_fresh_binder ge1 basename ty in
+  let v1 = pack (Tv_Var (bv_of_binder b1)) in
+  let v2 = pack (Tv_Var (bv_of_binder b2)) in
+  v1, b1, v2, b2,  ge2
+
+val _introduce_variables_for_abs : genv -> typ -> Tac (list term & list binder & genv)
+let rec _introduce_variables_for_abs ge ty =
   match inspect ty with
   | Tv_Arrow b c ->
-    let b1, e1 = push_fresh_binder e ("__" ^ name_of_binder b) (type_of_binder b) in
+    let b1, ge1 = genv_push_fresh_binder ge ("__" ^ name_of_binder b) (type_of_binder b) in
     let bv1 = bv_of_binder b1 in
     let v1 = pack (Tv_Var bv1) in
     begin match get_total_or_gtotal_ret_type c with
     | Some ty1 ->
-      let vl, bl, e2 = _introduce_variables_for_abs e1 ty1 in
-      v1 :: vl, b1 :: bl, e2
-    | None -> [v1], [b1], e1
+      let vl, bl, ge2 = _introduce_variables_for_abs ge1 ty1 in
+      v1 :: vl, b1 :: bl, ge2
+    | None -> [v1], [b1], ge1
     end
- | _ -> [], [], e
+ | _ -> [], [], ge
 
-val introduce_variables_for_abs : env -> term -> Tac (list term & list binder & env)
-let introduce_variables_for_abs e tm =
-  match safe_tc e tm with
-  | Some ty -> _introduce_variables_for_abs e ty
-  | None -> [], [], e
+val introduce_variables_for_abs : genv -> term -> Tac (list term & list binder & genv)
+let introduce_variables_for_abs ge tm =
+  match safe_tc ge.env tm with
+  | Some ty -> _introduce_variables_for_abs ge ty
+  | None -> [], [], ge
 
-val introduce_variables_for_opt_abs : env -> option term -> Tac (list term & list binder & env)
-let introduce_variables_for_opt_abs e opt_tm =
+val introduce_variables_for_opt_abs : genv -> option term -> Tac (list term & list binder & genv)
+let introduce_variables_for_opt_abs ge opt_tm =
   match opt_tm with
-  | Some tm -> introduce_variables_for_abs e tm
-  | None -> [], [], e
+  | Some tm -> introduce_variables_for_abs ge tm
+  | None -> [], [], ge
 
 val effect_type_is_stateful : effect_type -> Tot bool
 let effect_type_is_stateful etype =
@@ -809,75 +852,75 @@ let effect_type_is_stateful etype =
 /// the environment in the return type).
 /// The ``bind_var`` parameter is a variable if the studied term was bound in a let
 /// expression.
-val eterm_info_to_assertions : bool -> env -> term -> eterm_info -> option term -> Tac (env & assertions)
-let eterm_info_to_assertions dbg e t info bind_var =
+val eterm_info_to_assertions : bool -> genv -> term -> eterm_info -> option term -> option typ_or_comp -> Tac (genv & assertions)
+let eterm_info_to_assertions dbg ge t info bind_var opt_c =
   print_dbg dbg "[> eterm_info_to_assertions";
   (* Introduce additional variables to instantiate the return type refinement,
    * the precondition, the postcondition and the goal *)
   (* First, the return value: returns an updated env, the value to use for
    * the return type and a list of abstract binders *)
-  let gen_ret_value e : Tac (env & term & list binder) =
+  let gen_ret_value ge : Tac (genv & term & list binder) =
     match bind_var with
-    | Some v -> e, v, []
+    | Some v -> ge, v, []
     | None ->
       (* If the studied term is not stateless, we can use it directly in the
        * propositions, otherwise we need to introduced a variable *)
       if effect_type_is_stateful info.etype then
-        let b = fresh_binder e "__ret" info.ret_type.ty in
+        let b = fresh_binder ge.env "__ret" info.ret_type.ty in
         let bv = bv_of_binder b in
         let tm = pack (Tv_Var bv) in
-        push_binder e b, tm, [b]
-      else e, t, []
+        genv_push_binder b None ge, tm, [b]
+      else ge, t, []
   in
   (* Then, the variables for the pre/postconditions *)
-  let e', (ret_values, ret_binders), (pre_values, pre_binders), (post_values, post_binders) =
+  let ge', (ret_values, ret_binders), (pre_values, pre_binders), (post_values, post_binders) =
     match info.etype with
     | E_Lemma ->
       (* Nothing to introduce *)
-      e, ([], []), ([], []), ([], [])
+      ge, ([], []), ([], []), ([], [])
     | E_Total | E_GTotal ->
       (* Optionally introduce a variable for the return value *)
-      let e', v, brs = gen_ret_value e in
-      e', ([v], brs), ([], []), ([], [])
+      let ge', v, brs = gen_ret_value ge in
+      ge', ([v], brs), ([], []), ([], [])
     | E_PURE | E_Pure ->
       (* Optionally introduce a variable for the return value *)
-      let e', v, brs = gen_ret_value e in
-      e', ([v], brs), ([], []), ([v], brs)
+      let ge', v, brs = gen_ret_value ge in
+      ge', ([v], brs), ([], []), ([v], brs)
     | E_Stack | E_ST ->
       (* Optionally introduce a variable for the return value *)
-      let e0, v, brs = gen_ret_value e in
+      let ge0, v, brs = gen_ret_value ge in
       (* Introduce variables for the memories *)
-      let h1, b1, h2, b2, e2 = push_two_fresh_vars e0 "__h" (`HS.mem) in
-      e2, ([v], brs), ([h1], [b1]), ([h1; v; h2], List.Tot.flatten ([b1]::brs::[[b2]]))
+      let h1, b1, h2, b2, ge2 = genv_push_two_fresh_vars ge0 "__h" (`HS.mem) in
+      ge2, ([v], brs), ([h1], [b1]), ([h1; v; h2], List.Tot.flatten ([b1]::brs::[[b2]]))
     | E_Unknown ->
       (* We don't know what the effect is and the current pre and post-conditions
        * are currently guesses. Introduce any necessary variable abstracted by
        * those parameters *)
       (* Optionally introduce a variable for the return value *)
-      let e0, v, brs = gen_ret_value e in
+      let ge0, v, brs = gen_ret_value ge in
        (* The pre and post-conditions are likely to have the same shape as
         * one of Pure or Stack (depending on whether we use or not an internal
         * state). We try to check that and to instantiate them accordingly *)
-      let pp_type = check_opt_pre_post_type dbg e0 info.pre info.ret_type.ty info.post in
+      let pp_type = check_opt_pre_post_type dbg ge0.env info.pre info.ret_type.ty info.post in
       begin match pp_type with
       | Some PP_Pure ->
         print_dbg dbg "PP_Pure";
         (* We only need the return value *)
-        e0, ([v], brs), ([], []), ([v], brs)
+        ge0, ([v], brs), ([], []), ([v], brs)
       | Some (PP_State state_type) ->
         print_dbg dbg "PP_State";
         (* Introduces variables for the states *)
-        let s1, b1, s2, b2, e2 = push_two_fresh_vars e0 "__s" state_type in
-        e2, ([v], brs), ([s1], [b1]), ([s1; v; s2], List.Tot.flatten ([b1]::brs::[[b2]]))
+        let s1, b1, s2, b2, ge2 = genv_push_two_fresh_vars ge0 "__s" state_type in
+        ge2, ([v], brs), ([s1], [b1]), ([s1; v; s2], List.Tot.flatten ([b1]::brs::[[b2]]))
       | Some PP_Unknown ->
         print_dbg dbg "PP_Unknown";
         (* Introduce variables for all the values, for the pre and the post *)
-        let pre_values, pre_binders, e1 = introduce_variables_for_opt_abs e0 info.pre in
-        let post_values, post_binders, e2 = introduce_variables_for_opt_abs e1 info.post in
-        e2, ([v], brs), (pre_values, pre_binders), (post_values, post_binders)
+        let pre_values, pre_binders, ge1 = introduce_variables_for_opt_abs ge0 info.pre in
+        let post_values, post_binders, ge2 = introduce_variables_for_opt_abs ge1 info.post in
+        ge2, ([v], brs), (pre_values, pre_binders), (post_values, post_binders)
       | _ ->
         (* No pre and no post *)
-        e0, ([v], brs), ([], []), ([], [])
+        ge0, ([v], brs), ([], []), ([], [])
       end
   in
   (* Generate the propositions: *)
@@ -892,7 +935,7 @@ let eterm_info_to_assertions dbg e t info bind_var =
   (* Concatenate, revert and return *)
   let pres = List.Tot.rev (opt_cons pre_prop params_props) in
   let posts = opt_cons ret_refin_prop (opt_cons post_prop []) in
-  e', { pres = pres; posts = posts }
+  ge', { pres = pres; posts = posts }
 
 (**** Step 3 *)
 /// Simplify the propositions and filter the trivial ones.
@@ -1032,105 +1075,11 @@ let print_binders_info (full : bool) (e:env) : Tac unit =
 assume type meta_info
 assume val focus_on_term : meta_info
 
-/// A map linking variables to terms. For now we use a list to define it, because
-/// there shouldn't be too many bindings.
-type bind_map = list (bv & term)
-
-let bind_map_push (b:bv) (t:term) (m:bind_map) = (b,t)::m
-
-let rec bind_map_get (b:bv) (m:bind_map) : Tot (option term) =
-  match m with
-  | [] -> None
-  | (b',t)::m' ->
-    if compare_bv b b' = Order.Eq then Some t else bind_map_get b m'
-
-let rec bind_map_get_from_name (b:string) (m:bind_map) : Tot (option (bv & term)) =
-  match m with
-  | [] -> None
-  | (b',t)::m' ->
-    let b'v = inspect_bv b' in
-    if b'v.bv_ppname = b then Some (b',t) else bind_map_get_from_name b m'
-
-noeq type genv =
-  {
-    env : env;
-    bmap : bind_map;
-  }
-let get_env (e:genv) : env = e.env
-let get_bind_map (e:genv) : bind_map = e.bmap
-let mk_genv env bmap : genv =
-  Mkgenv env bmap
-
-/// Push a binder to a ``genv``. Optionally takes a ``term`` which provides the
-/// term the binder is bound to (in a `let _ = _ in` construct for example).
-let genv_push_bv (b:bv) (t:option term) (e:genv) : Tac genv =
-  match t with
-  | Some t' ->
-    let br = mk_binder b in
-    let e' = push_binder e.env br in
-    let bmap' = bind_map_push b t' e.bmap in
-    mk_genv e' bmap'
-  | None ->
-    let br = mk_binder b in
-    let e' = push_binder e.env br in
-    let bmap' = bind_map_push b (pack (Tv_Var b)) e.bmap in
-    mk_genv e' bmap'
-
-let genv_push_binder (b:binder) (t:option term) (e:genv) : Tac genv =
-  match t with
-  | Some t' ->
-    let e' = push_binder e.env b in
-    let bmap' = bind_map_push (bv_of_binder b) t' e.bmap in
-    mk_genv e' bmap'
-  | None ->
-    let e' = push_binder e.env b in
-    let bv = bv_of_binder b in
-    let bmap' = bind_map_push bv (pack (Tv_Var bv)) e.bmap in
-    mk_genv e' bmap'
-
 let convert_ctrl_flag (flag : ctrl_flag) =
   match flag with
   | Continue -> Continue
   | Skip -> Continue
   | Abort -> Abort
-
-/// This type is used to store typing information.
-/// We use it mostly to track, what the target type/computation type is for
-/// a term being explored. It is especially useful to generate post-conditions,
-/// for example.
-/// Whenever we go inside an abstraction, we store how  we instantiated the outer
-/// lambda (in an order reverse to the instantiation order), so that we can correctly
-/// instantiate the pre/post-conditions and type refinements.
-noeq type typ_or_comp =
-| TC_Typ : v:typ -> m:list (binder & binder) -> typ_or_comp
-| TC_Comp : v:comp -> m:list (binder & binder) -> typ_or_comp
-
-/// Update the current ``typ_or_comp`` before going into the body of an abstraction
-
-val abs_update_typ_or_comp : binder -> typ_or_comp -> Tac typ_or_comp
-
-/// Auxiliary function
-let _abs_update_typ (b:binder) (ty:typ) (m:list (binder & binder)) : Tac typ_or_comp =
-  begin match inspect ty with
-  | Tv_Arrow b1 c1 ->
-    TC_Comp c1 ((b1, b) :: m)
-  | _ -> mfail ("abs_update_typ_or_comp: not an arrow: " ^ term_to_string ty)
-  end
-
-let abs_update_typ_or_comp (b:binder) (c : typ_or_comp) : Tac typ_or_comp =
-  match c with
-  | TC_Typ v m -> _abs_update_typ b v m
-  | TC_Comp v m ->
-    (* Note that the computation is not necessarily pure, in which case we might
-     * want to do something with the effect arguments (pre, post...) *)
-    let ty = get_comp_ret_type v in
-    _abs_update_typ b ty m
-
-val abs_update_opt_typ_or_comp : binder -> option typ_or_comp -> Tac (option typ_or_comp)
-let abs_update_opt_typ_or_comp b opt_c =
-  match opt_c with
-  | None -> None
-  | Some c -> Some (abs_update_typ_or_comp b c)
 
 /// Check if a binder is shadowed by another more recent binder
 let bv_is_shadowed (ge : genv) (bv : bv) : Tot bool =
@@ -1375,7 +1324,7 @@ let pp_explore (dbg : bool)
 /// pre/postconditions and type conditions.
 
 /// Check for meta-identifiers. Note that we can't simply use ``term_eq`` which
-/// sometimes unexpectedly fails (maybe because of information hidden to Meta-F*).
+/// sometimes unexpectedly fails (maybe because of information hidden to Meta-F*)
 val is_focus_on_term : term -> Tac bool
 let is_focus_on_term t =
   match inspect t with
@@ -1385,7 +1334,7 @@ let is_focus_on_term t =
 
 val analyze_effectful_term : bool -> unit -> genv -> option typ_or_comp -> term_view -> Tac (unit & ctrl_flag)
 
-let analyze_effectful_term dbg () ge c t =
+let analyze_effectful_term dbg () ge opt_c t =
   if dbg then
     begin
     print ("[> analyze_effectful_term: " ^ term_view_construct t ^ ":\n" ^ term_to_string t)
@@ -1408,10 +1357,12 @@ let analyze_effectful_term dbg () ge c t =
          | _ -> ge, body, get_eterm_info ge.env body, None, true
          end
        in
+       (* We use the target computation only if the studied term is binded in a let *)
+       let opt_c1 = if is_let then None else opt_c in
        (* Instantiate the refinements *)
-       let e2, asserts = eterm_info_to_assertions dbg ge1.env studied_term info ret_arg in
+       let ge2, asserts = eterm_info_to_assertions dbg ge1 studied_term info ret_arg opt_c1 in
        (* Simplify and filter *)
-       let sasserts = simp_filter_assertions e2 [primops; simplify] asserts in
+       let sasserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
        (* Print *)
        printout_assertions "ainfo" sasserts;
        (), Abort
