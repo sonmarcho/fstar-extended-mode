@@ -136,6 +136,36 @@ let find_shadowed_bvs (ge : genv) (bl : list bv) : Tot (list (bv & bool)) =
 let find_shadowed_binders (ge : genv) (bl : list binder) : Tot (list (binder & bool)) =
   List.Tot.map (fun b -> b, binder_is_shadowed ge b) bl
 
+
+/// Versions of ``fresh_bv`` and ``fresh_binder`` inspired by the standard library
+/// We make sure the name is fresh because we need to be able to generate valid code
+/// (it is thus not enough to have a fresh integer).
+let rec _fresh_bv binder_names basename i ty : Tac bv =
+  let name = basename ^ string_of_int i in
+  (* In worst case the performance is quadratic in the number of binders,
+   * but it is very unlikely that we get the worst case  *)
+  if List.mem name binder_names then _fresh_bv binder_names basename (i+1) ty
+  else fresh_bv_named name ty
+
+let fresh_bv (e : env) (basename : string) (ty : typ) : Tac bv =
+  let binders = binders_of_env e in
+  let binder_names = List.Tot.map name_of_binder binders in
+  _fresh_bv binder_names basename 0 ty
+
+let fresh_binder (e : env) (basename : string) (ty : typ) : Tac binder =
+  let bv = fresh_bv e basename ty in
+  mk_binder bv
+
+let push_fresh_binder (e : env) (basename : string) (ty : typ) : Tac (binder & env) =
+  let b = fresh_binder e basename ty in
+  let e' = push_binder e b in
+  b, e'
+
+let genv_push_fresh_binder (ge : genv) (basename : string) (ty : typ) : Tac (binder & genv) =
+  let b = fresh_binder ge.env basename ty in
+  let ge' = genv_push_binder b None ge in
+  b, ge'
+
 /// Some constants
 let prims_true_qn = "Prims.l_True"
 let prims_true_term = `Prims.l_True
@@ -482,7 +512,7 @@ let free_in t =
   in
   let e = top_env () in (* we actually don't care about the environment *)
   let ge = mk_genv e [] in
-  fst (explore_term false update_free [] ge None t)  
+  List.Tot.rev (fst (explore_term false update_free [] ge None t))
 
 
 (*** Effectful term analysis *)
@@ -510,6 +540,23 @@ noeq type abs_term = {
 
 type proposition = abs_term
 
+val abs_term_to_string : abs_term -> Tot string
+let abs_term_to_string at =
+  let brs_str = List.Tot.map binder_to_string at.abs in
+  let brs_str = List.Tot.map (fun x -> " " ^ x ^ ";") brs_str in
+  let brs_str = List.Tot.fold_left (fun x y -> x ^ y) "" brs_str in
+  "Mkabs_term (" ^ term_to_string at.body ^ ") [" ^ brs_str ^ "])"
+
+val proposition_to_string : proposition -> Tot string
+let proposition_to_string p = abs_term_to_string p
+
+val option_to_string : (#a : Type) -> (a -> Tot string) -> option a -> Tot string
+let option_to_string #a f x =
+  match x with
+  | None -> "None"
+  | Some x' -> "Some (" ^ f x' ^ ")"
+
+
 /// Cast information
 noeq type cast_info = {
   term : term;
@@ -527,6 +574,14 @@ noeq type comp_info = {
   cc_ret_refin : option proposition; (* the type should be: return_type -> Type *)
   cc_post : option proposition;
 }
+
+val comp_info_to_string : comp_info -> Tot string
+let comp_info_to_string c =
+  "mk_comp_info " ^
+  option_to_string abs_term_to_string c.cc_pre ^ " " ^
+  option_to_string abs_term_to_string c.cc_ret_type ^ " " ^
+  option_to_string abs_term_to_string c.cc_ret_refin ^ " " ^
+  option_to_string abs_term_to_string c.cc_post
 
 let mk_comp_info = Mkcomp_info
 
@@ -721,35 +776,92 @@ let opt_term_to_opt_abs_term opt_t params abs_params =
   | Some t -> Some (term_to_abs_term t params abs_params)
   | None -> None  
 
+/// Perform a variable substitution in a term
+/// TODO: we might have some problems if the variables have dependent types which
+/// reference each other, in which case we might have to reconstruct the whole
+/// term. But I'm not sure, because we won't trypecheck them (we will just print
+/// them).
+/// TODO: write a function which goes through the whole term and reconstructs it.
+val subst_vars : env -> term -> list (binder & term) -> Tac term
+let subst_vars e t subst =
+  let bl, vl = unzip subst in
+  let t1 = mk_abs t bl in
+  let t2 = mk_e_app t1 vl in
+  norm_term_env e [] t2
+
+/// Substitute a list of binders with fresh binders, added to the environment.
+/// The tricky part comes from the fact that there may be dependent types, in
+/// which we also need to do the substitution. For this reason, we start by
+/// abstracting all the binders, then whenever we need to introduce a new binder,
+/// we take its type from the outermost abstraction, introduce the binder, apply
+/// the abstraction to the binder then normalize.
+/// TODO: use this method everywhere
+val subst_with_fresh_vars : genv -> term -> list binder -> Tac (genv & term & list binder)
+
+let rec _subst_with_fresh_vars (ge:genv) (t:term) (bl : list binder) :
+  Tac (genv & term & list binder) =
+  (* Note that here, we use the initial list of binders only to count *)
+  match bl with
+  | [] -> ge, t, []
+  | _ :: bl' ->
+    match inspect t with
+    | Tv_Abs b _ ->
+      (* Introduce the new binder *)
+      let bv, _ = inspect_binder b in
+      let bvv = inspect_bv bv in
+      let ty = bvv.bv_sort in
+      let name = bvv.bv_ppname in
+      let b', ge1 = genv_push_fresh_binder ge ("__" ^ name) ty in
+      let bv' = bv_of_binder b' in
+      let t1 = mk_e_app t [pack (Tv_Var bv')] in
+      let t2 = norm_term_env ge1.env [] t1 in
+      (* Recursion *)
+      let ge2, t3, nbl = _subst_with_fresh_vars ge1 t2 bl' in
+      (* Return *)
+      ge2, t3, b' :: nbl
+    | _ -> mfail "_subst_with_fresh_vars: not a Tv_Abs"
+
+let subst_with_fresh_vars ge t bl =
+  let t' = mk_abs t bl in
+  _subst_with_fresh_vars ge t' bl
+
 /// Generates an ``abs_term`` from a ``term`` where the abstracted parameters are
 /// the variables free in the term but shadowed in the current environments.
-/// Note that we need to provide two environments: the current environment, and
-/// another in which the term typed, and from which the current environment was
-/// produced by pushing binders.
-val term_to_abs_shadowed_term (ge : genv) (t : term) : Tac abs_term
+/// Note that we introduce fresh variables for the abstracted parameters.
+/// TODO: see remark for ``subst_vars`` (problem with dependent types - might be
+/// a problem whenever we introduce new variables/binders elsewhere in the code)
+val term_to_abs_shadowed_term (ge : genv) (t : term) : Tac (genv & abs_term)
 let term_to_abs_shadowed_term ge t =
-  let free_vars = free_in t in
+  let free_vars = free_in t in (* *)
   let free_vars = find_shadowed_bvs ge free_vars in
-  let abs_vars = List.Tot.filter (fun (bv, b) -> b) free_vars in
-  let abs_vars = List.Tot.map (fun (bv, _) -> pack_binder bv Q_Explicit) abs_vars in
-  term_to_abs_term t [] abs_vars
+  (* The shadowed variables *)
+  let shad_vars = List.Tot.filter (fun (bv, b) -> b) free_vars in
+  let shad_vars = List.Tot.map fst shad_vars in
+  let shad_binders = List.Tot.map (fun bv -> pack_binder bv Q_Explicit) shad_vars in
+  (* Introduce fresh variables and substitute them in the term *)
+  let ge', t', abs_binders = subst_with_fresh_vars ge t shad_binders in
+  (* Introduce variables for *)
+  ge', term_to_abs_term t' [] abs_binders
 
-val opt_term_to_opt_abs_shadowed_term (ge : genv) (opt_t : option term) : Tac (option abs_term)
+val opt_term_to_opt_abs_shadowed_term : (ge : genv) -> (opt_t : option term) ->
+                                        Tac (genv & option abs_term)
 let opt_term_to_opt_abs_shadowed_term ge opt_t =
   match opt_t with
-  | None -> None
-  | Some t -> Some (term_to_abs_shadowed_term ge t)
+  | None -> ge, None
+  | Some t ->
+    let ge', t' = term_to_abs_shadowed_term ge t in
+    ge', Some t'
 
 /// Auxiliary function: convert type information to a ``comp_info``
 let _typ_to_comp_info (ge : genv) (tinfo : type_info) (m : list (binder & binder)) :
-  Tac comp_info =
+  Tac (genv & comp_info) =
   let rty = get_rawest_type tinfo in
   let refin = get_opt_refinment tinfo in
-  let rty = term_to_abs_shadowed_term ge rty in
-  let refin = opt_term_to_opt_abs_shadowed_term ge refin in
-  mk_comp_info None (Some rty) refin None  
+  let ge1, rty = term_to_abs_shadowed_term ge rty in
+  let ge2, refin = opt_term_to_opt_abs_shadowed_term ge1 refin in
+  ge2, mk_comp_info None (Some rty) refin None
 
-let typ_or_comp_to_comp_info (ge : genv) (c : typ_or_comp) : Tac comp_info =
+let typ_or_comp_to_comp_info (ge : genv) (c : typ_or_comp) : Tac (genv & comp_info) =
   match c with
   | TC_Typ ty m ->
     let tinfo = get_type_info_from_type ty in
@@ -759,10 +871,20 @@ let typ_or_comp_to_comp_info (ge : genv) (c : typ_or_comp) : Tac comp_info =
     match opt_einfo with
     | None -> mfail ("typ_or_comp_to_comp_info failed on: " ^ acomp_to_string cv)
     | Some einfo ->
-      let pre = opt_term_to_opt_abs_shadowed_term ge einfo.ei_pre in
-      let post = opt_term_to_opt_abs_shadowed_term ge einfo.ei_post in
-      let cci0 = _typ_to_comp_info ge einfo.ei_ret_type m in
-      { cci0 with cc_pre = pre; cc_post = post }
+      let subst_src, subst_tgt = unzip m in
+      let subst_tgt = map (fun x -> pack (Tv_Var (bv_of_binder x))) subst_tgt in
+      let subst = zip subst_src subst_tgt in
+      let opt_subst (opt : option term) : Tac (option term) =
+        match opt with
+        | None -> None
+        | Some x -> Some (subst_vars ge.env x subst)
+      in
+      let pre = opt_subst einfo.ei_pre in
+      let post = opt_subst einfo.ei_post in
+      let ge1, pre = opt_term_to_opt_abs_shadowed_term ge pre in
+      let ge2, post = opt_term_to_opt_abs_shadowed_term ge1 post in
+      let ge3, cci0 = _typ_to_comp_info ge2 einfo.ei_ret_type m in
+      ge3, { cci0 with cc_pre = pre; cc_post = post }
 
 (**** Step 2 *)
 /// The retrieved type refinements and post-conditions are not instantiated (they
@@ -813,36 +935,6 @@ val cast_info_list_to_propositions : list cast_info -> Tac (list proposition)
 let cast_info_list_to_propositions ls =
   let lsl = map cast_info_to_propositions ls in
   flatten lsl
-
-/// Versions of ``fresh_bv`` and ``fresh_binder`` inspired by the standard library
-/// We make sure the name is fresh because we need to be able to generate valid code
-/// (it is thus not enough to have a fresh integer).
-let rec _fresh_bv binder_names basename i ty : Tac bv =
-  let name = basename ^ string_of_int i in
-  (* In worst case the performance is quadratic in the number of binders,
-   * but it is very unlikely that we get the worst case  *)
-  if List.mem name binder_names then _fresh_bv binder_names basename (i+1) ty
-  else fresh_bv_named name ty
-
-let fresh_bv (e : env) (basename : string) (ty : typ) : Tac bv =
-  let binders = binders_of_env e in
-  let binder_names = List.Tot.map name_of_binder binders in
-  _fresh_bv binder_names basename 0 ty
-
-let fresh_binder (e : env) (basename : string) (ty : typ) : Tac binder =
-  let bv = fresh_bv e basename ty in
-  mk_binder bv
-
-let push_fresh_binder (e : env) (basename : string) (ty : typ) : Tac (binder & env) =
-  let b = fresh_binder e basename ty in
-  let e' = push_binder e b in
-  b, e'
-
-let genv_push_fresh_binder (ge : genv) (basename : string) (ty : typ) : Tac (binder & genv) =
-  let b = fresh_binder ge.env basename ty in
-  let ge' = genv_push_binder b None ge in
-  b, ge'
-
 
 /// When dealing with unknown effects, we try to guess what the pre and post-conditions
 /// are. The effects are indeed very likely to have a pre and a post-condition,
@@ -1137,7 +1229,6 @@ let abs_pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre
   print_dbg dbg "[> abs_pre_post_to_propositions: end";
   ge1, opt_pre4, opt_post4
 
-(* TODO HERE *)
 /// Convert effectful type information to a list of propositions. May have to
 /// introduce additional binders for the preconditions/postconditions/goal (hence
 /// the environment in the return type).
@@ -1173,17 +1264,18 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
     match opt_c with
     | None -> ge1, None, None
     | Some c ->
-      let ci = typ_or_comp_to_comp_info ge1 c in
+      let ge2, ci = typ_or_comp_to_comp_info ge1 c in
+      print_dbg dbg (comp_info_to_string ci);
       (* Precondition, post-condition *)
       (* The global post-condition is to be used only if we are not analyzing
        * let expression *)
       let gpost = if is_let then None else ci.cc_post in
       (* TODO: not sure about the return type: maybe catch failures *)
-      let ge2, gpre_prop, gpost_prop =
-        abs_pre_post_to_propositions dbg ge1 info.etype v b info.ret_type
+      let ge3, gpre_prop, gpost_prop =
+        abs_pre_post_to_propositions dbg ge2 info.etype v b info.ret_type
                                      ci.cc_pre gpost in
       (* Return type: TODO *)
-      ge2, gpre_prop, gpost_prop
+      ge3, gpre_prop, gpost_prop
   in
   (* Generate the propositions: *)
   (* - from the parameters' cast info *)
@@ -1509,12 +1601,23 @@ let pp_test3 () : Tot nat =
     w
   else 0
 
-(* TODO HERE *)
-[@(postprocess_with (pp_focused_term true))]
+[@(postprocess_with (pp_focused_term false))]
 let pp_test4 (y : nat) :
   ST.Stack nat
   (requires (fun _ -> y >= 2))
   (ensures (fun _ _ _ -> 3 >= 2)) =
+  let x = 2 in
+  let _ = focus_on_term in
+  let w = test_stack1 x in
+  w
+
+(* TODO HERE *)
+[@(postprocess_with (pp_focused_term true))]
+let pp_test4_1 (y : nat) :
+  ST.Stack nat
+  (requires (fun _ -> y >= 2))
+  (ensures (fun _ _ _ -> 3 >= 2)) =
+  let y = 3 in
   let x = 2 in
   let _ = focus_on_term in
   let w = test_stack1 x in
@@ -1529,7 +1632,7 @@ let pp_test5 () :
   let _ = focus_on_term in
   test_stack1 x
 
-[@(postprocess_with (pp_focused_term false))]
+[@(postprocess_with (pp_focused_term true))]
 let pp_test6 () :
   ST.Stack nat
   (requires (fun _ -> True))
