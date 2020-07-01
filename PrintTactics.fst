@@ -22,6 +22,14 @@ val iteri: (int -> 'a -> Tac unit) -> list 'a -> Tac unit
 let iteri f x = iteri_aux 0 f x
 #pop-options
 
+(* TODO: move to FStar.Reflection.Derived.fst *)
+let rec mk_abs (t : term) (args : list binder) : Tot term (decreases args) =
+  match args with
+  | [] -> t
+  | a :: args' ->
+    let t' = mk_abs t args' in
+    pack_ln (Tv_Abs a t')
+
 
 let test_fun1 (n : nat) :
   Pure nat
@@ -219,6 +227,7 @@ let mk_cast_info t p_ty exp_ty : cast_info =
 
 /// Effectful term information
 noeq type eterm_info = {
+  eterm : term;
   etype : effect_type;
   pre : option term;
   post : option term;
@@ -234,8 +243,8 @@ noeq type eterm_info = {
   goal : option term;
 }
 
-let mk_eterm_info etype pre post ret_type head parameters ret_cast goal : eterm_info =
-  Mketerm_info etype pre post ret_type head parameters ret_cast goal
+let mk_eterm_info eterm etype pre post ret_type head parameters ret_cast goal : eterm_info =
+  Mketerm_info eterm etype pre post ret_type head parameters ret_cast goal
 
 (*** Effectful term analysis *)
 /// Analyze a term to retrieve its effectful information
@@ -300,18 +309,18 @@ let get_eterm_info (e:env) (t : term) =
     | C_Total ret_ty decr ->
       print ("C_Total: " ^ (term_to_string ret_ty));
       let ret_type_info = get_type_info_from_type e ret_ty in
-      mk_eterm_info E_Total None None ret_type_info hd parameters None None
+      mk_eterm_info t E_Total None None ret_type_info hd parameters None None
     | C_GTotal ret_ty decr ->
       print ("C_GTotal: " ^ (term_to_string ret_ty));
       let ret_type_info = get_type_info_from_type e ret_ty in
-      mk_eterm_info E_GTotal None None ret_type_info hd parameters None None
+      mk_eterm_info t E_GTotal None None ret_type_info hd parameters None None
     | C_Lemma pre post patterns ->
       print "C_Lemma:";
       print ("- pre:\n" ^ (term_to_string pre));
       print ("- post:\n" ^ (term_to_string post));
       print ("- patterns:\n" ^ (term_to_string patterns));
       (* We use unit as the return type information *)
-      mk_eterm_info E_Lemma (Some pre) (Some post) unit_type_info hd parameters None None
+      mk_eterm_info t E_Lemma (Some pre) (Some post) unit_type_info hd parameters None None
     | C_Eff univs eff_name ret_ty eff_args ->
       print "C_Eff:";
       print ("- eff_name: " ^ (flatten_name eff_name));
@@ -322,22 +331,22 @@ let get_eterm_info (e:env) (t : term) =
       (* Handle the common effects *)
       begin match effect_name_to_type eff_name, eff_args with
       | E_PURE, [(pre, _)] ->
-        mk_eterm_info E_PURE (Some pre) None ret_type_info hd parameters None None
+        mk_eterm_info t E_PURE (Some pre) None ret_type_info hd parameters None None
       | E_Pure, [(pre, _); (post, _)] ->
-        mk_eterm_info E_Pure (Some pre) (Some post) ret_type_info hd parameters None None
+        mk_eterm_info t E_Pure (Some pre) (Some post) ret_type_info hd parameters None None
       | E_Stack, [(pre, _); (post, _)] ->
-        mk_eterm_info E_Stack (Some pre) (Some post) ret_type_info hd parameters None None
+        mk_eterm_info t E_Stack (Some pre) (Some post) ret_type_info hd parameters None None
       | E_ST, [(pre, _); (post, _)] ->
-        mk_eterm_info E_ST (Some pre) (Some post) ret_type_info hd parameters None None
+        mk_eterm_info t E_ST (Some pre) (Some post) ret_type_info hd parameters None None
       (* If the effect is unknown and there are two parameters or less, we make the
        * guess that the first one is a pre-condition and the second one is a
        * post-condition *)
       | E_Unknown, [] ->
-        mk_eterm_info E_Unknown None None ret_type_info hd parameters None None
+        mk_eterm_info t E_Unknown None None ret_type_info hd parameters None None
       | E_Unknown, [(pre, _)] ->
-        mk_eterm_info E_Unknown (Some pre) None ret_type_info hd parameters None None
+        mk_eterm_info t E_Unknown (Some pre) None ret_type_info hd parameters None None
       | E_Unknown, [(pre, _); (post, _)] ->
-        mk_eterm_info E_Unknown (Some pre) (Some post) ret_type_info hd parameters None None
+        mk_eterm_info t E_Unknown (Some pre) (Some post) ret_type_info hd parameters None None
       | _ ->
         mfail ("Unknown or inconsistant effect: " ^ (flatten_name eff_name))
       end
@@ -374,7 +383,13 @@ noeq type proposition = {
    * The user can then replace those parameters (h1 and h2 above) by the proper
    * ones then normalize the assertion by using the appropriate command, to get
    * what he needs. *)
-  abs : list term;
+  abs : list binder;
+}
+
+/// Propositions split between pre and post assertions
+noeq type assertions = {
+  pres : list proposition;
+  posts : list proposition;
 }
 
 (***** Types, casts and refinements *)
@@ -397,6 +412,14 @@ let get_rawest_type (ty:type_info) : Tot typ =
 
 /// Compare the type of a parameter and its expected type
 type type_comparison = | Refines | Same_raw_type | Unknown
+
+#push-options "--ifuel 1"
+let type_comparison_to_string c =
+  match c with
+  | Refines -> "Refines"
+  | Same_raw_type -> "Same_raw_type"
+  | Unknown -> "Unknown"
+#pop-options
 
 let compare_types (info1 info2 : type_info) :
   Tot (c:type_comparison{c = Same_raw_type ==> has_refinement info2}) =
@@ -425,31 +448,27 @@ let opt_cons (#a : Type) (opt_x : option a) (ls : list a) : Tot (list a) =
   | Some x -> x :: ls
   | None -> ls
 
-/// Instantiate a proposition. ``abstract_params`` controls whether the parameters
-/// used for instantiation should be considered abstract or not.
-val term_to_opt_proposition : bool -> term -> list term -> Tot proposition
-let term_to_opt_proposition abstract_params t params =
+/// Instantiate a proposition.
+val term_to_proposition : term -> list term -> list binder -> Tot proposition
+let term_to_proposition t params abs_params =
   let p = mk_e_app t params in
-  if abstract_params then { prop = p; abs = params; }
-  else { prop = p; abs = []; }
+  { prop = p; abs = abs_params; }
 
-val opt_term_to_opt_proposition : bool -> option term -> list term -> Tot (option proposition)
-let opt_term_to_opt_proposition abstract_params opt_t params =
+val opt_term_to_opt_proposition : option term -> list term -> list binder -> Tot (option proposition)
+let opt_term_to_opt_proposition opt_t params abs_params =
   match opt_t with
-  | Some t -> Some (term_to_opt_proposition abstract_params t params)
+  | Some t -> Some (term_to_proposition t params abs_params)
   | None -> None  
 
 /// Generate the propositions equivalent to a correct type cast.
 /// Note that the type refinements need to be instantiated.
-/// ``abstract_refin`` controls whether the term in the type cast should be
-/// considered abstract or not (when instantiating the target type refinement).
-val cast_info_to_propositions : bool -> cast_info -> Tac (list proposition)
-let cast_info_to_propositions abstract_refin ci =
+val cast_info_to_propositions : cast_info -> Tac (list proposition)
+let cast_info_to_propositions ci =
   match compare_cast_types ci with
   | Refines -> []
   | Same_raw_type ->
     let refin = get_refinement (Some?.v ci.exp_ty) in
-    let inst_refin = term_to_opt_proposition abstract_refin refin [ci.term] in
+    let inst_refin = term_to_proposition refin [ci.term] [] in
     [inst_refin]
   | Unknown ->
     match ci.p_ty, ci.exp_ty with
@@ -467,15 +486,15 @@ let cast_info_to_propositions abstract_refin ci =
       let type_cast = mk_app (`has_type) has_type_params in
       (* Expected type's refinement *)
       let opt_refin = get_opt_refinment e_ty in
-      let inst_opt_refin = opt_term_to_opt_proposition abstract_refin opt_refin [ci.term] in
+      let inst_opt_refin = opt_term_to_opt_proposition opt_refin [ci.term] [] in
       opt_cons inst_opt_refin [{ prop = type_cast; abs = []; }]
     | _ -> []
 
 /// Generates a list of propositions from a list of ``cast_info``. Note that
 /// the user should revert the list before printing the propositions.
-val cast_info_list_to_propositions : bool -> list cast_info -> Tac (list proposition)
-let cast_info_list_to_propositions abstract_params ls =
-  let lsl = map (cast_info_to_propositions abstract_params) ls in
+val cast_info_list_to_propositions : list cast_info -> Tac (list proposition)
+let cast_info_list_to_propositions ls =
+  let lsl = map cast_info_to_propositions ls in
   flatten lsl
 
 /// Versions of ``fresh_bv`` and ``fresh_binder`` inspired by the standard library
@@ -585,15 +604,15 @@ let check_opt_pre_post_type e opt_pre ret_type opt_post =
   | None, Some post -> Some (check_post_type e ret_type post)
   | None, None -> None
 
-val push_two_fresh_vars : env -> string -> typ -> Tac (term & term & env)
+val push_two_fresh_vars : env -> string -> typ -> Tac (term & binder & term & binder & env)
 let push_two_fresh_vars e0 basename ty =
   let b1, e1 = push_fresh_binder e0 basename ty in
   let b2, e2 = push_fresh_binder e1 basename ty in
   let v1 = pack (Tv_Var (bv_of_binder b1)) in
   let v2 = pack (Tv_Var (bv_of_binder b2)) in
-  v1, v2, e2
+  v1, b1, v2, b2,  e2
 
-val _introduce_variables_for_abs : env -> typ -> Tac (list term & env)
+val _introduce_variables_for_abs : env -> typ -> Tac (list term & list binder & env)
 let rec _introduce_variables_for_abs e ty =
   match inspect ty with
   | Tv_Arrow b c ->
@@ -602,69 +621,91 @@ let rec _introduce_variables_for_abs e ty =
     let v1 = pack (Tv_Var bv1) in
     begin match get_total_or_gtotal_ret_type c with
     | Some ty1 ->
-      let vl, e2 = _introduce_variables_for_abs e1 ty1 in
-      v1 :: vl, e2
-    | None -> [v1], e1
+      let vl, bl, e2 = _introduce_variables_for_abs e1 ty1 in
+      v1 :: vl, b1 :: bl, e2
+    | None -> [v1], [b1], e1
     end
- | _ -> [], e
+ | _ -> [], [], e
 
-val introduce_variables_for_abs : env -> term -> Tac (list term & env)
+val introduce_variables_for_abs : env -> term -> Tac (list term & list binder & env)
 let introduce_variables_for_abs e tm =
   match safe_tc e tm with
   | Some ty -> _introduce_variables_for_abs e ty
-  | None -> [], e
+  | None -> [], [], e
 
-val introduce_variables_for_opt_abs : env -> option term -> Tac (list term & env)
+val introduce_variables_for_opt_abs : env -> option term -> Tac (list term & list binder & env)
 let introduce_variables_for_opt_abs e opt_tm =
   match opt_tm with
   | Some tm -> introduce_variables_for_abs e tm
-  | None -> [], e
+  | None -> [], [], e
+
+val effect_type_is_stateful : effect_type -> Tot bool
+let effect_type_is_stateful etype =
+  match etype with
+  | E_Total | E_GTotal | E_Lemma | E_PURE | E_Pure -> false
+  | E_Stack | E_ST | E_Unknown -> true
+
+(* val term_to_prop : term -> list term -> list binder -> Tot proposition
+let term_to_prop t params abs_params =
+  let t = mk_e_app t params in
+  { prop = t; abs = abs_params; }
+
+val opt_term_to_prop : option term -> list term -> -> Tot (option proposition)
+let opt_term_to_prop opt_t params_info =
+  match opt_t with
+  | Some t -> Some (term_to_prop t params_info)
+  | None -> None *)
 
 /// Convert effectful type information to a list of propositions. May have to
 /// introduce additional binders for the preconditions/postconditions/goal (hence
 /// the environment in the return type).
 /// The ``bind_var`` parameter is a variable if the studied term was bound in a let
 /// expression.
-val eterm_info_to_propositions : env -> eterm_info -> option term -> Tac (env & list proposition)
+val eterm_info_to_propositions : env -> eterm_info -> option term -> Tac (env & assertions)
 let eterm_info_to_propositions e info bind_var =
   (* Introduce additional variables to instantiate the return type refinement,
    * the precondition, the postcondition and the goal *)
-  (* First, the return value *)
-  let gen_ret_var e : Tac (env & term & bool) =
+  (* First, the return value: returns an updated env, the value to use for
+   * the return type and a list of abstract binders *)
+  let gen_ret_value e : Tac (env & term & list binder) =
     match bind_var with
-    | Some v -> e, v, false
+    | Some v -> e, v, []
     | None ->
-      let b = fresh_binder e "__ret" info.ret_type.ty in
-      let bv = bv_of_binder b in
-      let tm = pack (Tv_Var bv) in
-      push_binder e b, tm, true
+      (* If the studied term is not stateless, we can use it directly in the
+       * propositions, otherwise we need to introduced a variable *)
+      if effect_type_is_stateful info.etype then
+        let b = fresh_binder e "__ret" info.ret_type.ty in
+        let bv = bv_of_binder b in
+        let tm = pack (Tv_Var bv) in
+        push_binder e b, tm, [b]
+      else e, info.eterm, []
   in
   (* Then, the variables for the pre/postconditions *)
-  let e', ret_vars, pre_vars, post_vars =
+  let e', (ret_values, ret_binders), (pre_values, pre_binders), (post_values, post_binders) =
     match info.etype with
     | E_Lemma ->
       (* Nothing to introduce *)
-      e, [], [], []
+      e, ([], []), ([], []), ([], [])
     | E_Total | E_GTotal ->
       (* Optionally introduce a variable for the return value *)
-      let e', v, abs_ret = gen_ret_var e in
-      e', [(v, abs_ret)], [], []
+      let e', v, brs = gen_ret_value e in
+      e', ([v], brs), ([], []), ([], [])
     | E_PURE | E_Pure ->
       (* Optionally introduce a variable for the return value *)
-      let e', v, abs_ret = gen_ret_var e in
-      e', [(v, abs_ret)], [], [(v, abs_ret)]
+      let e', v, brs = gen_ret_value e in
+      e', ([v], brs), ([], []), ([v], brs)
     | E_Stack | E_ST ->
       (* Optionally introduce a variable for the return value *)
-      let e0, v, abs_ret = gen_ret_var e in
+      let e0, v, brs = gen_ret_value e in
       (* Introduce variables for the memories *)
-      let h1, h2, e2 = push_two_fresh_vars e0 "__h" (`HS.mem) in
-      e2, [(v, abs_ret)], [(h1, true)], [(h1, true); (v, abs_ret); (h2, true)]
+      let h1, b1, h2, b2, e2 = push_two_fresh_vars e0 "__h" (`HS.mem) in
+      e2, ([v], brs), ([h1], [b1]), ([h1; v; h2], [b1; b2])
     | E_Unknown ->
       (* We don't know what the effect is and the current pre and post-conditions
-       * are currently guesses. Introduce any variable which is abstracted by
+       * are currently guesses. Introduce any necessary variable abstracted by
        * those parameters *)
       (* Optionally introduce a variable for the return value *)
-      let e0, v, abs_ret = gen_ret_var e in
+      let e0, v, brs = gen_ret_value e in
        (* The pre and post-conditions are likely to have the same shape as
         * one of Pure or Stack (depending on whether we use or not an internal
         * state). We try to check that and to instantiate them accordingly *)
@@ -672,170 +713,61 @@ let eterm_info_to_propositions e info bind_var =
       begin match pp_type with
       | Some PP_Pure ->
         (* We only need the return value *)
-        e0, [(v, abs_ret)], [], [(v, abs_ret)]
+        e0, ([v], brs), ([], []), ([v], brs)
       | Some (PP_State state_type) ->
         (* Introduces variables for the states *)
-        let s1, s2, e2 = push_two_fresh_vars e0 "__s" state_type in
-        e2, [(v, abs_ret)], [(s1, true)], [(s1, true); (v, abs_ret); (s2, true)]
+        let s1, b1, s2, b2, e2 = push_two_fresh_vars e0 "__s" state_type in
+        e2, ([v], brs), ([s1], [b1]), ([s1; v; s2], [b1; b2])
       | Some PP_Unknown ->
         (* Introduce variables for all the values, for the pre and the post *)
-        let pre_vars, e1 = introduce_variables_for_opt_abs e0 info.pre in
-        let post_vars, e2 = introduce_variables_for_opt_abs e1 info.post in
-        let pre_vars = List.Tot.map (fun x -> (x, true)) pre_vars in
-        let post_vars = List.Tot.map (fun x -> (x, true)) post_vars in
-        e2, [(v, abs_ret)], pre_vars, post_vars
+        let pre_values, pre_binders, e1 = introduce_variables_for_opt_abs e0 info.pre in
+        let post_values, post_binders, e2 = introduce_variables_for_opt_abs e1 info.post in
+        e2, ([v], brs), (pre_values, pre_binders), (post_values, post_binders)
       | _ ->
         (* No pre and no post *)
-        e0, [(v, abs_ret)], [], []
+        e0, ([v], brs), ([], []), ([], [])
       end
   in
-  admit()
-
-
-
-type effect_type =
-| E_Total | E_GTotal | E_Lemma | E_PURE | E_Pure | E_Stack | E_ST
-
-
-val instantiate_propositions : env -> eterm_info -> term ->
-  Tac eterm_info
-
-let instantiate_propositions e info ret_arg =
-  (* Instanciate the post-condition and simplify the information *)
-  let ipost : option term =
-    match info.post with
-    | Some post -> Some (mk_e_app post [ret_arg])
-    | None -> None
-  in
-  (* Retrieve the return type refinement and instanciate it*)
-  let iret_type : option type_info =
-    match info.ret_type with
-    | Some ret_type_info ->
-      begin match ret_type_info.rty with
-      | Some ret_type_rinfo ->
-        let refin' = mk_e_app ret_type_rinfo.refin [ret_arg] in
-        let ret_type_rinfo : rtype_info = { ret_type_rinfo with refin = refin' } in
-        let ret_type_info' = { ret_type_info with rty = Some ret_type_rinfo } in
-        Some ret_type_info'
-      | None -> None
-      end
-    | _ -> None
-  in
-  (* Instantiate the refinements in the parameters *)
-  let inst_param (p:cast_info) : Tac cast_info =
-    let p_ty' = instantiate_opt_type_info_refin p.term p.p_ty in
-    let exp_ty' = instantiate_opt_type_info_refin p.term p.exp_ty in
-    { p with p_ty = p_ty'; exp_ty = exp_ty' }
-  in
-  let iparameters = map inst_param info.parameters in
-  (* Return *)
-  { info with
-    post = ipost;
-    ret_type = iret_type;
-    parameters = iparameters }
-
-
-/// Generates a list of obligations from a list of ``cast_info``. Note that
-/// the user should revert the list before printing the obligations.
-val cast_info_list_to_obligations : list cast_info -> Tac (list term)
-let cast_info_list_to_obligations ls =
-  let lsl = map cast_info_to_obligations ls in
-  flatten lsl
-
-/// Convert the effectful information about a term to a list of assertions, split
-/// betweens the assertions to place before the term and the assertions to place
-/// after.
-val eterm_info_to_assertions : bool -> env -> eterm_info -> Tac assertions
-let eterm_info_to_assertions is_let e info =
-  let pres : list term = [] in
-  let posts : list term = [] in
-  (* Pre *)
-  let pres = opt_cons info.pre pres in
-  (* Parameters (type cast + refinements) *)
-  let param_obligations = cast_info_list_to_obligations info.parameters in
-  let pres = append param_obligations pres in
-  (* Post *)
-  let posts = if is_let then opt_cons info.post posts else posts in
-  { pres = pres; posts = posts }
-
+  (* Generate the propositions: *)
+  (* - from the parameters' cast info *)
+  let params_props = cast_info_list_to_propositions info.parameters in
+  (* - from the precondition *)
+  let pre_prop = opt_term_to_opt_proposition info.pre pre_values pre_binders in
+  (* - from the return type *)
+  let ret_refin_prop = opt_term_to_opt_proposition (get_opt_refinment info.ret_type) ret_values ret_binders in
+  (* - from the postcondition *)
+  let post_prop = opt_term_to_opt_proposition info.post post_values post_binders in
+  (* Concatenate, revert and return *)
+  let pres = List.Tot.rev (opt_cons pre_prop params_props) in
+  let posts = opt_cons ret_refin_prop (opt_cons post_prop []) in
+  e', { pres = pres; posts = posts }
 
 (**** Step 3 *)
-/// Simplify and filter the assertions:
-/// - simplify the propositions and ignore them if they are trivial (i.e.: True)
+/// Simplify the propositions and filter the trivial ones.
 
 /// Check if a proposition is trivial (i.e.: is True)
-val is_trivial_proposition : term -> Tac bool
+val is_trivial_proposition : proposition -> Tac bool
 
-let is_trivial_proposition t =
-  term_eq (`Prims.l_True) t
+let is_trivial_proposition p =
+  term_eq (`Prims.l_True) p.prop
 
-/// Applies normalization steps to an optional proposition (term of type Type).
-/// If the proposition gets reduced to True, returns None.
-let simplify_opt_proposition (e:env) (steps:list norm_step) (p:option term) :
-  Tac (option term) =
-  match p with
-  | Some x ->
-    let x' = norm_term_env e steps x in
-    if is_trivial_proposition x' then None else Some x'
-  | _ -> None
+let simp_filter_proposition (e:env) (steps:list norm_step) (p:proposition) :
+  Tac (list proposition) =
+  let prop1 = norm_term_env e steps p.prop in
+  (* If trivial, filter *)
+  if term_eq (`Prims.l_True) prop1 then []
+  else
+    (* Otherwise reinsert the abstracted parameters *)
+    let prop2 = mk_abs prop1 p.abs in
+    let prop3 = mk_e_app prop2 ((map (fun b -> pack (Tv_Var (bv_of_binder b)))) p.abs) in
+    [{ p with prop = prop3 }]
 
-/// Simplify a type, and remove the refinement if it is trivial
-let simplify_type_info (e:env) (steps:list norm_step) (info:type_info) : Tac type_info =
-  match info.rty with
-  | Some rinfo ->
-    let refin' = norm_term_env e steps rinfo.refin in
-    if is_trivial_proposition refin' then mk_type_info rinfo.raw None
-    else ({ info with rty = Some ({ rinfo with refin = refin' })})
-  | _ -> info
+let simpl_filter_propositions (e:env) (steps:list norm_step) (pl:list proposition) :
+  Tac (list proposition) =
+  List.flatten (map (simp_filter_proposition e steps) pl)
 
-let simplify_opt_type_info e steps info : Tac (option type_info) =
-  match info with
-  | Some info' -> Some (simplify_type_info e steps info')
-  | _ -> None
 
-/// Simplify the fields of a term and remove the useless ones (i.e.: trivial conditions)
-val simplify_eterm_info : env -> list norm_step -> eterm_info -> Tac eterm_info
-
-#push-options "--ifuel 1"
-let simplify_eterm_info e steps info =
-  let simpl_prop = simplify_opt_proposition e steps in
-  let simpl_type = simplify_opt_type_info e steps in
-  let simpl_cast (p:cast_info) : Tac cast_info =
-    { p with p_ty = simpl_type p.p_ty; exp_ty = simpl_type p.exp_ty; }
-  in
-  {
-    info with
-    pre = simpl_prop info.pre;
-    post = simpl_prop info.post;
-    ret_type = simpl_type info.ret_type;
-    parameters = map simpl_cast info.parameters;
-    goal = simpl_prop info.goal;
-  }
-#pop-options
-
-let has_refinement (ty:type_info) : Tot bool =
-  Some? ty.rty
-
-let get_refinement (ty:type_info{Some? ty.rty}) : Tot term =
-  (Some?.v ty.rty).refin
-
-let get_opt_refinment (ty:type_info) : Tot (option term) =
-  match ty.rty with
-  | Some rty -> Some rty.refin
-  | None -> None
-
-/// Compare the type of a parameter and its expected type
-type type_comparison = | Refines | Same_raw_type | Unknown
-
-#push-options "--ifuel 1"
-let type_comparison_to_string c =
-  match c with
-  | Refines -> "Refines"
-  | Same_raw_type -> "Same_raw_type"
-  | Unknown -> "Unknown"
-#pop-options
-
-(*** Step 4 *)
+(**** Step 4 *)
 /// Output the resulting information
 /// Originally: we output the ``eterm_info`` and let the emacs commands do some
 /// filtering and formatting. Now, we convert to a an ``assertions``.
