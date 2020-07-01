@@ -685,12 +685,12 @@ let genv_push_fresh_binder (ge : genv) (basename : string) (ty : typ) : Tac (bin
 /// - post : RET -> Type0
 /// We try to detect that with the following functions:
 noeq type pre_post_type =
-  | PP_Unknown | PP_Pure
-  | PP_State : (state_type:term) -> pre_post_type
+| PP_Unknown | PP_Pure
+| PP_State : (state_type:term) -> pre_post_type
 
-val check_pre_type : bool -> env -> term -> Tac pre_post_type
-let check_pre_type dbg e pre =
-  print_dbg dbg "[> check_pre_type";
+val compute_pre_type : bool -> env -> term -> Tac pre_post_type
+let compute_pre_type dbg e pre =
+  print_dbg dbg "[> compute_pre_type";
   match safe_tc e pre with
   | None ->
     print_dbg dbg "safe_tc failed";
@@ -716,9 +716,9 @@ let opt_remove_refin ty =
   | Tv_Refine bv _ -> (inspect_bv bv).bv_sort
   | _ -> ty
 
-val check_post_type : bool -> env -> term -> term -> Tac pre_post_type
-let check_post_type dbg e ret_type post =
-  print_dbg dbg "[> check_post_type";
+val compute_post_type : bool -> env -> term -> term -> Tac pre_post_type
+let compute_post_type dbg e ret_type post =
+  print_dbg dbg "[> compute_post_type";
   let get_tot_ret_type c : Tac (option term_view) =
     match get_total_or_gtotal_ret_type c with
     | Some ret_ty -> Some (inspect ret_ty)
@@ -770,7 +770,7 @@ let check_post_type dbg e ret_type post =
 val check_pre_post_type : bool -> env -> term -> term -> term -> Tac pre_post_type
 let check_pre_post_type dbg e pre ret_type post =
   print_dbg dbg "[> check_pre_post_type";
-  match check_pre_type dbg e pre, check_post_type dbg e ret_type post with
+  match compute_pre_type dbg e pre, compute_post_type dbg e ret_type post with
   | PP_Pure, PP_Pure ->
     print_dbg dbg "PP_Pure, PP_Pure";
     PP_Pure
@@ -790,10 +790,10 @@ let check_opt_pre_post_type dbg e opt_pre ret_type opt_post =
     Some (check_pre_post_type dbg e pre ret_type post)
   | Some pre, None ->
     print_dbg dbg "Some pre, None";
-    Some (check_pre_type dbg e pre)
+    Some (compute_pre_type dbg e pre)
   | None, Some post ->
     print_dbg dbg "None, Some post";
-    Some (check_post_type dbg e ret_type post)
+    Some (compute_post_type dbg e ret_type post)
   | None, None ->
     print_dbg dbg "None, None";
     None
@@ -847,6 +847,69 @@ let effect_type_is_stateful etype =
   | E_Total | E_GTotal | E_Lemma | E_PURE | E_Pure -> false
   | E_Stack | E_ST | E_Unknown -> true
 
+/// Instantiates optional pre and post conditions
+val pre_post_to_propositions :
+     dbg:bool
+  -> ge:genv
+  -> etype:effect_type
+  -> ret_value:term
+  -> ret_abs_binder:option binder
+  -> ret_type:type_info
+  -> opt_pre:option term
+  -> opt_post:option term
+  -> Tac (genv & option proposition & option proposition)
+
+let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt_post =
+  let brs = match ret_abs_binder with | None -> [] | Some b -> [b] in
+  (* Analyze the pre and the postcondition and introduce the necessary variables *)
+  let ge1, (pre_values, pre_binders), (post_values, post_binders) =
+    match etype with
+    | E_Lemma ->
+      ge0, ([], []), ([], [])
+    | E_Total | E_GTotal ->
+      ge0, ([], []), ([], [])
+    | E_PURE | E_Pure ->
+      ge0, ([], []), ([v], brs)
+    | E_Stack | E_ST ->
+      (* Introduce variables for the memories *)
+      let h1, b1, h2, b2, ge2 = genv_push_two_fresh_vars ge0 "__h" (`HS.mem) in
+      ge2, ([h1], [b1]), ([h1; v; h2], List.Tot.flatten ([b1]::brs::[[b2]]))
+    | E_Unknown ->
+      (* We don't know what the effect is and the current pre and post-conditions
+       * are currently guesses. Introduce any necessary variable abstracted by
+       * those parameters *)
+       (* The pre and post-conditions are likely to have the same shape as
+        * one of Pure or Stack (depending on whether we use or not an internal
+        * state). We try to check that and to instantiate them accordingly *)
+      let pp_type = check_opt_pre_post_type dbg ge0.env opt_pre ret_type.ty opt_post in
+      begin match pp_type with
+      | Some PP_Pure ->
+        print_dbg dbg "PP_Pure";
+        (* We only need the return value *)
+        ge0, ([], []), ([v], brs)
+      | Some (PP_State state_type) ->
+        print_dbg dbg "PP_State";
+        (* Introduce variables for the states *)
+        let s1, b1, s2, b2, ge2 = genv_push_two_fresh_vars ge0 "__s" state_type in
+        ge2, ([s1], [b1]), ([s1; v; s2], List.Tot.flatten ([b1]::brs::[[b2]]))
+      | Some PP_Unknown ->
+        print_dbg dbg "PP_Unknown";
+        (* Introduce variables for all the values, for the pre and the post *)
+        let pre_values, pre_binders, ge1 = introduce_variables_for_opt_abs ge0 opt_pre in
+        let post_values, post_binders, ge2 = introduce_variables_for_opt_abs ge1 opt_post in
+        ge2, (pre_values, pre_binders), (post_values, post_binders)
+      | _ ->
+        (* No pre and no post *)
+        ge0, ([], []), ([], [])
+      end
+  in
+  (* Generate the propositions: *)
+  (* - from the precondition *)
+  let pre_prop = opt_term_to_opt_abs_term opt_pre pre_values pre_binders in
+  (* - from the postcondition *)
+  let post_prop = opt_term_to_opt_abs_term opt_post post_values post_binders in
+  ge1, pre_prop, post_prop
+
 /// Convert effectful type information to a list of propositions. May have to
 /// introduce additional binders for the preconditions/postconditions/goal (hence
 /// the environment in the return type).
@@ -859,79 +922,30 @@ let eterm_info_to_assertions dbg ge t info bind_var opt_c =
    * the precondition, the postcondition and the goal *)
   (* First, the return value: returns an updated env, the value to use for
    * the return type and a list of abstract binders *)
-  let gen_ret_value ge : Tac (genv & term & list binder) =
+  let ge0, v, b =
     match bind_var with
-    | Some v -> ge, v, []
+    | Some v -> ge, v, None
     | None ->
-      (* If the studied term is not stateless, we can use it directly in the
-       * propositions, otherwise we need to introduced a variable *)
+      (* If the studied term is stateless, we can use it directly in the
+       * propositions, otherwise we need to introduced a variable for the return
+       * type *)
       if effect_type_is_stateful info.etype then
         let b = fresh_binder ge.env "__ret" info.ret_type.ty in
         let bv = bv_of_binder b in
         let tm = pack (Tv_Var bv) in
-        genv_push_binder b None ge, tm, [b]
-      else ge, t, []
+        genv_push_binder b None ge, tm, Some b
+      else ge, t, None
   in
-  (* Then, the variables for the pre/postconditions *)
-  let ge', (ret_values, ret_binders), (pre_values, pre_binders), (post_values, post_binders) =
-    match info.etype with
-    | E_Lemma ->
-      (* Nothing to introduce *)
-      ge, ([], []), ([], []), ([], [])
-    | E_Total | E_GTotal ->
-      (* Optionally introduce a variable for the return value *)
-      let ge', v, brs = gen_ret_value ge in
-      ge', ([v], brs), ([], []), ([], [])
-    | E_PURE | E_Pure ->
-      (* Optionally introduce a variable for the return value *)
-      let ge', v, brs = gen_ret_value ge in
-      ge', ([v], brs), ([], []), ([v], brs)
-    | E_Stack | E_ST ->
-      (* Optionally introduce a variable for the return value *)
-      let ge0, v, brs = gen_ret_value ge in
-      (* Introduce variables for the memories *)
-      let h1, b1, h2, b2, ge2 = genv_push_two_fresh_vars ge0 "__h" (`HS.mem) in
-      ge2, ([v], brs), ([h1], [b1]), ([h1; v; h2], List.Tot.flatten ([b1]::brs::[[b2]]))
-    | E_Unknown ->
-      (* We don't know what the effect is and the current pre and post-conditions
-       * are currently guesses. Introduce any necessary variable abstracted by
-       * those parameters *)
-      (* Optionally introduce a variable for the return value *)
-      let ge0, v, brs = gen_ret_value ge in
-       (* The pre and post-conditions are likely to have the same shape as
-        * one of Pure or Stack (depending on whether we use or not an internal
-        * state). We try to check that and to instantiate them accordingly *)
-      let pp_type = check_opt_pre_post_type dbg ge0.env info.pre info.ret_type.ty info.post in
-      begin match pp_type with
-      | Some PP_Pure ->
-        print_dbg dbg "PP_Pure";
-        (* We only need the return value *)
-        ge0, ([v], brs), ([], []), ([v], brs)
-      | Some (PP_State state_type) ->
-        print_dbg dbg "PP_State";
-        (* Introduces variables for the states *)
-        let s1, b1, s2, b2, ge2 = genv_push_two_fresh_vars ge0 "__s" state_type in
-        ge2, ([v], brs), ([s1], [b1]), ([s1; v; s2], List.Tot.flatten ([b1]::brs::[[b2]]))
-      | Some PP_Unknown ->
-        print_dbg dbg "PP_Unknown";
-        (* Introduce variables for all the values, for the pre and the post *)
-        let pre_values, pre_binders, ge1 = introduce_variables_for_opt_abs ge0 info.pre in
-        let post_values, post_binders, ge2 = introduce_variables_for_opt_abs ge1 info.post in
-        ge2, ([v], brs), (pre_values, pre_binders), (post_values, post_binders)
-      | _ ->
-        (* No pre and no post *)
-        ge0, ([v], brs), ([], []), ([], [])
-      end
-  in
+  (* Instantiate the pre and post-conditions and by introducing the necessary variables *)
+  let ge', pre_prop, post_prop =
+    pre_post_to_propositions dbg ge0 info.etype v b info.ret_type info.pre info.post in
   (* Generate the propositions: *)
   (* - from the parameters' cast info *)
   let params_props = cast_info_list_to_propositions info.parameters in
-  (* - from the precondition *)
-  let pre_prop = opt_term_to_opt_abs_term info.pre pre_values pre_binders in
   (* - from the return type *)
+  let ret_values, ret_binders =
+    if E_Lemma? info.etype then [], [] else [v], (match b with | Some b -> [b] | None -> []) in
   let ret_refin_prop = opt_term_to_opt_abs_term (get_opt_refinment info.ret_type) ret_values ret_binders in
-  (* - from the postcondition *)
-  let post_prop = opt_term_to_opt_abs_term info.post post_values post_binders in
   (* Concatenate, revert and return *)
   let pres = List.Tot.rev (opt_cons pre_prop params_props) in
   let posts = opt_cons ret_refin_prop (opt_cons post_prop []) in
