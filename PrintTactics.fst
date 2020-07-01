@@ -23,7 +23,7 @@ val iteri: (int -> 'a -> Tac unit) -> list 'a -> Tac unit
 let iteri f x = iteri_aux 0 f x
 #pop-options
 
-(* TODO: move to FStar.Reflection.Derived.fst *)
+(* TODO: move to FStar.Tactics.Derived.fst *)
 let rec mk_abs (t : term) (args : list binder) : Tac term (decreases args) =
   match args with
   | [] -> t
@@ -631,7 +631,7 @@ val _introduce_variables_for_abs : env -> typ -> Tac (list term & list binder & 
 let rec _introduce_variables_for_abs e ty =
   match inspect ty with
   | Tv_Arrow b c ->
-    let b1, e1 = push_fresh_binder e (name_of_binder b) (type_of_binder b) in
+    let b1, e1 = push_fresh_binder e ("__" ^ name_of_binder b) (type_of_binder b) in
     let bv1 = bv_of_binder b1 in
     let v1 = pack (Tv_Var bv1) in
     begin match get_total_or_gtotal_ret_type c with
@@ -714,7 +714,7 @@ let eterm_info_to_assertions e info bind_var =
       let e0, v, brs = gen_ret_value e in
       (* Introduce variables for the memories *)
       let h1, b1, h2, b2, e2 = push_two_fresh_vars e0 "__h" (`HS.mem) in
-      e2, ([v], brs), ([h1], [b1]), ([h1; v; h2], [b1; b2])
+      e2, ([v], brs), ([h1], [b1]), ([h1; v; h2], List.Tot.flatten ([b1]::brs::[[b2]]))
     | E_Unknown ->
       (* We don't know what the effect is and the current pre and post-conditions
        * are currently guesses. Introduce any necessary variable abstracted by
@@ -732,7 +732,7 @@ let eterm_info_to_assertions e info bind_var =
       | Some (PP_State state_type) ->
         (* Introduces variables for the states *)
         let s1, b1, s2, b2, e2 = push_two_fresh_vars e0 "__s" state_type in
-        e2, ([v], brs), ([s1], [b1]), ([s1; v; s2], [b1; b2])
+        e2, ([v], brs), ([s1], [b1]), ([s1; v; s2], List.Tot.flatten ([b1]::brs::[[b2]]))
       | Some PP_Unknown ->
         (* Introduce variables for all the values, for the pre and the post *)
         let pre_values, pre_binders, e1 = introduce_variables_for_opt_abs e0 info.pre in
@@ -1195,6 +1195,15 @@ let pp_test4 () :
   let _ = focus_on_term in
   let w = test_stack1 x in
   w
+
+[@(postprocess_with (pp_focused_term false))]
+let pp_test5 () :
+  ST.Stack nat
+  (requires (fun _ -> True))
+  (ensures (fun _ _ _ -> 3 >= 2)) =
+  let x = 2 in
+  let _ = focus_on_term in
+  test_stack1 x
 
 
 
