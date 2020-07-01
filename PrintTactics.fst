@@ -577,11 +577,11 @@ noeq type comp_info = {
 
 val comp_info_to_string : comp_info -> Tot string
 let comp_info_to_string c =
-  "mk_comp_info " ^
-  option_to_string abs_term_to_string c.cc_pre ^ " " ^
-  option_to_string abs_term_to_string c.cc_ret_type ^ " " ^
-  option_to_string abs_term_to_string c.cc_ret_refin ^ " " ^
-  option_to_string abs_term_to_string c.cc_post
+  "mk_comp_info (" ^
+  option_to_string abs_term_to_string c.cc_pre ^ ") (" ^
+  option_to_string abs_term_to_string c.cc_ret_type ^ ") (" ^
+  option_to_string abs_term_to_string c.cc_ret_refin ^ ") (" ^
+  option_to_string abs_term_to_string c.cc_post ^ ")"
 
 let mk_comp_info = Mkcomp_info
 
@@ -1482,7 +1482,7 @@ let analyze_effectful_term dbg () ge opt_c t =
          | Tv_Let _ _ fbv fterm _ ->
            let ret_arg = pack (Tv_Var fbv) in
            genv_push_bv fbv None ge, fterm, compute_eterm_info ge.env fterm, Some ret_arg, true
-         | _ -> ge, body, compute_eterm_info ge.env body, None, true
+         | _ -> ge, body, compute_eterm_info ge.env body, None, false
          end
        in
        (* Instantiate the refinements *)
@@ -1611,8 +1611,7 @@ let pp_test4 (y : nat) :
   let w = test_stack1 x in
   w
 
-(* TODO HERE *)
-[@(postprocess_with (pp_focused_term true))]
+[@(postprocess_with (pp_focused_term false))]
 let pp_test4_1 (y : nat) :
   ST.Stack nat
   (requires (fun _ -> y >= 2))
@@ -1632,6 +1631,7 @@ let pp_test5 () :
   let _ = focus_on_term in
   test_stack1 x
 
+(* TODO HERE *)
 [@(postprocess_with (pp_focused_term true))]
 let pp_test6 () :
   ST.Stack nat
