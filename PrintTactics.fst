@@ -298,29 +298,39 @@ noeq type typ_or_comp =
 | TC_Comp : v:comp -> m:list (binder & binder) -> typ_or_comp
 
 /// Update the current ``typ_or_comp`` before going into the body of an abstraction
-val abs_update_typ_or_comp : binder -> typ_or_comp -> Tac typ_or_comp
+/// Any new binder needs to be added to the current environment (otherwise we can't,
+/// for example, normalize the terms containing the binding), hence the ``env``
+/// parameter, which otherwise is useless (consider like as a monadic state). Note
+/// that we don't add this binder to a more general environment, because we don't
+/// need it besides that.
+val abs_update_typ_or_comp : binder -> typ_or_comp -> env -> Tac (env & typ_or_comp)
 
-let _abs_update_typ (b:binder) (ty:typ) (m:list (binder & binder)) : Tac typ_or_comp =
+let _abs_update_typ (b:binder) (ty:typ) (m:list (binder & binder)) (e:env) :
+  Tac (env & typ_or_comp) =
   begin match inspect ty with
   | Tv_Arrow b1 c1 ->
-    TC_Comp c1 ((b1, b) :: m)
+    push_binder e b1, TC_Comp c1 ((b1, b) :: m)
   | _ -> mfail ("abs_update_typ_or_comp: not an arrow: " ^ term_to_string ty)
   end
 
-let abs_update_typ_or_comp (b:binder) (c : typ_or_comp) : Tac typ_or_comp =
+let abs_update_typ_or_comp (b:binder) (c : typ_or_comp) (e:env) : Tac (env & typ_or_comp) =
   match c with
-  | TC_Typ v m -> _abs_update_typ b v m
+  | TC_Typ v m -> _abs_update_typ b v m e
   | TC_Comp v m ->
     (* Note that the computation is not necessarily pure, in which case we might
-     * want to do something with the effect arguments (pre, post...) *)
+     * want to do something with the effect arguments (pre, post...) - for
+     * now we just ignore them *)
     let ty = get_comp_ret_type v in
-    _abs_update_typ b ty m
+    _abs_update_typ b ty m e
 
-val abs_update_opt_typ_or_comp : binder -> option typ_or_comp -> Tac (option typ_or_comp)
-let abs_update_opt_typ_or_comp b opt_c =
+val abs_update_opt_typ_or_comp : binder -> option typ_or_comp -> env ->
+                                 Tac (env & option typ_or_comp)
+let abs_update_opt_typ_or_comp b opt_c e =
   match opt_c with
-  | None -> None
-  | Some c -> Some (abs_update_typ_or_comp b c)
+  | None -> e, None
+  | Some c ->
+    let e, c = abs_update_typ_or_comp b c e in
+    e, Some c
 
 /// Exploring a term
 
@@ -375,8 +385,9 @@ let rec explore_term dbg #a f x ge c t =
       let x', flag' = explore_term dbg f x ge None bvv.bv_sort in
       if flag' = Continue then
         let ge' = genv_push_binder br None ge in
-        let c' = abs_update_opt_typ_or_comp br c in
-        explore_term dbg f x' ge' c' body
+        let e'', c'= abs_update_opt_typ_or_comp br c ge'.env in
+        let ge'' = { ge' with env = e'' } in
+        explore_term dbg f x' ge'' c' body
       else x', convert_ctrl_flag flag'
     | Tv_Arrow br c -> x, Continue (* TODO: we might want to explore that *)
     | Tv_Type () -> x, Continue
@@ -900,8 +911,9 @@ let compute_post_type dbg e ret_type post =
       (* Stateful: check that the state types are coherent *)
       let r_ty = type_of_binder r in
       let s1_ty = type_of_binder s1 in
-      (* After testing with Stack: the second state seems to have a refinement
-       * (which gives the postcondition) *)
+      (* After testing with Stack: the final state seems to have a refinement
+       * (which gives the postcondition) so we need to remove it to match
+       * it against the initial state *)
       let s2_ty = opt_remove_refin (type_of_binder s2) in
       let ret_type_eq = term_eq ret_type r_ty in
       let state_type_eq = term_eq s1_ty s2_ty in
@@ -1019,9 +1031,10 @@ val pre_post_to_propositions :
   -> Tac (genv & option proposition & option proposition)
 
 let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt_post =
+  print_dbg dbg "[> pre_post_to_propositions: begin";
   let brs = match ret_abs_binder with | None -> [] | Some b -> [b] in
   (* Analyze the pre and the postcondition and introduce the necessary variables *)
-  let ge1, (pre_values, pre_binders), (post_values, post_binders) =
+  let ge3, (pre_values, pre_binders), (post_values, post_binders) =
     match etype with
     | E_Lemma ->
       ge0, ([], []), ([], [])
@@ -1031,8 +1044,8 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
       ge0, ([], []), ([v], brs)
     | E_Stack | E_ST ->
       (* Introduce variables for the memories *)
-      let h1, b1, h2, b2, ge2 = genv_push_two_fresh_vars ge0 "__h" (`HS.mem) in
-      ge2, ([h1], [b1]), ([h1; v; h2], List.Tot.flatten ([b1]::brs::[[b2]]))
+      let h1, b1, h2, b2, ge1 = genv_push_two_fresh_vars ge0 "__h" (`HS.mem) in
+      ge1, ([h1], [b1]), ([h1; v; h2], List.Tot.flatten ([b1]::brs::[[b2]]))
     | E_Unknown ->
       (* We don't know what the effect is and the current pre and post-conditions
        * are currently guesses. Introduce any necessary variable abstracted by
@@ -1049,14 +1062,14 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
       | Some (PP_State state_type) ->
         print_dbg dbg "PP_State";
         (* Introduce variables for the states *)
-        let s1, b1, s2, b2, ge2 = genv_push_two_fresh_vars ge0 "__s" state_type in
-        ge2, ([s1], [b1]), ([s1; v; s2], List.Tot.flatten ([b1]::brs::[[b2]]))
+        let s1, b1, s2, b2, ge1 = genv_push_two_fresh_vars ge0 "__s" state_type in
+        ge1, ([s1], [b1]), ([s1; v; s2], List.Tot.flatten ([b1]::brs::[[b2]]))
       | Some PP_Unknown ->
         print_dbg dbg "PP_Unknown";
         (* Introduce variables for all the values, for the pre and the post *)
         let pre_values, pre_binders, ge1 = introduce_variables_for_opt_abs ge0 opt_pre in
-        let post_values, post_binders, ge2 = introduce_variables_for_opt_abs ge1 opt_post in
-        ge2, (pre_values, pre_binders), (post_values, post_binders)
+        let post_values, post_binders, ge1 = introduce_variables_for_opt_abs ge1 opt_post in
+        ge1, (pre_values, pre_binders), (post_values, post_binders)
       | _ ->
         (* No pre and no post *)
         ge0, ([], []), ([], [])
@@ -1067,7 +1080,9 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
   let pre_prop = opt_term_to_opt_abs_term opt_pre pre_values pre_binders in
   (* - from the postcondition *)
   let post_prop = opt_term_to_opt_abs_term opt_post post_values post_binders in
-  ge1, pre_prop, post_prop
+  (* return *)
+  print_dbg dbg "[> pre_post_to_propositions: end";
+  ge3, pre_prop, post_prop
 
 /// Instantiate optional pre and post conditions which may contain abstracted
 /// parameters
@@ -1083,12 +1098,13 @@ val abs_pre_post_to_propositions :
   -> Tac (genv & option proposition & option proposition)
 
 let abs_pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt_post =
+  print_dbg dbg "[> abs_pre_post_to_propositions: begin";
   (* Start by normalizing the pre and the post so that the abstractions get
    * simplified (we will put them back later) *)
-  let simpl opt_p : Tac (option proposition) = 
+  let simpl ge opt_p : Tac (option proposition) = 
     match opt_p with
     | None -> None
-    | Some p -> Some ({ p with body = norm_term_env ge0.env [] p.body })
+    | Some p -> Some ({ p with body = norm_term_env ge.env [] p.body })
   in
   let get_opt_body opt_p : Tac (option term) =
     match opt_p with
@@ -1100,23 +1116,25 @@ let abs_pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre
     | None -> []
     | Some p -> p.abs
   in
-  let opt_pre1 = simpl opt_pre in
-  let opt_post1 = simpl opt_post in
+  let opt_pre1 = simpl ge0 opt_pre in
+  let opt_post1 = simpl ge0 opt_post in
   (* Instantiate the remaining parameters *)
   let ge1, opt_pre2, opt_post2 = 
     pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type
                              (get_opt_body opt_pre1) (get_opt_body opt_post1) in
   (* Reintroduce the abstracted parameters *)
-  let opt_pre3 = simpl opt_pre2 in
+  let opt_pre3 = simpl ge1 opt_pre2 in
   let pre_abs1 = get_opt_abs opt_pre in
   let pre_abs2 = get_opt_abs opt_pre2 in
   let pre_abs3 = List.Tot.append pre_abs1 pre_abs2 in
   let opt_pre4 = opt_term_to_opt_abs_term (get_opt_body opt_pre3) [] pre_abs3 in
-  let opt_post3 = simpl opt_post2 in
+  let opt_post3 = simpl ge1 opt_post2 in
   let post_abs1 = get_opt_abs opt_post in
   let post_abs2 = get_opt_abs opt_post2 in
   let post_abs3 = List.Tot.append post_abs1 post_abs2 in
   let opt_post4 = opt_term_to_opt_abs_term (get_opt_body opt_post3) [] post_abs3 in
+  (* return *)
+  print_dbg dbg "[> abs_pre_post_to_propositions: end";
   ge1, opt_pre4, opt_post4
 
 (* TODO HERE *)
@@ -1157,10 +1175,13 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
     | Some c ->
       let ci = typ_or_comp_to_comp_info ge1 c in
       (* Precondition, post-condition *)
+      (* The global post-condition is to be used only if we are not analyzing
+       * let expression *)
+      let gpost = if is_let then None else ci.cc_post in
       (* TODO: not sure about the return type: maybe catch failures *)
       let ge2, gpre_prop, gpost_prop =
         abs_pre_post_to_propositions dbg ge1 info.etype v b info.ret_type
-                                     ci.cc_pre ci.cc_post in
+                                     ci.cc_pre gpost in
       (* Return type: TODO *)
       ge2, gpre_prop, gpost_prop
   in
@@ -1174,7 +1195,7 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
   (* Concatenate, revert and return *)
   let pres = opt_cons gpre_prop (List.Tot.rev (opt_cons pre_prop params_props)) in
   let posts = opt_cons ret_refin_prop (opt_cons post_prop (opt_cons gpost_prop [])) in
-  ge1, { pres = pres; posts = posts }
+  ge2, { pres = pres; posts = posts }
 
 (**** Step 3 *)
 /// Simplify the propositions and filter the trivial ones.
@@ -1372,11 +1393,9 @@ let analyze_effectful_term dbg () ge opt_c t =
          | _ -> ge, body, compute_eterm_info ge.env body, None, true
          end
        in
-       (* We use the target computation only if the studied term is binded in a let *)
-       let opt_c1 = if is_let then None else opt_c in
        (* Instantiate the refinements *)
        let ge2, asserts =
-         eterm_info_to_assertions dbg ge1 studied_term is_let info ret_arg opt_c1 in
+         eterm_info_to_assertions dbg ge1 studied_term is_let info ret_arg opt_c in
        (* Simplify and filter *)
        let sasserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
        (* Print *)
@@ -1490,10 +1509,11 @@ let pp_test3 () : Tot nat =
     w
   else 0
 
-[@(postprocess_with (pp_focused_term false))]
-let pp_test4 () :
+(* TODO HERE *)
+[@(postprocess_with (pp_focused_term true))]
+let pp_test4 (y : nat) :
   ST.Stack nat
-  (requires (fun _ -> True))
+  (requires (fun _ -> y >= 2))
   (ensures (fun _ _ _ -> 3 >= 2)) =
   let x = 2 in
   let _ = focus_on_term in
@@ -1508,6 +1528,15 @@ let pp_test5 () :
   let x = 2 in
   let _ = focus_on_term in
   test_stack1 x
+
+[@(postprocess_with (pp_focused_term false))]
+let pp_test6 () :
+  ST.Stack nat
+  (requires (fun _ -> True))
+  (ensures (fun _ n _ -> n >= 2)) =
+  let x = 2 in
+  let _ = focus_on_term in
+  x
 
 (**** Wrapping with tactics *)
 
