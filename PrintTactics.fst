@@ -569,6 +569,7 @@ let mk_cast_info t p_ty exp_ty : cast_info =
 
 /// Convert a ``typ_or_comp`` to cast information
 noeq type comp_info = {
+  cc_etype : effect_type;
   cc_pre : option proposition;
   cc_ret_type : option abs_term;
   cc_ret_refin : option proposition; (* the type should be: return_type -> Type *)
@@ -577,7 +578,8 @@ noeq type comp_info = {
 
 val comp_info_to_string : comp_info -> Tot string
 let comp_info_to_string c =
-  "mk_comp_info (" ^
+  "mk_comp_info " ^
+  effect_type_to_string c.cc_etype ^ " (" ^
   option_to_string abs_term_to_string c.cc_pre ^ ") (" ^
   option_to_string abs_term_to_string c.cc_ret_type ^ ") (" ^
   option_to_string abs_term_to_string c.cc_ret_refin ^ ") (" ^
@@ -853,19 +855,19 @@ let opt_term_to_opt_abs_shadowed_term ge opt_t =
     ge', Some t'
 
 /// Auxiliary function: convert type information to a ``comp_info``
-let _typ_to_comp_info (ge : genv) (tinfo : type_info) (m : list (binder & binder)) :
+let _typ_to_comp_info (ge : genv) (etype : effect_type) (tinfo : type_info) (m : list (binder & binder)) :
   Tac (genv & comp_info) =
   let rty = get_rawest_type tinfo in
   let refin = get_opt_refinment tinfo in
   let ge1, rty = term_to_abs_shadowed_term ge rty in
   let ge2, refin = opt_term_to_opt_abs_shadowed_term ge1 refin in
-  ge2, mk_comp_info None (Some rty) refin None
+  ge2, mk_comp_info etype None (Some rty) refin None
 
 let typ_or_comp_to_comp_info (ge : genv) (c : typ_or_comp) : Tac (genv & comp_info) =
   match c with
   | TC_Typ ty m ->
     let tinfo = get_type_info_from_type ty in
-    _typ_to_comp_info ge tinfo m
+    _typ_to_comp_info ge E_Total tinfo m
   | TC_Comp cv m ->
     let opt_einfo = comp_to_effect_info cv in
     match opt_einfo with
@@ -883,7 +885,7 @@ let typ_or_comp_to_comp_info (ge : genv) (c : typ_or_comp) : Tac (genv & comp_in
       let post = opt_subst einfo.ei_post in
       let ge1, pre = opt_term_to_opt_abs_shadowed_term ge pre in
       let ge2, post = opt_term_to_opt_abs_shadowed_term ge1 post in
-      let ge3, cci0 = _typ_to_comp_info ge2 einfo.ei_ret_type m in
+      let ge3, cci0 = _typ_to_comp_info ge2 einfo.ei_type einfo.ei_ret_type m in
       ge3, { cci0 with cc_pre = pre; cc_post = post }
 
 (**** Step 2 *)
@@ -1129,12 +1131,16 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
   let ge3, (pre_values, pre_binders), (post_values, post_binders) =
     match etype with
     | E_Lemma ->
+      print_dbg dbg "E_Lemma";
       ge0, ([], []), ([], [])
     | E_Total | E_GTotal ->
+      print_dbg dbg "E_Total/E_GTotal";
       ge0, ([], []), ([], [])
     | E_PURE | E_Pure ->
+      print_dbg dbg "E_PURE/E_Pure";
       ge0, ([], []), ([v], brs)
     | E_Stack | E_ST ->
+      print_dbg dbg "E_Stack/E_ST";
       (* Introduce variables for the memories *)
       let h1, b1, h2, b2, ge1 = genv_push_two_fresh_vars ge0 "__h" (`HS.mem) in
       ge1, ([h1], [b1]), ([h1; v; h2], List.Tot.flatten ([b1]::brs::[[b2]]))
@@ -1163,6 +1169,7 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
         let post_values, post_binders, ge1 = introduce_variables_for_opt_abs ge1 opt_post in
         ge1, (pre_values, pre_binders), (post_values, post_binders)
       | _ ->
+        print_dbg dbg "No pre and no post";
         (* No pre and no post *)
         ge0, ([], []), ([], [])
       end
@@ -1272,7 +1279,7 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
       let gpost = if is_let then None else ci.cc_post in
       (* TODO: not sure about the return type: maybe catch failures *)
       let ge3, gpre_prop, gpost_prop =
-        abs_pre_post_to_propositions dbg ge2 info.etype v b info.ret_type
+        abs_pre_post_to_propositions dbg ge2 ci.cc_etype v b info.ret_type
                                      ci.cc_pre gpost in
       (* Return type: TODO *)
       ge3, gpre_prop, gpost_prop
