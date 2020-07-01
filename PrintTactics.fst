@@ -1274,13 +1274,21 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
       let ge2, ci = typ_or_comp_to_comp_info ge1 c in
       print_dbg dbg (comp_info_to_string ci);
       (* Precondition, post-condition *)
+      (* The global pre-condition is to be used only if none of its variables
+       * are shadowed (which implies that we are close enough to the top of
+       * the function *)
+      let gpre =
+        match ci.cc_pre with
+        | None -> None
+        | Some pre -> if Cons? pre.abs then None else Some pre
+      in
       (* The global post-condition is to be used only if we are not analyzing
        * let expression *)
       let gpost = if is_let then None else ci.cc_post in
       (* TODO: not sure about the return type: maybe catch failures *)
       let ge3, gpre_prop, gpost_prop =
         abs_pre_post_to_propositions dbg ge2 ci.cc_etype v b info.ret_type
-                                     ci.cc_pre gpost in
+                                     gpre gpost in
       (* Return type: TODO *)
       ge3, gpre_prop, gpost_prop
   in
@@ -1638,7 +1646,6 @@ let pp_test5 () :
   let _ = focus_on_term in
   test_stack1 x
 
-(* TODO HERE *)
 [@(postprocess_with (pp_focused_term true))]
 let pp_test6 () :
   ST.Stack nat
@@ -1647,6 +1654,8 @@ let pp_test6 () :
   let x = 2 in
   let _ = focus_on_term in
   x
+
+/// Tests with shadowed dependent types
 
 (**** Wrapping with tactics *)
 
