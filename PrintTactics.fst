@@ -23,6 +23,9 @@ val iteri: (int -> 'a -> Tac unit) -> list 'a -> Tac unit
 let iteri f x = iteri_aux 0 f x
 #pop-options
 
+let print_dbg (debug : bool) (s : string) : Tac unit =
+  if debug then print s
+
 (* TODO: move to FStar.Tactics.Derived.fst *)
 let rec mk_abs (t : term) (args : list binder) : Tac term (decreases args) =
   match args with
@@ -297,14 +300,6 @@ let decompose_application e t =
   let hd, params = decompose_application_aux e t in
   hd, List.Tot.rev params
 
-(*type valid_eterm_info =
-  info:eterm_info{
-    match info.etype with
-    | E_Total | E_GTotal | E_Lemma -> True
-    | E_PURE | E_Pure | E_Stack | E_ST | E_Unknown ->
-      Some? info.ret_type
-  }*)
-
 /// Returns the effectful information about a term
 val get_eterm_info : env -> term -> Tac eterm_info
 
@@ -347,7 +342,8 @@ let get_eterm_info (e:env) (t : term) =
       | E_Pure, [(pre, _); (post, _)] ->
         mk_eterm_info t E_Pure (Some pre) (Some post) ret_type_info hd parameters None None
       | E_Stack, [(pre, _); (post, _)] ->
-        mk_eterm_info t E_Stack (Some pre) (Some post) ret_type_info hd parameters None None
+        (* TODO: E_Stack *)
+        mk_eterm_info t E_Unknown (Some pre) (Some post) ret_type_info hd parameters None None
       | E_ST, [(pre, _); (post, _)] ->
         mk_eterm_info t E_ST (Some pre) (Some post) ret_type_info hd parameters None None
       (* If the effect is unknown and there are two parameters or less, we make the
@@ -556,7 +552,7 @@ let get_total_or_gtotal_ret_type c =
   | C_Total ret_ty _ | C_GTotal ret_ty _ -> Some ret_ty
   | _ -> None
 
-val check_pre_type : env -> term -> Tac pre_post_type
+(* val check_pre_type : env -> term -> Tac pre_post_type
 let check_pre_type e pre =
   match safe_tc e pre with
   | None -> PP_Unknown
@@ -601,23 +597,93 @@ let check_post_type e ret_type post =
         (* Check that the return value type is consistent *)
         if term_eq ret_type (type_of_binder b0) then PP_Pure else PP_Unknown
       end
+    | _ -> PP_Unknown *)
+
+val check_pre_type : bool -> env -> term -> Tac pre_post_type
+let check_pre_type dbg e pre =
+  print_dbg dbg "[> check_pre_type";
+  match safe_tc e pre with
+  | None ->
+    print_dbg dbg "safe_tc failed";
+    PP_Unknown
+  | Some ty ->
+    print_dbg dbg "safe_tc succeeded";
+    match inspect ty with
+    | Tv_Arrow b c ->
+      (* Not sure if the comp check is necessary *)
+      if Some? (get_total_or_gtotal_ret_type c) then PP_State (type_of_binder b)
+      else PP_Unknown
+    | _ -> PP_Pure
+
+val check_post_type : bool -> env -> term -> term -> Tac pre_post_type
+let check_post_type dbg e ret_type post =
+  print_dbg dbg "[> check_post_type";
+  let get_tot_ret_type c : Tac (option term_view) =
+    match get_total_or_gtotal_ret_type c with
+    | Some ret_ty -> Some (inspect ret_ty)
+    | None -> None
+  in
+  match safe_tc e post with
+  | None ->
+    print_dbg dbg "safe_tc failed";
+    PP_Unknown
+  | Some ty ->
+    print_dbg dbg "safe_tc succeeded";
+    (* The initial state or the return value *)
+    match inspect ty with
+    | Tv_Arrow b0 c0 ->
+      begin match get_tot_ret_type c0 with
+      | None -> PP_Unknown
+      (* If arrow: the post-condition is for a stateful effect, and the binder
+       * we get here gives us the type of the return value *)
+      | Some (Tv_Arrow b1 c1) ->
+        (* Check that there is a third arrow for the new state *)
+        begin match get_tot_ret_type c1 with
+        | None -> PP_Unknown
+        | Some (Tv_Arrow b2 c2) ->
+          (* Just check that the types are coherent: return type, but also states *)
+          if term_eq ret_type (type_of_binder b1) &&
+             term_eq (type_of_binder b0) (type_of_binder b2)
+          then PP_Pure else PP_Unknown
+        | _ -> PP_Unknown
+        end
+      (* Otherwise, it is the post-condition of a pure effect *)
+      | Some _ ->
+        (* Check that the return value type is consistent *)
+        if term_eq ret_type (type_of_binder b0) then PP_Pure else PP_Unknown
+      end
     | _ -> PP_Unknown
 
-val check_pre_post_type : env -> term -> term -> term -> Tac pre_post_type
-let check_pre_post_type e pre ret_type post =
-  match check_pre_type e pre, check_post_type e ret_type post with
-  | PP_Pure, PP_Pure -> PP_Pure
+val check_pre_post_type : bool -> env -> term -> term -> term -> Tac pre_post_type
+let check_pre_post_type dbg e pre ret_type post =
+  print_dbg dbg "[> check_pre_post_type";
+  match check_pre_type dbg e pre, check_post_type dbg e ret_type post with
+  | PP_Pure, PP_Pure ->
+    print_dbg dbg "PP_Pure, PP_Pure";
+    PP_Pure
   | PP_State ty1, PP_State ty2 ->
+    print_dbg dbg "PP_State, PP_State";
     if term_eq ty1 ty2 then PP_State ty1 else PP_Unknown
-  | _ -> PP_Unknown
+  | _ ->
+    print_dbg dbg "_, _";
+    PP_Unknown
 
-val check_opt_pre_post_type : env -> option term -> term -> option term -> Tac (option pre_post_type)
-let check_opt_pre_post_type e opt_pre ret_type opt_post =
+val check_opt_pre_post_type : bool -> env -> option term -> term -> option term -> Tac (option pre_post_type)
+let check_opt_pre_post_type dbg e opt_pre ret_type opt_post =
+  print_dbg dbg "[> check_opt_pre_post_type";
   match opt_pre, opt_post with
-  | Some pre, Some post -> Some (check_pre_post_type e pre ret_type post)
-  | Some pre, None -> Some (check_pre_type e pre)
-  | None, Some post -> Some (check_post_type e ret_type post)
-  | None, None -> None
+  | Some pre, Some post ->
+    print_dbg dbg "Some pre, Some post";
+    Some (check_pre_post_type dbg e pre ret_type post)
+  | Some pre, None ->
+    print_dbg dbg "Some pre, None";
+    Some (check_pre_type e pre)
+  | None, Some post ->
+    print_dbg dbg "None, Some post";
+    Some (check_post_type e ret_type post)
+  | None, None ->
+    print_dbg dbg "None, None";
+    None
 
 val push_two_fresh_vars : env -> string -> typ -> Tac (term & binder & term & binder & env)
 let push_two_fresh_vars e0 basename ty =
@@ -660,24 +726,14 @@ let effect_type_is_stateful etype =
   | E_Total | E_GTotal | E_Lemma | E_PURE | E_Pure -> false
   | E_Stack | E_ST | E_Unknown -> true
 
-(* val term_to_prop : term -> list term -> list binder -> Tot proposition
-let term_to_prop t params abs_params =
-  let t = mk_e_app t params in
-  { prop = t; abs = abs_params; }
-
-val opt_term_to_prop : option term -> list term -> -> Tot (option proposition)
-let opt_term_to_prop opt_t params_info =
-  match opt_t with
-  | Some t -> Some (term_to_prop t params_info)
-  | None -> None *)
-
 /// Convert effectful type information to a list of propositions. May have to
 /// introduce additional binders for the preconditions/postconditions/goal (hence
 /// the environment in the return type).
 /// The ``bind_var`` parameter is a variable if the studied term was bound in a let
 /// expression.
-val eterm_info_to_assertions : env -> eterm_info -> option term -> Tac (env & assertions)
-let eterm_info_to_assertions e info bind_var =
+val eterm_info_to_assertions : bool -> env -> eterm_info -> option term -> Tac (env & assertions)
+let eterm_info_to_assertions dbg e info bind_var =
+  print_dbg dbg "[> eterm_info_to_assertions";
   (* Introduce additional variables to instantiate the return type refinement,
    * the precondition, the postcondition and the goal *)
   (* First, the return value: returns an updated env, the value to use for
@@ -724,16 +780,19 @@ let eterm_info_to_assertions e info bind_var =
        (* The pre and post-conditions are likely to have the same shape as
         * one of Pure or Stack (depending on whether we use or not an internal
         * state). We try to check that and to instantiate them accordingly *)
-      let pp_type = check_opt_pre_post_type e0 info.pre info.ret_type.ty info.post in
+      let pp_type = check_opt_pre_post_type dbg e0 info.pre info.ret_type.ty info.post in
       begin match pp_type with
       | Some PP_Pure ->
+        print_dbg dbg "PP_Pure";
         (* We only need the return value *)
         e0, ([v], brs), ([], []), ([v], brs)
       | Some (PP_State state_type) ->
+        print_dbg dbg "PP_State";
         (* Introduces variables for the states *)
         let s1, b1, s2, b2, e2 = push_two_fresh_vars e0 "__s" state_type in
         e2, ([v], brs), ([s1], [b1]), ([s1; v; s2], List.Tot.flatten ([b1]::brs::[[b2]]))
       | Some PP_Unknown ->
+        print_dbg dbg "PP_Unknown";
         (* Introduce variables for all the values, for the pre and the post *)
         let pre_values, pre_binders, e1 = introduce_variables_for_opt_abs e0 info.pre in
         let post_values, post_binders, e2 = introduce_variables_for_opt_abs e1 info.post in
@@ -1076,9 +1135,6 @@ and explore_pattern dbg #a f x ge pat =
     let ge' = genv_push_bv bv None ge in
     ge', x, Continue
 
-let print_dbg (debug : bool) (s : string) : Tac unit =
-  if debug then print s
-
 let pp_explore (dbg : bool)
                (#a : Type0) (f : a -> genv -> term_view -> Tac (a & ctrl_flag))
                (x : a) :
@@ -1132,7 +1188,7 @@ let analyze_effectful_term dbg () ge t =
          end
        in
        (* Instantiate the refinements *)
-       let e2, asserts = eterm_info_to_assertions ge1.env info ret_arg in
+       let e2, asserts = eterm_info_to_assertions dbg ge1.env info ret_arg in
        (* Simplify and filter *)
        let sasserts = simp_filter_assertions e2 [primops; simplify] asserts in
        (* Print *)
@@ -1186,7 +1242,7 @@ let pp_test3 () : Tot nat =
     w
   else 0
 
-[@(postprocess_with (pp_focused_term false))]
+[@(postprocess_with (pp_focused_term true))]
 let pp_test4 () :
   ST.Stack nat
   (requires (fun _ -> True))
@@ -1196,7 +1252,7 @@ let pp_test4 () :
   let w = test_stack1 x in
   w
 
-[@(postprocess_with (pp_focused_term false))]
+[@(postprocess_with (pp_focused_term true))]
 let pp_test5 () :
   ST.Stack nat
   (requires (fun _ -> True))
@@ -1205,6 +1261,7 @@ let pp_test5 () :
   let _ = focus_on_term in
   test_stack1 x
 
+(* (setq message-log-max 10000) *)
 
 
 (**** Wrapping with tactics *)
