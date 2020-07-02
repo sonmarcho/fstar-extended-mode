@@ -385,7 +385,7 @@ let convert_ctrl_flag (flag : ctrl_flag) =
 /// - Continue: continue exploring the term
 /// - Skip: don't explore the sub-terms of this term
 /// - Abort: stop exploration
-/// TODO: we might want something more precise (like: don't explore the type of the
+/// TODO: we might want a more precise control (like: don't explore the type of the
 /// ascription but explore its body)
 /// Note that ``explore_term`` doesn't use the environment parameter besides pushing
 /// binders and passing it to ``f``, which means that you can give it arbitrary
@@ -407,81 +407,69 @@ let rec explore_term dbg #a f x ge c t =
     print ("[> explore_term: " ^ term_construct t ^ ":\n" ^ term_to_string t)
     end;
   let tv = inspect t in
-  let x', flag = f x ge c tv in
+  let x0, flag = f x ge c tv in
   if flag = Continue then
     begin match tv with
-    | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> x', Continue
+    | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> x0, Continue
     | Tv_App hd (a,qual) ->
-      let x', flag' = explore_term dbg f x ge None a in
-      if flag' = Continue then
-        explore_term dbg f x' ge None hd
-      else x', convert_ctrl_flag flag'
+      let x1, flag1 = explore_term dbg f x0 ge None a in
+      if flag1 = Continue then
+        explore_term dbg f x1 ge None hd
+      else x1, convert_ctrl_flag flag1
     | Tv_Abs br body ->
-      (* We first explore the type of the binder - the user might want to
-       * check information inside the binder definition *)
-      let bv = bv_of_binder br in
-      let bvv = inspect_bv bv in
-      let x', flag' = explore_term dbg f x ge None bvv.bv_sort in
-      if flag' = Continue then
-        let ge' = genv_push_binder br false None ge in
-        let e'', c'= abs_update_opt_typ_or_comp br c ge'.env in
-        let ge'' = { ge' with env = e'' } in
-        explore_term dbg f x' ge'' c' body
-      else x', convert_ctrl_flag flag'
-    | Tv_Arrow br c -> x, Continue (* TODO: we might want to explore that *)
-    | Tv_Type () -> x, Continue
+      let ge1 = genv_push_binder br false None ge in
+      let e2, c1 = abs_update_opt_typ_or_comp br c ge1.env in
+      let ge2 = { ge1 with env = e2 } in
+      explore_term dbg f x0 ge2 c1 body
+    | Tv_Arrow br c -> x0, Continue (* TODO: we might want to explore that *)
+    | Tv_Type () -> x0, Continue
     | Tv_Refine bv ref ->
       let bvv = inspect_bv bv in
-      let x', flag' = explore_term dbg f x ge None bvv.bv_sort in
-      if flag' = Continue then
-        let ge' = genv_push_bv bv false None ge in
-        explore_term dbg f x' ge' None ref
-      else x', convert_ctrl_flag flag'
-    | Tv_Const _ -> x, Continue
-    | Tv_Uvar _ _ -> x, Continue
+      let x1, flag1 = explore_term dbg f x0 ge None bvv.bv_sort in
+      if flag1 = Continue then
+        let ge1 = genv_push_bv bv false None ge in
+        explore_term dbg f x1 ge1 None ref
+      else x1, convert_ctrl_flag flag1
+    | Tv_Const _ -> x0, Continue
+    | Tv_Uvar _ _ -> x0, Continue
     | Tv_Let recf attrs bv def body ->
-      let bvv = inspect_bv bv in
-      (* Explore the binding type *)
-      let x', flag' = explore_term dbg f x ge None bvv.bv_sort in
-      if flag' = Continue then
-        (* Explore the binding definition *)
-        let x'', flag'' = explore_term dbg f x' ge None def in
-        if flag'' = Continue then
-          (* Explore the next subterm *)
-          let ge' = genv_push_bv bv false (Some def) ge in
-          explore_term dbg f x ge' c body
-        else x'', convert_ctrl_flag flag''
-      else x', convert_ctrl_flag flag'
+      (* Explore the binding definition *)
+      let x1, flag1 = explore_term dbg f x0 ge None def in
+      if flag1 = Continue then
+        (* Explore the next subterm *)
+        let ge1 = genv_push_bv bv false (Some def) ge in
+        explore_term dbg f x0 ge1 c body
+      else x1, convert_ctrl_flag flag1
     | Tv_Match scrutinee branches ->
       let explore_branch (x_flag : a & ctrl_flag) (br : branch) : Tac (a & ctrl_flag)=
-        let x, flag = x_flag in
+        let x0, flag = x_flag in
         if flag = Continue then
           let pat, branch_body = br in
           (* Explore the pattern *)
-          let ge', x', flag' = explore_pattern dbg #a f x ge pat in
-          if flag' = Continue then
+          let ge1, x1, flag1 = explore_pattern dbg #a f x0 ge pat in
+          if flag1 = Continue then
             (* Explore the branch body *)
-            explore_term dbg #a f x' ge' c branch_body
-          else x', convert_ctrl_flag flag'
+            explore_term dbg #a f x1 ge1 c branch_body
+          else x1, convert_ctrl_flag flag1
         (* Don't convert the flag *)
-        else x, flag
+        else x0, flag
       in
-      let x' = explore_term dbg #a f x ge None scrutinee in
-      fold_left explore_branch x' branches
+      let x1 = explore_term dbg #a f x0 ge None scrutinee in
+      fold_left explore_branch x1 branches
     | Tv_AscribedT e ty tac ->
-      let c' = Some (TC_Typ ty []) in
-      let x', flag = explore_term dbg #a f x ge None ty in
+      let c1 = Some (TC_Typ ty []) in
+      let x1, flag = explore_term dbg #a f x0 ge None ty in
       if flag = Continue then
-        explore_term dbg #a f x' ge c' e
-      else x', convert_ctrl_flag flag
-    | Tv_AscribedC e c' tac ->
+        explore_term dbg #a f x1 ge c1 e
+      else x1, convert_ctrl_flag flag
+    | Tv_AscribedC e c1 tac ->
       (* TODO: explore the comp *)
-      explore_term dbg #a f x ge (Some (TC_Comp c' [])) e
+      explore_term dbg #a f x0 ge (Some (TC_Comp c1 [])) e
     | _ ->
       (* Unknown *)
-      x, Continue
+      x0, Continue
     end
-  else x', convert_ctrl_flag flag
+  else x0, convert_ctrl_flag flag
 
 and explore_pattern dbg #a f x ge pat =
   match pat with
@@ -489,21 +477,21 @@ and explore_pattern dbg #a f x ge pat =
   | Pat_Cons fv patterns ->
     let explore_pat ge_x_flag pat =
       let ge, x, flag = ge_x_flag in
-      let pat', _ = pat in
+      let pat1, _ = pat in
       if flag = Continue then
-        explore_pattern dbg #a f x ge pat'
+        explore_pattern dbg #a f x ge pat1
       else
         (* Don't convert the flag *)
         ge, x, flag
     in
     fold_left explore_pat (ge, x, Continue) patterns
   | Pat_Var bv | Pat_Wild bv ->
-    let ge' = genv_push_bv bv false None ge in
-    ge', x, Continue
+    let ge1 = genv_push_bv bv false None ge in
+    ge1, x, Continue
   | Pat_Dot_Term bv t ->
     (* TODO: I'm not sure what this is *)
-    let ge' = genv_push_bv bv false None ge in
-    ge', x, Continue
+    let ge1 = genv_push_bv bv false None ge in
+    ge1, x, Continue
 
 /// Returns the list of variables free in a term
 val free_in : term -> Tac (list bv)
@@ -570,34 +558,7 @@ let abs_free_in ge t =
 (*** Effectful term analysis *)
 /// Analyze a term to retrieve its effectful information
 
-(* /// The type to model a term containing variables which may need to be abstracted.
-noeq type abs_term = {
-  (* The proposition body *)
-  body : term;
-  (* The parameters which must be abstracted. It happens that we need to
-   * use variables that don't appear in the user code (for example,
-   * stack memories for the pre and post-condition of stateful functions),
-   * or which have been shadowed once we reach the point where we introduce
-   * them.
-   * In this case, whenever we output the term, we write its content as an
-   * asbtraction applied to those missing parameters. For instance, in the
-   * case of the assertion introduced for a post-condition:
-   * [> assert((fun h1 h2 -> post) h1 h2);
-   * Besides the informative goal, the user can replace those parameters (h1
-   * and h2 above) by the proper ones then normalize the assertion by using
-   * the appropriate command to get a valid assertion.
-   *)
-  abs : list binder;
-} *)
-
 type proposition = term
-
-(* val abs_term_to_string : abs_term -> Tot string
-let abs_term_to_string at =
-  let brs_str = List.Tot.map binder_to_string at.abs in
-  let brs_str = List.Tot.map (fun x -> " " ^ x ^ ";") brs_str in
-  let brs_str = List.Tot.fold_left (fun x y -> x ^ y) "" brs_str in
-  "Mkabs_term (" ^ term_to_string at.body ^ ") [" ^ brs_str ^ "])" *)
 
 val proposition_to_string : proposition -> Tot string
 let proposition_to_string p = term_to_string p
