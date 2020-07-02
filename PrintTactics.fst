@@ -363,8 +363,8 @@ let is_total_or_gtotal c =
 /// instantiate the pre/post-conditions and type refinements.
 /// TODO: replace binder by bv
 noeq type typ_or_comp =
-| TC_Typ : v:typ -> m:list (binder & binder) -> typ_or_comp
-| TC_Comp : v:comp -> m:list (binder & binder) -> typ_or_comp
+| TC_Typ : v:typ -> m:list (bv & bv) -> typ_or_comp
+| TC_Comp : v:comp -> m:list (bv & bv) -> typ_or_comp
 
 /// Update the current ``typ_or_comp`` before going into the body of an abstraction
 /// Any new binder needs to be added to the current environment (otherwise we can't,
@@ -374,11 +374,11 @@ noeq type typ_or_comp =
 /// need it besides that.
 val abs_update_typ_or_comp : binder -> typ_or_comp -> env -> Tac (env & typ_or_comp)
 
-let _abs_update_typ (b:binder) (ty:typ) (m:list (binder & binder)) (e:env) :
+let _abs_update_typ (b:binder) (ty:typ) (m:list (bv & bv)) (e:env) :
   Tac (env & typ_or_comp) =
   begin match inspect ty with
   | Tv_Arrow b1 c1 ->
-    push_binder e b1, TC_Comp c1 ((b1, b) :: m)
+    push_binder e b1, TC_Comp c1 ((bv_of_binder b1, bv_of_binder b) :: m)
   | _ -> mfail ("abs_update_typ_or_comp: not an arrow: " ^ term_to_string ty)
   end
 
@@ -800,9 +800,10 @@ let opt_mk_app_norm ge opt_t params =
 /// them).
 /// TODO: write a function which goes through the whole term and reconstructs it.
 /// TODO: replace binder by bv
-val subst_vars : env -> term -> list (binder & term) -> Tac term
-let subst_vars e t subst =
+val apply_subst : env -> term -> list (bv & term) -> Tac term
+let apply_subst e t subst =
   let bl, vl = unzip subst in
+  let bl = List.Tot.map mk_binder bl in
   let t1 = mk_abs t bl in
   let t2 = mk_e_app t1 vl in
   norm_term_env e [] t2
@@ -853,32 +854,32 @@ let typ_or_comp_to_effect_info (ge : genv) (c : typ_or_comp) :
   (* Prepare the substitution of the variables from m *)
   let m = match c with | TC_Typ ty m -> m | TC_Comp cv m -> m in
   let subst_src, subst_tgt = unzip m in
-  let subst_tgt = map (fun x -> pack (Tv_Var (bv_of_binder x))) subst_tgt in
+  let subst_tgt = map (fun x -> pack (Tv_Var x)) subst_tgt in
   let subst = zip subst_src subst_tgt in
-  let apply_subst x = subst_vars ge.env x subst in
-  let opt_apply_subst (opt : option term) : Tac (option term) =
+  let asubst x = apply_subst ge.env x subst in
+  let opt_asubst (opt : option term) : Tac (option term) =
     match opt with
     | None -> None
-    | Some x -> Some (apply_subst x)
+    | Some x -> Some (asubst x)
   in
-  let apply_subst_in_type_info tinfo =
-    let ty' = apply_subst tinfo.ty in
-    let refin' = opt_apply_subst tinfo.refin in
+  let asubst_in_type_info tinfo =
+    let ty' = asubst tinfo.ty in
+    let refin' = opt_asubst tinfo.refin in
     mk_type_info ty' refin'
   in
   match c with
   | TC_Typ ty m ->
     let tinfo = get_type_info_from_type ty in
-    let tinfo = apply_subst_in_type_info tinfo in
+    let tinfo = asubst_in_type_info tinfo in
     mk_effect_info E_Total tinfo None None
   | TC_Comp cv m ->
     let opt_einfo = comp_to_effect_info cv in
     match opt_einfo with
     | None -> mfail ("typ_or_comp_to_effect_info failed on: " ^ acomp_to_string cv)
     | Some einfo ->
-      let ret_type_info = apply_subst_in_type_info einfo.ei_ret_type in
-      let pre = opt_apply_subst einfo.ei_pre in
-      let post = opt_apply_subst einfo.ei_post in
+      let ret_type_info = asubst_in_type_info einfo.ei_ret_type in
+      let pre = opt_asubst einfo.ei_pre in
+      let post = opt_asubst einfo.ei_post in
       mk_effect_info einfo.ei_type ret_type_info pre post
 
 (**** Step 2 *)
@@ -1305,9 +1306,9 @@ val subst_shadowed_with_abs_in_assertions : genv -> assertions -> Tac (genv & as
 let subst_shadowed_with_abs_in_assertions ge as =
   (* Generate the substitution *)
   let ge1, subst = generate_shadowed_subst ge in
-  let subst = map (fun (src, tgt) -> mk_binder src, pack (Tv_Var tgt)) subst in
+  let subst = map (fun (src, tgt) -> src, pack (Tv_Var tgt)) subst in
   (* Apply *)
-  let apply = map (fun t -> subst_vars ge1.env t subst) in
+  let apply = map (fun t -> apply_subst ge1.env t subst) in
   let pres = apply as.pres in
   let posts = apply as.posts in
   ge1, mk_assertions pres posts
