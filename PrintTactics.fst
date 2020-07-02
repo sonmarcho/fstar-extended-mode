@@ -243,60 +243,40 @@ let effect_name_to_type (ename : name) : Tot effect_type =
   else if ename = st_effect_qn then E_ST
   else E_Unknown
 
-/// Refinement type information
-noeq type rtype_info = {
-  raw : typ; // Raw type
-  refin : term; // Refinement predicate
-}
-
-let mk_rtype_info raw refin : rtype_info =
-  Mkrtype_info raw refin
-
 /// Type information
 noeq type type_info = {
-  ty : typ;
-  rty : option rtype_info;
+  ty : typ; (* the type without refinement *)
+  refin : option term;
 }
 
-let mk_type_info ty rty : type_info =
-  Mktype_info ty rty
+let mk_type_info = Mktype_info
 
 let unit_type_info = mk_type_info (`unit) None
 
 val safe_tc (e:env) (t:term) : Tac (option term)
-
 let safe_tc e t =
   try Some (tc e t) with | _ -> None
 
 val safe_tcc (e:env) (t:term) : Tac (option comp)
-
 let safe_tcc e t =
   try Some (tcc e t) with | _ -> None
 
-val get_rtype_info_from_type : typ -> Tac (option rtype_info)
-
-let get_rtype_info_from_type t =
-  match inspect t with
+let get_type_info_from_type (ty:typ) : Tac type_info =
+  match inspect ty with
   | Tv_Refine bv refin ->
     let bview : bv_view = inspect_bv bv in
     let raw_type : typ = bview.bv_sort in
     let b : binder = mk_binder bv in
     let refin = pack (Tv_Abs b refin) in
-    Some (mk_rtype_info raw_type refin)
-  | _ -> None
+    mk_type_info raw_type (Some refin)
+  | _ -> mk_type_info ty None
 
 #push-options "--ifuel 1"
 let get_type_info (e:env) (t:term) : Tac (option type_info) =
   match safe_tc e t with
   | None -> None
-  | Some ty ->
-    let refin = get_rtype_info_from_type ty in
-    Some (mk_type_info ty refin)
+  | Some ty -> Some (get_type_info_from_type ty)
 #pop-options
-
-let get_type_info_from_type (ty:term) : Tac type_info =
-  let refin = get_rtype_info_from_type ty in
-  mk_type_info ty refin
 
 val get_total_or_gtotal_ret_type : comp -> Tot (option typ)
 let get_total_or_gtotal_ret_type c =
@@ -574,26 +554,6 @@ noeq type cast_info = {
 let mk_cast_info t p_ty exp_ty : cast_info =
   Mkcast_info t p_ty exp_ty
 
-/// Convert a ``typ_or_comp`` to cast information
-noeq type comp_info = {
-  cc_etype : effect_type;
-  cc_pre : option proposition;
-  cc_ret_type : option abs_term;
-  cc_ret_refin : option proposition; (* the type should be: return_type -> Type *)
-  cc_post : option proposition;
-}
-
-val comp_info_to_string : comp_info -> Tot string
-let comp_info_to_string c =
-  "mk_comp_info " ^
-  effect_type_to_string c.cc_etype ^ " (" ^
-  option_to_string abs_term_to_string c.cc_pre ^ ") (" ^
-  option_to_string abs_term_to_string c.cc_ret_type ^ ") (" ^
-  option_to_string abs_term_to_string c.cc_ret_refin ^ ") (" ^
-  option_to_string abs_term_to_string c.cc_post ^ ")"
-
-let mk_comp_info = Mkcomp_info
-
 /// Extracts the effectful information from a computation
 // TODO: insert in eterm_info?
 noeq type effect_info = {
@@ -604,6 +564,27 @@ noeq type effect_info = {
 }
 
 let mk_effect_info = Mkeffect_info
+
+// TODO: merge with ``effect_info``
+noeq type abs_effect_info = {
+  cc_type : effect_type;
+  cc_pre : option proposition;
+  cc_ret_type : option abs_term;
+  cc_ret_refin : option proposition; (* the stored term should have type: return_type -> Type *)
+  cc_post : option proposition;
+}
+
+/// Convert a ``typ_or_comp`` to cast information
+val abs_effect_info_to_string : abs_effect_info -> Tot string
+let abs_effect_info_to_string c =
+  "mk_abs_effect_info " ^
+  effect_type_to_string c.cc_type ^ " (" ^
+  option_to_string abs_term_to_string c.cc_pre ^ ") (" ^
+  option_to_string abs_term_to_string c.cc_ret_type ^ ") (" ^
+  option_to_string abs_term_to_string c.cc_ret_refin ^ ") (" ^
+  option_to_string abs_term_to_string c.cc_post ^ ")"
+
+let mk_abs_effect_info = Mkabs_effect_info
 
 
 /// Effectful term information
@@ -643,8 +624,7 @@ let rec decompose_application_aux (e : env) (t : term) :
           let bv, _ = inspect_binder b in
           let bview = inspect_bv bv in
           let ty = bview.bv_sort in
-          let rty = get_rtype_info_from_type ty in
-          Some (mk_type_info ty rty)
+          Some (get_type_info_from_type ty)
         | _ -> None
     in
     let cast_info = mk_cast_info a a_type param_type in
@@ -719,21 +699,18 @@ let compute_eterm_info (e:env) (t : term) =
 
 (***** Types, casts and refinements *)
 
+(* TODO: those are not needed anymore *)
 let has_refinement (ty:type_info) : Tot bool =
-  Some? ty.rty
+  Some? ty.refin
 
-let get_refinement (ty:type_info{Some? ty.rty}) : Tot term =
-  (Some?.v ty.rty).refin
+let get_refinement (ty:type_info{Some? ty.refin}) : Tot term =
+  Some?.v ty.refin
 
 let get_opt_refinment (ty:type_info) : Tot (option term) =
-  match ty.rty with
-  | Some rty -> Some rty.refin
-  | None -> None
+  ty.refin
 
 let get_rawest_type (ty:type_info) : Tot typ =
-  match ty.rty with
-  | Some rty -> rty.raw
-  | _ -> ty.ty
+  ty.ty
 
 /// Compare the type of a parameter and its expected type
 type type_comparison = | Refines | Same_raw_type | Unknown
@@ -748,14 +725,11 @@ let type_comparison_to_string c =
 
 let compare_types (info1 info2 : type_info) :
   Tot (c:type_comparison{c = Same_raw_type ==> has_refinement info2}) =
-  if term_eq info1.ty info2.ty
-  then Refines // The types are the same
-  else
-    let ty1 = get_rawest_type info1 in
-    let ty2 = get_rawest_type info2 in
-    if term_eq ty1 ty2 then
-      if has_refinement info2
-      then Same_raw_type // Same raw type but can't say anything about the expected refinement
+  if term_eq info1.ty info2.ty then
+      if has_refinement info2 then
+        if has_refinement info1 && term_eq (get_refinement info1) (get_refinement info2) then
+          Refines
+        else Same_raw_type // Same raw type but can't say anything about the expected refinement
       else Refines // The first type is more precise than the second type
     else
       Unknown
@@ -864,24 +838,24 @@ let opt_term_to_opt_abs_shadowed_term ge opt_t =
     let ge', t' = term_to_abs_shadowed_term ge t in
     ge', Some t'
 
-/// Auxiliary function: convert type information to a ``comp_info``
-let _typ_to_comp_info (ge : genv) (etype : effect_type) (tinfo : type_info) (m : list (binder & binder)) :
-  Tac (genv & comp_info) =
+/// Auxiliary function: convert type information to a ``abs_effect_info``
+let _typ_to_abs_effect_info (ge : genv) (etype : effect_type) (tinfo : type_info) (m : list (binder & binder)) :
+  Tac (genv & abs_effect_info) =
   let rty = get_rawest_type tinfo in
   let refin = get_opt_refinment tinfo in
   let ge1, rty = term_to_abs_shadowed_term ge rty in
   let ge2, refin = opt_term_to_opt_abs_shadowed_term ge1 refin in
-  ge2, mk_comp_info etype None (Some rty) refin None
+  ge2, mk_abs_effect_info etype None (Some rty) refin None
 
-let typ_or_comp_to_comp_info (ge : genv) (c : typ_or_comp) : Tac (genv & comp_info) =
+let typ_or_comp_to_abs_effect_info (ge : genv) (c : typ_or_comp) : Tac (genv & abs_effect_info) =
   match c with
   | TC_Typ ty m ->
     let tinfo = get_type_info_from_type ty in
-    _typ_to_comp_info ge E_Total tinfo m
+    _typ_to_abs_effect_info ge E_Total tinfo m
   | TC_Comp cv m ->
     let opt_einfo = comp_to_effect_info cv in
     match opt_einfo with
-    | None -> mfail ("typ_or_comp_to_comp_info failed on: " ^ acomp_to_string cv)
+    | None -> mfail ("typ_or_comp_to_abs_effect_info failed on: " ^ acomp_to_string cv)
     | Some einfo ->
       let subst_src, subst_tgt = unzip m in
       let subst_tgt = map (fun x -> pack (Tv_Var (bv_of_binder x))) subst_tgt in
@@ -895,7 +869,7 @@ let typ_or_comp_to_comp_info (ge : genv) (c : typ_or_comp) : Tac (genv & comp_in
       let post = opt_subst einfo.ei_post in
       let ge1, pre = opt_term_to_opt_abs_shadowed_term ge pre in
       let ge2, post = opt_term_to_opt_abs_shadowed_term ge1 post in
-      let ge3, cci0 = _typ_to_comp_info ge2 einfo.ei_type einfo.ei_ret_type m in
+      let ge3, cci0 = _typ_to_abs_effect_info ge2 einfo.ei_type einfo.ei_ret_type m in
       ge3, { cci0 with cc_pre = pre; cc_post = post }
 
 (**** Step 2 *)
@@ -1246,6 +1220,7 @@ let abs_pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre
   print_dbg dbg "[> abs_pre_post_to_propositions: end";
   ge1, opt_pre4, opt_post4
 
+(* TODO HERE *)
 /// Convert effectful type information to a list of propositions. May have to
 /// introduce additional binders for the preconditions/postconditions/goal (hence
 /// the environment in the return type).
@@ -1258,7 +1233,7 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
    * the precondition, the postcondition and the goal *)
   (* First, the return value: returns an updated env, the value to use for
    * the return type and a list of abstract binders *)
-  let ge0, v, b =
+  let ge0, (v : term), (b : option binder) =
     match bind_var with
     | Some v -> ge, v, None
     | None ->
@@ -1276,38 +1251,45 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
   let ge1, pre_prop, post_prop =
     pre_post_to_propositions dbg ge0 info.etype v b info.ret_type info.pre info.post in
   (* Compute and instantiate the global pre and post-conditions *)
-  (* TODO: return type *)
   let ge2, gpre_prop, gpost_prop =
     match opt_c with
     | None -> ge1, None, None
     | Some c ->
-      let ge2, ci = typ_or_comp_to_comp_info ge1 c in
-      print_dbg dbg (comp_info_to_string ci);
+      let ge2, ci = typ_or_comp_to_abs_effect_info ge1 c in
+      print_dbg dbg (abs_effect_info_to_string ci);
       (* Precondition, post-condition *)
+      (* TODO: not sure about the return type parameter: maybe catch failures *)
+      let ge3, gpre_prop, gpost_prop =
+        abs_pre_post_to_propositions dbg ge2 ci.cc_type v b info.ret_type
+                                     ci.cc_pre ci.cc_post in
+      (* Filter the pre/post (note that we can't do that earlier because it may
+       * prevent ``abs_pre_post_to_propositions`` from succeeding its analysis) *)
       (* The global pre-condition is to be used only if none of its variables
        * are shadowed (which implies that we are close enough to the top of
        * the function *)
-      let gpre =
-        match ci.cc_pre with
+      let gpre_prop =
+        (* Note that we check the previous value of the pre *)
+        begin match ci.cc_pre with
         | None -> None
-        | Some pre -> if Cons? pre.abs then None else Some pre
+        | Some pre ->
+          if Cons? pre.abs then None else gpre_prop
+        end
       in
       (* The global post-condition is to be used only if we are not analyzing
-       * let expression *)
-      let gpost = if is_let then None else ci.cc_post in
-      (* TODO: not sure about the return type: maybe catch failures *)
-      let ge3, gpre_prop, gpost_prop =
-        abs_pre_post_to_propositions dbg ge2 ci.cc_etype v b info.ret_type
-                                     gpre gpost in
+       * a let expression *)
+      let gpost_prop = if is_let then None else gpost_prop in
       (* Return type: TODO *)
       ge3, gpre_prop, gpost_prop
   in
+  (**) print_dbg dbg ("global pre: " ^ option_to_string abs_term_to_string gpre_prop);
+  (**) print_dbg dbg ("global post: " ^ option_to_string abs_term_to_string gpost_prop);
   (* Generate the propositions: *)
   (* - from the parameters' cast info *)
   let params_props = cast_info_list_to_propositions info.parameters in
   (* - from the return type *)
-  let ret_values, ret_binders =
-    if E_Lemma? info.etype then [], [] else [v], (match b with | Some b -> [b] | None -> []) in
+  let (ret_values : list term), (ret_binders : list binder) =
+    if E_Lemma? info.etype then ([] <: list term), ([] <: list binder)
+    else [v], (match b with | Some b -> [b] | None -> []) in
   let ret_refin_prop = opt_term_to_opt_abs_term (get_opt_refinment info.ret_type) ret_values ret_binders in
   (* Concatenate, revert and return *)
   let pres = opt_cons gpre_prop (List.Tot.rev (opt_cons pre_prop params_props)) in
@@ -1497,9 +1479,9 @@ let analyze_effectful_term dbg () ge opt_c t =
     (* We need to check if the let definition is a meta identifier *)
        if is_focus_on_term def then
        begin
-       print ("[> Focus on term: " ^ term_to_string body);
-       print ("[> Environment information: ");
-       print_binders_info false ge.env;
+       print_dbg dbg ("[> Focus on term: " ^ term_to_string body);
+       print_dbg dbg ("[> Environment information: ");
+       if dbg then print_binders_info false ge.env;
        (* Start by analyzing the effectful term and checking whether it is
         * a 'let' or not *)
        let ge1, studied_term, info, ret_arg, is_let =
@@ -1668,17 +1650,34 @@ let pp_test6 () :
 /// Tests with shadowed dependent types
 type ty1 (a : Type) : Type0 = list a
 type ty2 (a b : Type0) = list a & option b
+let pred1 (#a : Type) (x : ty1 a) : Tot bool = Cons? x
 
-(* TODO HERE *)
-/// Actually, it's ok
-[@(postprocess_with (pp_focused_term true))]
+/// x is shadowed, so the global precondition should be dropped. However the
+/// global post-condition should be displayed.
+[@(postprocess_with (pp_focused_term false))]
 let pp_test7 (a : Type) (x : ty1 a) :
   Pure (ty1 a)
   (requires x == x /\ a == a)
   (ensures fun x' -> x == x') =
+  let y = x in
   let a = nat in
+  let x = 3 in
   let _ = focus_on_term in
-  x
+  y
+
+(* TODO HERE *)
+/// The global precondition should be displayed.
+[@(postprocess_with (pp_focused_term true))]
+let pp_test8 (a : Type) (x : ty1 a) :
+  Pure (ty1 a)
+  (requires x == x /\ a == a /\ pred1 x)
+  (ensures fun x' -> x == x') =
+  let _ = focus_on_term in
+  let y = x in
+  let a = nat in
+  let x = 3 in
+  let _ = focus_on_term in
+  y
 
 (**** Wrapping with tactics *)
 
@@ -1698,7 +1697,7 @@ let test2 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
   Lemma(x + y + z >= 26) =
   (* Look for the binder after the one with type "Prims.pure_post".
    * Or: count how many parameters the function has... *)
-  run_tactic (fun _ -> print_binders_info true)
+  run_tactic (fun _ -> print_binders_info true (top_env ()))
 
 let test3 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
   Lemma (requires x % 2 = 0) (ensures x + y + z >= 26) =
@@ -1776,12 +1775,6 @@ let test7 (x : nat) : nat =
     ()
   );
   0
-
-//binders_of_env
-//lookup_typ
-//lookup_attr
-//all_defs_in_env  
-
 
 //[@(postprocess_with pp_tac)]
 let test8 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
