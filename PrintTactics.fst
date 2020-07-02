@@ -32,6 +32,19 @@ let rec mk_abs (t : term) (args : list binder) : Tac term (decreases args) =
     pack (Tv_Abs a t')
 
 (*** General utilities *)
+// TODO: use more
+val opt_apply (#a #b : Type) (f : a -> Tot b) (x : option a) : Tot (option b)
+let opt_apply #a #b f x =
+  match x with
+  | None -> None
+  | Some x' -> Some (f x')
+
+val opt_tapply (#a #b : Type) (f : a -> Tac b) (x : option a) : Tac (option b)
+let opt_tapply #a #b f x =
+  match x with
+  | None -> None
+  | Some x' -> Some (f x')
+
 /// Some debugging facilities
 let print_dbg (debug : bool) (s : string) : Tac unit =
   if debug then print s
@@ -543,7 +556,6 @@ let option_to_string #a f x =
   | None -> "None"
   | Some x' -> "Some (" ^ f x' ^ ")"
 
-
 /// Cast information
 noeq type cast_info = {
   term : term;
@@ -747,17 +759,25 @@ let opt_cons (#a : Type) (opt_x : option a) (ls : list a) : Tot (list a) =
   | Some x -> x :: ls
   | None -> ls
 
+val norm_abs_term : genv -> list norm_step -> abs_term -> Tac abs_term
+let norm_abs_term ge steps t =
+  { t with body = norm_term_env ge.env steps t.body }
+
+val opt_norm_abs_term : genv -> list norm_step -> option abs_term -> Tac (option abs_term)
+let opt_norm_abs_term ge steps opt_t =
+  opt_tapply (fun t -> norm_abs_term ge steps t) opt_t
+
 /// Instantiate an ``abs_term``
-val term_to_abs_term : term -> list term -> list binder -> Tot abs_term
-let term_to_abs_term t params abs_params =
+val term_to_abs_term : genv -> term -> list term -> list binder -> Tac abs_term
+let term_to_abs_term ge t params abs_params =
   let p = mk_e_app t params in
+  let p = if Cons? params then norm_term_env ge.env [] p else p in
   { body = p; abs = abs_params; }
 
-val opt_term_to_opt_abs_term : option term -> list term -> list binder -> Tot (option abs_term)
-let opt_term_to_opt_abs_term opt_t params abs_params =
-  match opt_t with
-  | Some t -> Some (term_to_abs_term t params abs_params)
-  | None -> None  
+val opt_term_to_opt_abs_term : genv -> option term -> list term -> list binder -> Tac (option abs_term)
+let opt_term_to_opt_abs_term ge opt_t params abs_params =
+  opt_tapply (fun t -> term_to_abs_term ge t params abs_params) opt_t
+
 
 /// Perform a variable substitution in a term
 /// TODO: we might have some problems if the variables have dependent types which
@@ -816,9 +836,6 @@ let subst_with_fresh_vars ge t bl =
 val term_to_abs_shadowed_term (ge : genv) (t : term) : Tac (genv & abs_term)
 let term_to_abs_shadowed_term ge t =
   let free_vars = free_in t in (* *)
-//  (* TODO: remove *)
-//  print ("term_to_abs_shadowed_term: num free vars: " ^ string_of_int (List.length free_vars));
-//  iter (fun bv -> print (bv_to_string bv)) free_vars;
   let free_vars = find_shadowed_bvs ge free_vars in
   (* The shadowed variables *)
   let shad_vars = List.Tot.filter (fun (bv, b) -> b) free_vars in
@@ -827,7 +844,7 @@ let term_to_abs_shadowed_term ge t =
   (* Introduce fresh variables and substitute them in the term *)
   let ge', t', abs_binders = subst_with_fresh_vars ge t shad_binders in
   (* Introduce variables for *)
-  ge', term_to_abs_term t' [] abs_binders
+  ge', term_to_abs_term ge' t' [] abs_binders
 
 val opt_term_to_opt_abs_shadowed_term : (ge : genv) -> (opt_t : option term) ->
                                         Tac (genv & option abs_term)
@@ -887,13 +904,13 @@ let mk_assertions pres posts : assertions =
 
 /// Generate the propositions equivalent to a correct type cast.
 /// Note that the type refinements need to be instantiated.
-val cast_info_to_propositions : cast_info -> Tac (list proposition)
-let cast_info_to_propositions ci =
+val cast_info_to_propositions : genv -> cast_info -> Tac (list proposition)
+let cast_info_to_propositions ge ci =
   match compare_cast_types ci with
   | Refines -> []
   | Same_raw_type ->
     let refin = get_refinement (Some?.v ci.exp_ty) in
-    let inst_refin = term_to_abs_term refin [ci.term] [] in
+    let inst_refin = term_to_abs_term ge refin [ci.term] [] in
     [inst_refin]
   | Unknown ->
     match ci.p_ty, ci.exp_ty with
@@ -910,16 +927,15 @@ let cast_info_to_propositions ci =
       let has_type_params = [(p_rty, Q_Implicit); (ascr_term, Q_Explicit); (e_rty, Q_Explicit)] in
       let type_cast = mk_app (`has_type) has_type_params in
       (* Expected type's refinement *)
-      let opt_refin = get_opt_refinment e_ty in
-      let inst_opt_refin = opt_term_to_opt_abs_term opt_refin [ci.term] [] in
+      let inst_opt_refin = opt_term_to_opt_abs_term ge e_ty.refin [ci.term] [] in
       opt_cons inst_opt_refin [{ body = type_cast; abs = []; }]
     | _ -> []
 
 /// Generates a list of propositions from a list of ``cast_info``. Note that
 /// the user should revert the list before printing the propositions.
-val cast_info_list_to_propositions : list cast_info -> Tac (list proposition)
-let cast_info_list_to_propositions ls =
-  let lsl = map cast_info_to_propositions ls in
+val cast_info_list_to_propositions : genv -> list cast_info -> Tac (list proposition)
+let cast_info_list_to_propositions ge ls =
+  let lsl = map (cast_info_to_propositions ge) ls in
   flatten lsl
 
 /// When dealing with unknown effects, we try to guess what the pre and post-conditions
@@ -1160,9 +1176,9 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
   in
   (* Generate the propositions: *)
   (* - from the precondition *)
-  let pre_prop = opt_term_to_opt_abs_term opt_pre pre_values pre_binders in
+  let pre_prop = opt_term_to_opt_abs_term ge3 opt_pre pre_values pre_binders in
   (* - from the postcondition *)
-  let post_prop = opt_term_to_opt_abs_term opt_post post_values post_binders in
+  let post_prop = opt_term_to_opt_abs_term ge3 opt_post post_values post_binders in
   (* return *)
   print_dbg dbg "[> pre_post_to_propositions: end";
   ge3, pre_prop, post_prop
@@ -1210,12 +1226,12 @@ let abs_pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre
   let pre_abs1 = get_opt_abs opt_pre in
   let pre_abs2 = get_opt_abs opt_pre2 in
   let pre_abs3 = List.Tot.append pre_abs1 pre_abs2 in
-  let opt_pre4 = opt_term_to_opt_abs_term (get_opt_body opt_pre3) [] pre_abs3 in
+  let opt_pre4 = opt_term_to_opt_abs_term ge1 (get_opt_body opt_pre3) [] pre_abs3 in
   let opt_post3 = simpl ge1 opt_post2 in
   let post_abs1 = get_opt_abs opt_post in
   let post_abs2 = get_opt_abs opt_post2 in
   let post_abs3 = List.Tot.append post_abs1 post_abs2 in
-  let opt_post4 = opt_term_to_opt_abs_term (get_opt_body opt_post3) [] post_abs3 in
+  let opt_post4 = opt_term_to_opt_abs_term ge1 (get_opt_body opt_post3) [] post_abs3 in
   (* return *)
   print_dbg dbg "[> abs_pre_post_to_propositions: end";
   ge1, opt_pre4, opt_post4
@@ -1285,12 +1301,12 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
   (**) print_dbg dbg ("global post: " ^ option_to_string abs_term_to_string gpost_prop);
   (* Generate the propositions: *)
   (* - from the parameters' cast info *)
-  let params_props = cast_info_list_to_propositions info.parameters in
+  let params_props = cast_info_list_to_propositions ge2 info.parameters in
   (* - from the return type *)
   let (ret_values : list term), (ret_binders : list binder) =
     if E_Lemma? info.etype then ([] <: list term), ([] <: list binder)
     else [v], (match b with | Some b -> [b] | None -> []) in
-  let ret_refin_prop = opt_term_to_opt_abs_term (get_opt_refinment info.ret_type) ret_values ret_binders in
+  let ret_refin_prop = opt_term_to_opt_abs_term ge2 (get_opt_refinment info.ret_type) ret_values ret_binders in
   (* Concatenate, revert and return *)
   let pres = opt_cons gpre_prop (List.Tot.rev (opt_cons pre_prop params_props)) in
   let posts = opt_cons ret_refin_prop (opt_cons post_prop (opt_cons gpost_prop [])) in
