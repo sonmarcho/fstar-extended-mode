@@ -349,6 +349,7 @@ let is_total_or_gtotal c =
 /// Whenever we go inside an abstraction, we store how  we instantiated the outer
 /// lambda (in an order reverse to the instantiation order), so that we can correctly
 /// instantiate the pre/post-conditions and type refinements.
+/// TODO: replace binder by bv
 noeq type typ_or_comp =
 | TC_Typ : v:typ -> m:list (binder & binder) -> typ_or_comp
 | TC_Comp : v:comp -> m:list (binder & binder) -> typ_or_comp
@@ -786,6 +787,7 @@ let opt_mk_app_norm ge opt_t params =
 /// term. But I'm not sure, because we won't trypecheck them (we will just print
 /// them).
 /// TODO: write a function which goes through the whole term and reconstructs it.
+/// TODO: replace binder by bv
 val subst_vars : env -> term -> list (binder & term) -> Tac term
 let subst_vars e t subst =
   let bl, vl = unzip subst in
@@ -793,6 +795,46 @@ let subst_vars e t subst =
   let t2 = mk_e_app t1 vl in
   norm_term_env e [] t2
 
+/// Introduce fresh variables to generate a substitution for the variables shadowed
+/// in the current environment.
+val generate_shadowed_subst : genv -> Tac (genv & list (bv & bv))
+
+/// In order to introduce variables with coherent types (the variables' types
+/// may be dependent) and make things simpler, we build one big term:
+/// [> (fun x1 x2 ... xn -> ())
+/// Then, for each variable, we introduce a fresh variable with the same type as
+/// the outermost abstraction, apply the above term to this new variable and
+/// normalize to "apply" the substitution and reveal the next binding.
+
+let rec _generate_shadowed_subst (ge:genv) (t:term) (bvl : list bv) :
+  Tac (genv & list (bv & bv)) =
+  match bvl with
+  | [] -> ge, []
+  | old_bv :: bvl' ->
+    match inspect t with
+    | Tv_Abs b _ ->
+      (* Introduce the new binder *)
+      let bv, _ = inspect_binder b in
+      let bvv = inspect_bv bv in
+      let ty = bvv.bv_sort in
+      let name = bvv.bv_ppname in
+      let fresh, ge1 = genv_push_fresh_binder ge ("__" ^ name) ty in
+      let fresh_bv = bv_of_binder fresh in
+      let t1 = mk_e_app t [pack (Tv_Var fresh_bv)] in
+      let t2 = norm_term_env ge1.env [] t1 in
+      (* Recursion *)
+      let ge2, nbvl = _generate_shadowed_subst ge1 t2 bvl' in
+      (* Return *)
+      ge2, (old_bv, fresh_bv) :: nbvl
+    | _ -> mfail "_subst_with_fresh_vars: not a Tv_Abs"
+
+let generate_shadowed_subst ge =
+  let bvl = ge.svars in
+  let bl = List.Tot.map mk_binder bvl in
+  let dummy = mk_abs (`()) bl in
+  _generate_shadowed_subst ge dummy bvl
+
+(*
 /// Substitute a list of binders with fresh binders, added to the environment.
 /// The tricky part comes from the fact that there may be dependent types, in
 /// which we also need to do the substitution. For this reason, we start by
@@ -854,32 +896,55 @@ let opt_substitute_free_vars_with_abs ge opt_t =
   | Some t ->
     let ge', t' = substitute_free_vars_with_abs ge t in
     ge', Some t'
+*)
 
-/// Auxiliary function: convert type information to a ``effect_info``
+(*/// Auxiliary function: convert type information to a ``effect_info``
+// TODO: remove
 let _typ_to_effect_info (ge : genv) (etype : effect_type) (tinfo : type_info) (m : list (binder & binder)) :
   Tac (genv & effect_info) =
-  let ty = tinfo.ty in
-  let refin = get_opt_refinment tinfo in
-  let ge1, ty = substitute_free_vars_with_abs ge ty in
-  let ge2, refin = opt_substitute_free_vars_with_abs ge1 refin in
-  ge2, mk_effect_info etype (mk_type_info ty refin) None None
+//  let ty = tinfo.ty in
+//  let refin = get_opt_refinment tinfo in
+//  let ge1, ty = substitute_free_vars_with_abs ge ty in
+//  let ge2, refin = opt_substitute_free_vars_with_abs ge1 refin in
+//  ge2, mk_effect_info etype (mk_type_info ty refin) None None
+  ge, mk_effect_info etype tinfo None None *)
 
-/// Converts a ``typ_or_comp`` to an ``effect_info``, introduces abstrac variables
+/// Converts a ``typ_or_comp`` to an ``effect_info``, introduces abstract variables
 /// to replace the shadowed variables.
 // TODO: the environment should keep track of such replacements so that we
 // don't introduce several variables for one shadowed variable
+// TODO: actually, now, the 
 let typ_or_comp_to_effect_info (ge : genv) (c : typ_or_comp) :
-  Tac (genv & effect_info) =
+  Tac effect_info =
+  (* Prepare the substitution of the variables from m *)
+  let m = match c with | TC_Typ ty m -> m | TC_Comp cv m -> m in
+  let subst_src, subst_tgt = unzip m in
+  let subst_tgt = map (fun x -> pack (Tv_Var (bv_of_binder x))) subst_tgt in
+  let subst = zip subst_src subst_tgt in
+  let apply_subst x = subst_vars ge.env x subst in
+  let opt_apply_subst (opt : option term) : Tac (option term) =
+    match opt with
+    | None -> None
+    | Some x -> Some (apply_subst x)
+  in
+  let apply_subst_in_type_info tinfo =
+    let ty' = apply_subst tinfo.ty in
+    let refin' = opt_apply_subst tinfo.refin in
+    mk_type_info ty' refin'
+  in
   match c with
   | TC_Typ ty m ->
     let tinfo = get_type_info_from_type ty in
-    _typ_to_effect_info ge E_Total tinfo m
+    let tinfo = apply_subst_in_type_info tinfo in
+    mk_effect_info E_Total tinfo None None
+//    _typ_to_effect_info ge E_Total tinfo m
   | TC_Comp cv m ->
     let opt_einfo = comp_to_effect_info cv in
     match opt_einfo with
     | None -> mfail ("typ_or_comp_to_effect_info failed on: " ^ acomp_to_string cv)
     | Some einfo ->
-      let subst_src, subst_tgt = unzip m in
+      (* Apply the substitution contained in the  *)
+(*      let subst_src, subst_tgt = unzip m in
       let subst_tgt = map (fun x -> pack (Tv_Var (bv_of_binder x))) subst_tgt in
       let subst = zip subst_src subst_tgt in
       let opt_subst (opt : option term) : Tac (option term) =
@@ -888,11 +953,17 @@ let typ_or_comp_to_effect_info (ge : genv) (c : typ_or_comp) :
         | Some x -> Some (subst_vars ge.env x subst)
       in
       let pre = opt_subst einfo.ei_pre in
-      let post = opt_subst einfo.ei_post in
-      let ge1, pre = opt_substitute_free_vars_with_abs ge pre in
-      let ge2, post = opt_substitute_free_vars_with_abs ge1 post in
-      let ge3, cci0 = _typ_to_effect_info ge2 einfo.ei_type einfo.ei_ret_type m in
-      ge3, { cci0 with ei_pre = pre; ei_post = post }
+      let post = opt_subst einfo.ei_post in *)
+      let ret_type_info = apply_subst_in_type_info einfo.ei_ret_type in
+      let pre = opt_apply_subst einfo.ei_pre in
+      let post = opt_apply_subst einfo.ei_post in
+      mk_effect_info einfo.ei_type ret_type_info pre post
+
+//      ge, 
+//      let ge1, pre = opt_substitute_free_vars_with_abs ge pre in
+//      let ge2, post = opt_substitute_free_vars_with_abs ge1 post in
+//      let ge3, cci0 = _typ_to_effect_info ge2 einfo.ei_type einfo.ei_ret_type m in
+//      ge3, { cci0 with ei_pre = pre; ei_post = post }
 
 (**** Step 2 *)
 /// The retrieved type refinements and post-conditions are not instantiated (they
@@ -1234,12 +1305,12 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
     begin match opt_c with
     | None -> ge1, None, [], None
     | Some c ->
-      let ge2, ei = typ_or_comp_to_effect_info ge1 c in
+      let ei = typ_or_comp_to_effect_info ge1 c in
       print_dbg dbg (effect_info_to_string ei);
       (* Precondition, post-condition *)
       (* TODO: not sure about the return type parameter: maybe catch failures *)
       let ge3, gpre_prop, gpost_prop =
-        pre_post_to_propositions dbg ge2 ei.ei_type v opt_b einfo.ei_ret_type
+        pre_post_to_propositions dbg ge1 ei.ei_type v opt_b einfo.ei_ret_type
                                  ei.ei_pre ei.ei_post in
       (* Filter the pre/post (note that we can't do that earlier because it may
        * prevent ``abs_pre_post_to_propositions`` from succeeding its analysis) *)
@@ -1262,17 +1333,17 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
       (* Generate propositions for the type cast *)
       let gcast = mk_cast_info v (Some einfo.ei_ret_type) (Some ei.ei_ret_type) in
       let gcast_props = cast_info_to_propositions ge3 gcast in
-      let subst_free_vars (ge,pl) t =
-        let ge', t' = substitute_free_vars_with_abs ge t in
-        ge', t'::pl
-      in
-      let ge4, gcast_props = fold_left subst_free_vars (ge3, []) gcast_props in
+//      let subst_free_vars (ge,pl) t =
+//        let ge', t' = substitute_free_vars_with_abs ge t in
+//        ge', t'::pl
+//      in
+//      let ge4, gcast_props = fold_left subst_free_vars (ge3, []) gcast_props in
       let gcast_props = List.Tot.rev gcast_props in
       (* Some debugging output *)
       (**) print_dbg dbg ("global pre: " ^ option_to_string term_to_string gpre_prop);
       (**) print_dbg dbg ("global post: " ^ option_to_string term_to_string gpost_prop);
       (* Return type: TODO *)
-      ge4, gpre_prop, gcast_props, gpost_prop
+      ge3, gpre_prop, gcast_props, gpost_prop
     end <: Tac _
   in
   (* Generate the propositions: *)
@@ -1316,6 +1387,21 @@ let simp_filter_assertions (e:env) (steps:list norm_step) (a:assertions) :
   mk_assertions pres posts
 
 (**** Step 4 *)
+/// Introduce fresh variables for the variables shadowed in the current environment
+/// and substitute them in the terms.
+
+val subst_shadowed_with_abs_in_assertions : genv -> assertions -> Tac (genv & assertions)
+let subst_shadowed_with_abs_in_assertions ge as =
+  (* Generate the substitution *)
+  let ge1, subst = generate_shadowed_subst ge in
+  let subst = map (fun (src, tgt) -> mk_binder src, pack (Tv_Var tgt)) subst in
+  (* Apply *)
+  let apply = map (fun t -> subst_vars ge1.env t subst) in
+  let pres = apply as.pres in
+  let posts = apply as.posts in
+  ge1, mk_assertions pres posts
+
+(**** Step 5 *)
 /// Output the resulting information
 /// Originally: we output the ``eterm_info`` and let the emacs commands do some
 /// filtering and formatting. Now, we convert ``eterm_info`` to a ``assertions``.
@@ -1492,9 +1578,11 @@ let analyze_effectful_term dbg () ge opt_c t =
        let ge2, asserts =
          eterm_info_to_assertions dbg ge1 studied_term is_let info ret_arg opt_c in
        (* Simplify and filter *)
-       let sasserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
+       let asserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
+       (* Introduce fresh variables for the shadowed ones and substitute *)
+       let ge3, asserts = subst_shadowed_with_abs_in_assertions ge2 asserts  in
        (* Print *)
-       printout_assertions ge2 "ainfo" sasserts;
+       printout_assertions ge3 "ainfo" asserts;
        (), Abort
        end
      else (), Continue
