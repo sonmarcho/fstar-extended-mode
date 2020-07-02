@@ -580,7 +580,6 @@ let mk_cast_info t p_ty exp_ty : cast_info =
   Mkcast_info t p_ty exp_ty
 
 /// Extracts the effectful information from a computation
-// TODO: insert in eterm_info?
 noeq type effect_info = {
   ei_type : effect_type;
   ei_ret_type : type_info;
@@ -607,10 +606,7 @@ let effect_info_to_string c =
 
 /// Effectful term information
 noeq type eterm_info = {
-  etype : effect_type;
-  pre : option term;
-  post : option term;
-  ret_type : type_info;
+  einfo : effect_info;
   (* Head and parameters of the decomposition of the term into a function application *)
   head : term;
   parameters : list cast_info;
@@ -706,8 +702,7 @@ let compute_eterm_info (e:env) (t : term) =
     match opt_einfo with
     | None -> mfail ("compute_eterm_info: failed on: " ^ term_to_string t)
     | Some einfo ->
-      mk_eterm_info einfo.ei_type einfo.ei_pre einfo.ei_post einfo.ei_ret_type
-                    hd parameters
+      mk_eterm_info einfo hd parameters
     end
   with
   | TacticFailure msg ->
@@ -1195,6 +1190,7 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
    * the precondition, the postcondition and the goal *)
   (* First, the return value: returns an updated env, the value to use for
    * the return type and a list of abstract binders *)
+  let einfo = info.einfo in
   let ge0, (v : term), (opt_b : option binder) =
     match bind_var with
     | Some v -> ge, v, None
@@ -1202,8 +1198,8 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
       (* If the studied term is stateless, we can use it directly in the
        * propositions, otherwise we need to introduced a variable for the return
        * type *)
-      if effect_type_is_stateful info.etype then
-        let b = fresh_binder ge.env "__ret" info.ret_type.ty in
+      if effect_type_is_stateful info.einfo.ei_type then
+        let b = fresh_binder ge.env "__ret" einfo.ei_ret_type.ty in
         let bv = bv_of_binder b in
         let tm = pack (Tv_Var bv) in
         genv_push_binder b true None ge, tm, Some b
@@ -1211,7 +1207,7 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
   in
   (* Instantiate the pre and post-conditions by introducing the necessary variables *)
   let ge1, pre_prop, post_prop =
-    pre_post_to_propositions dbg ge0 info.etype v opt_b info.ret_type info.pre info.post in
+    pre_post_to_propositions dbg ge0 einfo.ei_type v opt_b einfo.ei_ret_type einfo.ei_pre einfo.ei_post in
   (* Compute and instantiate the global pre and post-conditions *)
   let ge2, gpre_prop, gpost_prop =
     match opt_c with
@@ -1222,7 +1218,7 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
       (* Precondition, post-condition *)
       (* TODO: not sure about the return type parameter: maybe catch failures *)
       let ge3, gpre_prop, gpost_prop =
-        pre_post_to_propositions dbg ge2 ei.ei_type v opt_b info.ret_type
+        pre_post_to_propositions dbg ge2 ei.ei_type v opt_b einfo.ei_ret_type
                                  ei.ei_pre ei.ei_post in
       (* Filter the pre/post (note that we can't do that earlier because it may
        * prevent ``abs_pre_post_to_propositions`` from succeeding its analysis) *)
@@ -1252,10 +1248,9 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
   let params_props = cast_info_list_to_propositions ge2 info.parameters in
   (* - from the return type *)
   let (ret_values : list term), (ret_binders : list binder) =
-    if E_Lemma? info.etype then ([] <: list term), ([] <: list binder)
+    if E_Lemma? einfo.ei_type then ([] <: list term), ([] <: list binder)
     else [v], (match opt_b with | Some b -> [b] | None -> []) in
-  let ret_refin_prop = opt_mk_app_norm ge2 (get_opt_refinment info.ret_type) ret_values in
-//  opt_term_to_opt_abs_term ge2 (get_opt_refinment info.ret_type) ret_values ret_binders in
+  let ret_refin_prop = opt_mk_app_norm ge2 (get_opt_refinment einfo.ei_ret_type) ret_values in
   (* Concatenate, revert and return *)
   let pres = opt_cons gpre_prop (List.Tot.rev (opt_cons pre_prop params_props)) in
   let posts = opt_cons ret_refin_prop (opt_cons post_prop (opt_cons gpost_prop [])) in
