@@ -361,7 +361,6 @@ let is_total_or_gtotal c =
 /// Whenever we go inside an abstraction, we store how  we instantiated the outer
 /// lambda (in an order reverse to the instantiation order), so that we can correctly
 /// instantiate the pre/post-conditions and type refinements.
-/// TODO: replace binder by bv
 noeq type typ_or_comp =
 | TC_Typ : v:typ -> m:list (bv & bv) -> typ_or_comp
 | TC_Comp : v:comp -> m:list (bv & bv) -> typ_or_comp
@@ -794,12 +793,6 @@ let opt_mk_app_norm ge opt_t params =
   opt_tapply (fun t -> mk_app_norm ge t params) opt_t
 
 /// Perform a variable substitution in a term
-/// TODO: we might have some problems if the variables have dependent types which
-/// reference each other, in which case we might have to reconstruct the whole
-/// term. But I'm not sure, because we won't trypecheck them (we will just print
-/// them).
-/// TODO: write a function which goes through the whole term and reconstructs it.
-/// TODO: replace binder by bv
 val apply_subst : env -> term -> list (bv & term) -> Tac term
 let apply_subst e t subst =
   let bl, vl = unzip subst in
