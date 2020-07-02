@@ -859,7 +859,10 @@ let _typ_to_effect_info (ge : genv) (etype : effect_type) (tinfo : type_info) (m
   let ge2, refin = opt_substitute_free_vars_with_abs ge1 refin in
   ge2, mk_effect_info etype (mk_type_info ty refin) None None
 
-/// Returns the binders introduced 
+/// Converts a ``typ_or_comp`` to an ``effect_info``, introduces abstrac variables
+/// to replace the shadowed variables.
+// TODO: the environment should keep track of such replacements so that we
+// don't introduce several variables for one shadowed variable
 let typ_or_comp_to_effect_info (ge : genv) (c : typ_or_comp) :
   Tac (genv & effect_info) =
   match c with
@@ -1186,7 +1189,16 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
 /// the environment in the return type).
 /// The ``bind_var`` parameter is a variable if the studied term was bound in a let
 /// expression.
-val eterm_info_to_assertions : bool -> genv -> term -> bool -> eterm_info -> option term -> option typ_or_comp -> Tac (genv & assertions)
+val eterm_info_to_assertions :
+     dbg:bool
+  -> ge:genv
+  -> t:term
+  -> is_let:bool (* the term is the bound expression in a let binding *)
+  -> info:eterm_info
+  -> opt_bind_var:option term (* if let binding: the bound var *)
+  -> opt_c:option typ_or_comp ->
+  Tac (genv & assertions)
+
 let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
   print_dbg dbg "[> eterm_info_to_assertions";
   (* Introduce additional variables to instantiate the return type refinement,
@@ -1208,13 +1220,14 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
         genv_push_binder ge b true None, tm, Some b
       else ge, t, None
   in
-  (* Instantiate the pre and post-conditions by introducing the necessary variables *)
+  (* Generate propositions from the pre and the post-conditions *)
   let ge1, pre_prop, post_prop =
-    pre_post_to_propositions dbg ge0 einfo.ei_type v opt_b einfo.ei_ret_type einfo.ei_pre einfo.ei_post in
-  (* Compute and instantiate the global pre and post-conditions *)
-  let ge2, gpre_prop, gpost_prop =
-    match opt_c with
-    | None -> ge1, None, None
+    pre_post_to_propositions dbg ge0 einfo.ei_type v opt_b einfo.ei_ret_type
+                             einfo.ei_pre einfo.ei_post in
+  (* Generate propositions from the target computation (pre, post, type cast) *)
+  let ge2, gpre_prop, gcast_props, gpost_prop =
+    begin match opt_c with
+    | None -> ge1, None, [], None
     | Some c ->
       let ge2, ei = typ_or_comp_to_effect_info ge1 c in
       print_dbg dbg (effect_info_to_string ei);
@@ -1236,16 +1249,27 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
         | Some pre ->
           let abs_vars = abs_free_in ge3 pre in
           if Cons? abs_vars then None else gpre_prop
-        end <: Tac (option proposition)
+        end
       in
       (* The global post-condition is to be used only if we are not analyzing
        * a let expression *)
       let gpost_prop = if is_let then None else gpost_prop in
+      (* Generate propositions for the type cast *)
+      let gcast = mk_cast_info v (Some einfo.ei_ret_type) (Some ei.ei_ret_type) in
+      let gcast_props = cast_info_to_propositions ge3 gcast in
+      let subst_free_vars (ge,pl) t =
+        let ge', t' = substitute_free_vars_with_abs ge t in
+        ge', t'::pl
+      in
+      let ge4, gcast_props = fold_left subst_free_vars (ge3, []) gcast_props in
+      let gcast_props = List.Tot.rev gcast_props in
+      (* Some debugging output *)
+      (**) print_dbg dbg ("global pre: " ^ option_to_string term_to_string gpre_prop);
+      (**) print_dbg dbg ("global post: " ^ option_to_string term_to_string gpost_prop);
       (* Return type: TODO *)
-      ge3, gpre_prop, gpost_prop
+      ge4, gpre_prop, gcast_props, gpost_prop
+    end <: Tac _
   in
-  (**) print_dbg dbg ("global pre: " ^ option_to_string term_to_string gpre_prop);
-  (**) print_dbg dbg ("global post: " ^ option_to_string term_to_string gpost_prop);
   (* Generate the propositions: *)
   (* - from the parameters' cast info *)
   let params_props = cast_info_list_to_propositions ge2 info.parameters in
@@ -1256,7 +1280,8 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
   let ret_refin_prop = opt_mk_app_norm ge2 (get_opt_refinment einfo.ei_ret_type) ret_values in
   (* Concatenate, revert and return *)
   let pres = opt_cons gpre_prop (List.Tot.rev (opt_cons pre_prop params_props)) in
-  let posts = opt_cons ret_refin_prop (opt_cons post_prop (opt_cons gpost_prop [])) in
+  let posts = opt_cons ret_refin_prop (opt_cons post_prop
+               (List.append gcast_props (opt_cons gpost_prop []))) in
   ge2, { pres = pres; posts = posts }
 
 (**** Step 3 *)
@@ -1554,7 +1579,7 @@ let pp_test1 () : Tot nat =
   else 0
 
 [@(postprocess_with (pp_focused_term false))]
-let pp_test2 () : Tot nat =
+let pp_test2 () : Tot int =
   let x = 4 in
   let y = 9 in
   let z = 11 in
@@ -1606,10 +1631,10 @@ let pp_test5 () :
 
 [@(postprocess_with (pp_focused_term true))]
 let pp_test6 () :
-  ST.Stack nat
+  ST.Stack (n:nat{n % 2 = 0})
   (requires (fun _ -> True))
   (ensures (fun _ n _ -> n >= 2)) =
-  let x = 2 in
+  let x : int = 2 in
   let _ = focus_on_term in
   x
 
