@@ -590,27 +590,20 @@ noeq type effect_info = {
 
 let mk_effect_info = Mkeffect_info
 
-// TODO: merge with ``effect_info``
-noeq type abs_effect_info = {
-  cc_type : effect_type;
-  cc_pre : option proposition;
-  cc_ret_type : option term;
-  cc_ret_refin : option proposition; (* the stored term should have type: return_type -> Type *)
-  cc_post : option proposition;
-}
+val type_info_to_string : type_info -> Tot string
+let type_info_to_string info =
+  "Mktype_info (" ^
+  term_to_string info.ty ^ ") (" ^
+  option_to_string term_to_string info.refin ^ ")"
 
 /// Convert a ``typ_or_comp`` to cast information
-val abs_effect_info_to_string : abs_effect_info -> Tot string
-let abs_effect_info_to_string c =
-  "mk_abs_effect_info " ^
-  effect_type_to_string c.cc_type ^ " (" ^
-  option_to_string term_to_string c.cc_pre ^ ") (" ^
-  option_to_string term_to_string c.cc_ret_type ^ ") (" ^
-  option_to_string term_to_string c.cc_ret_refin ^ ") (" ^
-  option_to_string term_to_string c.cc_post ^ ")"
-
-let mk_abs_effect_info = Mkabs_effect_info
-
+val effect_info_to_string : effect_info -> Tot string
+let effect_info_to_string c =
+  "Mkeffect_info " ^
+  effect_type_to_string c.ei_type ^ " (" ^
+  option_to_string term_to_string c.ei_pre ^ ") (" ^
+  type_info_to_string c.ei_ret_type ^ ") (" ^
+  option_to_string term_to_string c.ei_post ^ ")"
 
 /// Effectful term information
 noeq type eterm_info = {
@@ -859,26 +852,26 @@ let opt_substitute_free_vars_with_abs ge opt_t =
     let ge', t' = substitute_free_vars_with_abs ge t in
     ge', Some t'
 
-/// Auxiliary function: convert type information to a ``abs_effect_info``
-let _typ_to_abs_effect_info (ge : genv) (etype : effect_type) (tinfo : type_info) (m : list (binder & binder)) :
-  Tac (genv & abs_effect_info) =
-  let rty = get_rawest_type tinfo in
+/// Auxiliary function: convert type information to a ``effect_info``
+let _typ_to_effect_info (ge : genv) (etype : effect_type) (tinfo : type_info) (m : list (binder & binder)) :
+  Tac (genv & effect_info) =
+  let ty = tinfo.ty in
   let refin = get_opt_refinment tinfo in
-  let ge1, rty = substitute_free_vars_with_abs ge rty in
+  let ge1, ty = substitute_free_vars_with_abs ge ty in
   let ge2, refin = opt_substitute_free_vars_with_abs ge1 refin in
-  ge2, mk_abs_effect_info etype None (Some rty) refin None
+  ge2, mk_effect_info etype (mk_type_info ty refin) None None
 
 /// Returns the binders introduced 
-let typ_or_comp_to_abs_effect_info (ge : genv) (c : typ_or_comp) :
-  Tac (genv & abs_effect_info) =
+let typ_or_comp_to_effect_info (ge : genv) (c : typ_or_comp) :
+  Tac (genv & effect_info) =
   match c with
   | TC_Typ ty m ->
     let tinfo = get_type_info_from_type ty in
-    _typ_to_abs_effect_info ge E_Total tinfo m
+    _typ_to_effect_info ge E_Total tinfo m
   | TC_Comp cv m ->
     let opt_einfo = comp_to_effect_info cv in
     match opt_einfo with
-    | None -> mfail ("typ_or_comp_to_abs_effect_info failed on: " ^ acomp_to_string cv)
+    | None -> mfail ("typ_or_comp_to_effect_info failed on: " ^ acomp_to_string cv)
     | Some einfo ->
       let subst_src, subst_tgt = unzip m in
       let subst_tgt = map (fun x -> pack (Tv_Var (bv_of_binder x))) subst_tgt in
@@ -892,8 +885,8 @@ let typ_or_comp_to_abs_effect_info (ge : genv) (c : typ_or_comp) :
       let post = opt_subst einfo.ei_post in
       let ge1, pre = opt_substitute_free_vars_with_abs ge pre in
       let ge2, post = opt_substitute_free_vars_with_abs ge1 post in
-      let ge3, cci0 = _typ_to_abs_effect_info ge2 einfo.ei_type einfo.ei_ret_type m in
-      ge3, { cci0 with cc_pre = pre; cc_post = post }
+      let ge3, cci0 = _typ_to_effect_info ge2 einfo.ei_type einfo.ei_ret_type m in
+      ge3, { cci0 with ei_pre = pre; ei_post = post }
 
 (**** Step 2 *)
 /// The retrieved type refinements and post-conditions are not instantiated (they
@@ -1189,59 +1182,6 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
   print_dbg dbg "[> pre_post_to_propositions: end";
   ge3, pre_prop, post_prop
 
-(* /// Instantiate optional pre and post conditions which may contain abstracted
-/// parameters
-val abs_pre_post_to_propositions :
-     dbg:bool
-  -> ge:genv
-  -> etype:effect_type
-  -> ret_value:term
-  -> ret_abs_binder:option binder
-  -> ret_type:type_info
-  -> opt_pre:option term
-  -> opt_post:option term
-  -> Tac (genv & option proposition & option proposition)
-
-let abs_pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt_post =
-  print_dbg dbg "[> abs_pre_post_to_propositions: begin";
-  (* Start by normalizing the pre and the post so that the abstractions get
-   * simplified (we will put them back later) *)
-  let simpl ge opt_p : Tac (option proposition) = 
-    match opt_p with
-    | None -> None
-    | Some p -> Some ({ p with body = norm_term_env ge.env [] p.body })
-  in
-  let get_opt_body opt_p : Tac (option term) =
-    match opt_p with
-    | None -> None
-    | Some p -> Some p.body
-  in
-  let get_opt_abs opt_p : Tac (list binder) =
-    match opt_p with
-    | None -> []
-    | Some p -> p.abs
-  in
-  let opt_pre1 = simpl ge0 opt_pre in
-  let opt_post1 = simpl ge0 opt_post in
-  (* Instantiate the remaining parameters *)
-  let ge1, opt_pre2, opt_post2 = 
-    pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type
-                             (get_opt_body opt_pre1) (get_opt_body opt_post1) in
-  (* Reintroduce the abstracted parameters *)
-  let opt_pre3 = simpl ge1 opt_pre2 in
-  let pre_abs1 = get_opt_abs opt_pre in
-  let pre_abs2 = get_opt_abs opt_pre2 in
-  let pre_abs3 = List.Tot.append pre_abs1 pre_abs2 in
-  let opt_pre4 = opt_term_to_opt_abs_term ge1 (get_opt_body opt_pre3) [] pre_abs3 in
-  let opt_post3 = simpl ge1 opt_post2 in
-  let post_abs1 = get_opt_abs opt_post in
-  let post_abs2 = get_opt_abs opt_post2 in
-  let post_abs3 = List.Tot.append post_abs1 post_abs2 in
-  let opt_post4 = opt_term_to_opt_abs_term ge1 (get_opt_body opt_post3) [] post_abs3 in
-  (* return *)
-  print_dbg dbg "[> abs_pre_post_to_propositions: end";
-  ge1, opt_pre4, opt_post4 *)
-
 (* TODO HERE *)
 /// Convert effectful type information to a list of propositions. May have to
 /// introduce additional binders for the preconditions/postconditions/goal (hence
@@ -1277,13 +1217,13 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
     match opt_c with
     | None -> ge1, None, None
     | Some c ->
-      let ge2, ci = typ_or_comp_to_abs_effect_info ge1 c in
-      print_dbg dbg (abs_effect_info_to_string ci);
+      let ge2, ei = typ_or_comp_to_effect_info ge1 c in
+      print_dbg dbg (effect_info_to_string ei);
       (* Precondition, post-condition *)
       (* TODO: not sure about the return type parameter: maybe catch failures *)
       let ge3, gpre_prop, gpost_prop =
-        pre_post_to_propositions dbg ge2 ci.cc_type v opt_b info.ret_type
-                                 ci.cc_pre ci.cc_post in
+        pre_post_to_propositions dbg ge2 ei.ei_type v opt_b info.ret_type
+                                 ei.ei_pre ei.ei_post in
       (* Filter the pre/post (note that we can't do that earlier because it may
        * prevent ``abs_pre_post_to_propositions`` from succeeding its analysis) *)
       (* The global pre-condition is to be used only if none of its variables
@@ -1292,7 +1232,7 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
       let gpre_prop =
         (* Note that we check the previous value of the pre: some abstract
          * state variables might have been introduced since then *)
-        begin match ci.cc_pre with
+        begin match ei.ei_pre with
         | None -> None
         | Some pre ->
           let abs_vars = abs_free_in ge3 pre in
