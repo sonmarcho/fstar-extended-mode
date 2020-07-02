@@ -835,7 +835,8 @@ let rec _generate_shadowed_subst (ge:genv) (t:term) (bvl : list bv) :
     | _ -> mfail "_subst_with_fresh_vars: not a Tv_Abs"
 
 let generate_shadowed_subst ge =
-  let bvl = ge.svars in
+  (* We need to replace the variables starting with the oldest *)
+  let bvl = List.Tot.rev ge.svars in
   let bl = List.Tot.map mk_binder bvl in
   let dummy = mk_abs (`()) bl in
   _generate_shadowed_subst ge dummy bvl
