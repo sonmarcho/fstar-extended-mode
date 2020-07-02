@@ -496,13 +496,6 @@ as the result returned by the post-processing function called on the data."
 ;; We duplicate the assertions structure from the F* side
 (cl-defstruct assertions pres posts)
 
-;; Below, we mimic (approximate) the meta structures defined on the F* side
-;; We merge the rtype_info and type_info structures
-;;(cl-defstruct type-info ty rty-raw rty-refin)
-;; For param_info: we remove the qualif field and add a types-comparison field
-;;(cl-defstruct param-info term p-ty e-ty types-comparison)
-;;(cl-defstruct eterm-info etype pre post ret-type head parameters goal)
-
 (defun type-info-rawest-type (ty)
   "Returns the 'rawest' type from a type-info"
   (or (type-info-rty-raw ty) (type-info-ty ty)))
