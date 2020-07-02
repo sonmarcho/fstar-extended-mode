@@ -31,6 +31,14 @@ let rec mk_abs (t : term) (args : list binder) : Tac term (decreases args) =
     let t' = mk_abs t args' in
     pack (Tv_Abs a t')
 
+val bv_eq : bv -> bv -> Tot bool
+let bv_eq (bv1 bv2 : bv) =
+  let bvv1 = inspect_bv bv1 in
+  let bvv2 = inspect_bv bv2 in
+  (* We don't check for type equality: the fact that no two different binders
+   * have the same name and index is an invariant which must be enforced *)
+  bvv1.bv_ppname = bvv2.bv_ppname && bvv1.bv_index = bvv2.bv_index
+
 (*** General utilities *)
 // TODO: use more
 val opt_apply (#a #b : Type) (f : a -> Tot b) (x : option a) : Tot (option b)
@@ -72,8 +80,6 @@ let mfail str =
 
 /// A map linking variables to terms. For now we use a list to define it, because
 /// there shouldn't be too many bindings.
-// TODO: maybe we should deal with abstract variables inside the bind_map,
-// rather than carrying them around in the terms themselves.
 /// The boolean indicates whether or not the variable is considered abstract. We
 /// often need to introduce variables which don't appear in the user context, for
 /// example when we need to deal with a postcondition for Stack or ST, which handles
@@ -88,22 +94,22 @@ let mfail str =
 /// the appropriate command to get a valid assertion.
 type bind_map = list (bv & bool & term)
 
-let bind_map_push (b:bv) (abs:bool) (t:term) (m:bind_map) = (b,abs,t)::m
-let bind_map_push_conc (b:bv) (t:term) (m:bind_map) = (b,false,t)::m
-let bind_map_push_abs (b:bv) (t:term) (m:bind_map) = (b,true,t)::m
+let bind_map_push (m:bind_map) (b:bv) (abs:bool) (t:term) = (b,abs,t)::m
+let bind_map_push_conc (m:bind_map) (b:bv) (t:term) = (b,false,t)::m
+let bind_map_push_abs (m:bind_map) (b:bv) (t:term) = (b,true,t)::m
 
-let rec bind_map_get (b:bv) (m:bind_map) : Tot (option (bool & term)) =
+let rec bind_map_get (m:bind_map) (b:bv) : Tot (option (bool & term)) =
   match m with
   | [] -> None
   | (b',abs,t)::m' ->
-    if compare_bv b b' = Order.Eq then Some (abs, t) else bind_map_get b m'
+    if compare_bv b b' = Order.Eq then Some (abs, t) else bind_map_get m' b
 
-let rec bind_map_get_from_name (b:string) (m:bind_map) : Tot (option (bv & bool & term)) =
+let rec bind_map_get_from_name (m:bind_map) (b:string) : Tot (option (bv & bool & term)) =
   match m with
   | [] -> None
   | (b',abs,t)::m' ->
     let b'v = inspect_bv b' in
-    if b'v.bv_ppname = b then Some (b',abs,t) else bind_map_get_from_name b m'
+    if b'v.bv_ppname = b then Some (b',abs,t) else bind_map_get_from_name m' b
 
 noeq type genv =
 {
@@ -117,29 +123,29 @@ let mk_genv env bmap : genv =
 
 /// Push a binder to a ``genv``. Optionally takes a ``term`` which provides the
 /// term the binder is bound to (in a `let _ = _ in` construct for example).
-let genv_push_bv (b:bv) (abs:bool) (t:option term) (e:genv) : Tac genv =
+let genv_push_bv (ge:genv) (b:bv) (abs:bool) (t:option term) : Tac genv =
   match t with
   | Some t' ->
     let br = mk_binder b in
-    let e' = push_binder e.env br in
-    let bmap' = bind_map_push b abs t' e.bmap in
+    let e' = push_binder ge.env br in
+    let bmap' = bind_map_push ge.bmap b abs t' in
     mk_genv e' bmap'
   | None ->
     let br = mk_binder b in
-    let e' = push_binder e.env br in
-    let bmap' = bind_map_push b abs (pack (Tv_Var b)) e.bmap in
+    let e' = push_binder ge.env br in
+    let bmap' = bind_map_push ge.bmap b abs (pack (Tv_Var b)) in
     mk_genv e' bmap'
 
-let genv_push_binder (b:binder) (abs:bool) (t:option term) (e:genv) : Tac genv =
+let genv_push_binder (ge:genv) (b:binder) (abs:bool) (t:option term) : Tac genv =
   match t with
   | Some t' ->
-    let e' = push_binder e.env b in
-    let bmap' = bind_map_push (bv_of_binder b) abs t' e.bmap in
+    let e' = push_binder ge.env b in
+    let bmap' = bind_map_push ge.bmap (bv_of_binder b) abs t' in
     mk_genv e' bmap'
   | None ->
-    let e' = push_binder e.env b in
+    let e' = push_binder ge.env b in
     let bv = bv_of_binder b in
-    let bmap' = bind_map_push bv abs (pack (Tv_Var bv)) e.bmap in
+    let bmap' = bind_map_push ge.bmap bv abs (pack (Tv_Var bv)) in
     mk_genv e' bmap'
 
 
@@ -147,7 +153,7 @@ let genv_push_binder (b:binder) (abs:bool) (t:option term) (e:genv) : Tac genv =
 let bv_is_shadowed (ge : genv) (bv : bv) : Tot bool =
   let bl = List.Tot.map (fun (x, _, _) -> x) ge.bmap in
   let bvv = inspect_bv bv in
-  let opt_res = bind_map_get_from_name bvv.bv_ppname ge.bmap in
+  let opt_res = bind_map_get_from_name ge.bmap bvv.bv_ppname in
   match opt_res with
   | None -> false (* Actually shouldn't happen if the environment was correctly updated *)
   | Some (bv', _, _) ->
@@ -165,6 +171,21 @@ let find_shadowed_bvs (ge : genv) (bl : list bv) : Tot (list (bv & bool)) =
 let find_shadowed_binders (ge : genv) (bl : list binder) : Tot (list (binder & bool)) =
   List.Tot.map (fun b -> b, binder_is_shadowed ge b) bl
 
+
+val bv_is_abstract : genv -> bv -> Tot bool
+let bv_is_abstract ge bv =
+  match bind_map_get ge.bmap bv with
+  | None -> false
+  | Some (abs, _) -> abs
+
+val binder_is_abstract : genv -> binder -> Tot bool
+let binder_is_abstract ge b =
+  bv_is_abstract ge (bv_of_binder b)
+
+val genv_abstract_bvs : genv -> Tot (list bv)
+let genv_abstract_bvs ge =
+  let abs = List.Tot.filter (fun (_, abs, _) -> abs) ge.bmap in
+  List.Tot.map (fun (bv, _, _) -> bv) abs
 
 /// Versions of ``fresh_bv`` and ``fresh_binder`` inspired by the standard library
 /// We make sure the name is fresh because we need to be able to generate valid code
@@ -192,7 +213,7 @@ let push_fresh_binder (e : env) (basename : string) (ty : typ) : Tac (binder & e
 
 let genv_push_fresh_binder (ge : genv) (basename : string) (ty : typ) : Tac (binder & genv) =
   let b = fresh_binder ge.env basename ty in
-  let ge' = genv_push_binder b true None ge in
+  let ge' = genv_push_binder ge b true None in
   b, ge'
 
 /// Some constants
@@ -417,7 +438,7 @@ let rec explore_term dbg #a f x ge c t =
         explore_term dbg f x1 ge None hd
       else x1, convert_ctrl_flag flag1
     | Tv_Abs br body ->
-      let ge1 = genv_push_binder br false None ge in
+      let ge1 = genv_push_binder ge br false None in
       let e2, c1 = abs_update_opt_typ_or_comp br c ge1.env in
       let ge2 = { ge1 with env = e2 } in
       explore_term dbg f x0 ge2 c1 body
@@ -427,7 +448,7 @@ let rec explore_term dbg #a f x ge c t =
       let bvv = inspect_bv bv in
       let x1, flag1 = explore_term dbg f x0 ge None bvv.bv_sort in
       if flag1 = Continue then
-        let ge1 = genv_push_bv bv false None ge in
+        let ge1 = genv_push_bv ge bv false None in
         explore_term dbg f x1 ge1 None ref
       else x1, convert_ctrl_flag flag1
     | Tv_Const _ -> x0, Continue
@@ -437,7 +458,7 @@ let rec explore_term dbg #a f x ge c t =
       let x1, flag1 = explore_term dbg f x0 ge None def in
       if flag1 = Continue then
         (* Explore the next subterm *)
-        let ge1 = genv_push_bv bv false (Some def) ge in
+        let ge1 = genv_push_bv ge bv false (Some def) in
         explore_term dbg f x0 ge1 c body
       else x1, convert_ctrl_flag flag1
     | Tv_Match scrutinee branches ->
@@ -486,11 +507,11 @@ and explore_pattern dbg #a f x ge pat =
     in
     fold_left explore_pat (ge, x, Continue) patterns
   | Pat_Var bv | Pat_Wild bv ->
-    let ge1 = genv_push_bv bv false None ge in
+    let ge1 = genv_push_bv ge bv false None in
     ge1, x, Continue
   | Pat_Dot_Term bv t ->
     (* TODO: I'm not sure what this is *)
-    let ge1 = genv_push_bv bv false None ge in
+    let ge1 = genv_push_bv ge bv false None in
     ge1, x, Continue
 
 /// Returns the list of variables free in a term
@@ -505,7 +526,7 @@ let free_in t =
     | Tv_Var bv | Tv_BVar bv ->
       let bvv = inspect_bv bv in
       (* Check if the binding was not introduced during the traversal *)
-      begin match bind_map_get_from_name bvv.bv_ppname ge.bmap with
+      begin match bind_map_get_from_name ge.bmap bvv.bv_ppname with
       | None ->
         (* Check if we didn't already count the binding *)
         let fl' = if Some? (List.Tot.tryFind (same_name bv) fl) then fl else bv :: fl in
@@ -518,29 +539,6 @@ let free_in t =
   let ge = mk_genv e [] in
   List.Tot.rev (fst (explore_term false update_free [] ge None t))
 
-// TODO: make the parameter order consistent
-val bv_is_abstract : genv -> bv -> Tot bool
-let bv_is_abstract ge bv =
-  match bind_map_get bv ge.bmap with
-  | None -> false
-  | Some (abs, _) -> abs
-
-val binder_is_abstract : genv -> binder -> Tot bool
-let binder_is_abstract ge b =
-  bv_is_abstract ge (bv_of_binder b)
-
-val genv_abstract_bvs : genv -> Tot (list bv)
-let genv_abstract_bvs ge =
-  let abs = List.Tot.filter (fun (_, abs, _) -> abs) ge.bmap in
-  List.Tot.map (fun (bv, _, _) -> bv) abs
-
-/// We don't check for type equality
-val bv_eq : bv -> bv -> Tot bool
-let bv_eq (bv1 bv2 : bv) =
-  let bvv1 = inspect_bv bv1 in
-  let bvv2 = inspect_bv bv2 in
-  bvv1.bv_ppname = bvv2.bv_ppname && bvv1.bv_index = bvv2.bv_index
-
 /// Returns the list of abstract variables appearing in a term, in the order in
 /// which they were introduced in the context.
 val abs_free_in : genv -> term -> Tac (list bv)
@@ -549,8 +547,6 @@ let abs_free_in ge t =
   let absl = List.rev (genv_abstract_bvs ge) in
   let is_free_in_term bv =
     Some? (List.Tot.find (bv_eq bv) fvl)
-//  let is_abs bv =
-//    Some? (List.Tot.find (bv_eq bv) absl)
   in
   let absfree = List.Tot.filter is_free_in_term absl in
   absfree
@@ -1202,7 +1198,7 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
         let b = fresh_binder ge.env "__ret" einfo.ei_ret_type.ty in
         let bv = bv_of_binder b in
         let tm = pack (Tv_Var bv) in
-        genv_push_binder b true None ge, tm, Some b
+        genv_push_binder ge b true None, tm, Some b
       else ge, t, None
   in
   (* Instantiate the pre and post-conditions by introducing the necessary variables *)
@@ -1450,8 +1446,9 @@ let analyze_effectful_term dbg () ge opt_c t =
          begin match inspect body with
          | Tv_Let _ _ fbv fterm _ ->
            let ret_arg = pack (Tv_Var fbv) in
-           genv_push_bv fbv false None ge, fterm, compute_eterm_info ge.env fterm, Some ret_arg, true
-         | _ -> ge, body, compute_eterm_info ge.env body, None, false
+           (genv_push_bv ge fbv false None, fterm,
+            compute_eterm_info ge.env fterm, Some ret_arg, true)
+         | _ -> (ge, body, compute_eterm_info ge.env body, None, false)
          end
        in
        (* Instantiate the refinements *)
