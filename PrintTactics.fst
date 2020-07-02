@@ -433,7 +433,14 @@ let rec explore_term dbg #a f x ge c t =
     begin match tv with
     | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> x0, Continue
     | Tv_App hd (a,qual) ->
-      let x1, flag1 = explore_term dbg f x0 ge None a in
+      (* Explore the argument - we update the target typ_or_comp when doing so *)
+      let a_c =
+        match safe_tcc ge.env a with
+        | None -> None
+        | Some cp -> Some (TC_Comp cp [])
+      in
+        let x1, flag1 = explore_term dbg f x0 ge a_c a in
+      (* Explore the head *)
       if flag1 = Continue then
         explore_term dbg f x1 ge None hd
       else x1, convert_ctrl_flag flag1
