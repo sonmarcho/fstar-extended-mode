@@ -493,12 +493,15 @@ value) in the region delimited by BEG and END. Returns a subexpr."
 as the result returned by the post-processing function called on the data."
   data pp-res)
 
+;; We duplicate the assertions structure from the F* side
+(cl-defstruct assertions pres posts)
+
 ;; Below, we mimic (approximate) the meta structures defined on the F* side
 ;; We merge the rtype_info and type_info structures
-(cl-defstruct type-info ty rty-raw rty-refin)
+;;(cl-defstruct type-info ty rty-raw rty-refin)
 ;; For param_info: we remove the qualif field and add a types-comparison field
-(cl-defstruct param-info term p-ty e-ty types-comparison)
-(cl-defstruct eterm-info etype pre post ret-type head parameters goal)
+;;(cl-defstruct param-info term p-ty e-ty types-comparison)
+;;(cl-defstruct eterm-info etype pre post ret-type head parameters goal)
 
 (defun type-info-rawest-type (ty)
   "Returns the 'rawest' type from a type-info"
@@ -619,98 +622,58 @@ Returns the number of lines."
                             (apply-partially 'meta-info-post-process)
                             LIMIT))
 
-(defun extract-type-info-from-buffer (prefix id &optional no-error LIMIT)
-  "Extracts type information from the *Messages* buffer. Returns a ``type-info``
-structure."
-  (log-dbg "extract-type-info-from-buffer:\n- prefix: %s\n- id: %s" prefix id)
-  (let ((id-ty (concat id ":ty"))
-        (id-rty-raw (concat id ":rty_raw"))
-        (id-rty-refin (concat id ":rty_refin"))
-        extract)
-    (defun extract (id)
-            (extract-term-from-buffer prefix id no-error LIMIT))
-    (let ((ty (extract id-ty))
-          (rty-raw (extract id-rty-raw))
-          (rty-refin (extract id-rty-refin)))
-    (make-type-info :ty ty :rty-raw rty-raw :rty-refin rty-refin))))
+(defun extract-assertion-from-buffer (prefix id index &optional no-error LIMIT)
+  "Extracts an assertion from the current buffer. Returns a meta-info structure."
+  (log-dbg "extract-assertion-from-buffer:\n- prefix: %s\n- id: %s\n- index: %s"
+           prefix id (number-to-string index))
+  (let* ((full-id (concat id (number-to-string index))))
+    (extract-term-from-buffer prefix full-id no-error LIMIT)))
 
-(defun extract-param-info-from-buffer (prefix id index
-                                       &optional no-error LIMIT)
-  "Extracts parameter information from the *Messages* buffer. Returns a param-info
-structure."
-  (log-dbg "extract-param-info-from-buffer:\n- prefix: %s\n- id: %s\n- index: %s"
-                       prefix id (number-to-string index))
-  (let* ((pid (concat id ":param" (number-to-string index)))
-         (id-term (concat pid ":term"))
-         (id-p-ty (concat pid ":p_ty"))
-         (id-e-ty (concat pid ":e_ty"))
-         (id-types-comparison (concat pid ":types_comparison"))
-         extract-string extract-term extract-type)
-    (defun extract-string (id)
-      (extract-string-from-buffer prefix id no-error LIMIT))
-    (defun extract-term (id)
-      (extract-term-from-buffer prefix id no-error LIMIT))
-    (defun extract-type (id)
-      (extract-type-info-from-buffer prefix id no-error LIMIT))
-    (let ((term (extract-term id-term))
-          (p-ty (extract-type id-p-ty))
-          (e-ty (extract-type id-e-ty))
-          (types-comparison (extract-string id-types-comparison)))
-    (make-param-info :term term :p-ty p-ty :e-ty e-ty :types-comparison types-comparison))))
-
-(defun extract-param-info-list-from-buffer (prefix id index num
-                                                 &optional no-error LIMIT)
-  "Extract a given number of parameters as a list of param-info."
-  (log-dbg "extract-param-info-list-from-buffer:\n\
+(defun extract-assertion-list-from-buffer (prefix id index num
+                                           &optional no-error LIMIT)
+  "Extract a given number of assertions as a list of meta-info."
+  (log-dbg "extract-assertion-list-from-buffer:\n\
 - prefix: %s\n- id: %s\n- index: %s\n- num: "
            prefix id (number-to-string index) (number-to-string num))
   (if (>= index num) nil
     (let ((param nil) (params nil))
-      ;; Extract (forward) the parameter given by 'index'
+      ;; Extract (forward) the assertion given by 'index'
       (setq param
-            (extract-param-info-from-buffer prefix id index no-error LIMIT))
+            (extract-assertion-from-buffer prefix id index no-error LIMIT))
       ;; Recursive call
       (setq params
-            (extract-param-info-list-from-buffer prefix id (+ index 1) num
-                                                 no-error LIMIT))
+            (extract-assertion-list-from-buffer prefix id (+ index 1) num
+                                                no-error LIMIT))
       (cons param params))))
 
-(defun extract-parameters-from-buffer (prefix id
-                                       &optional no-error LIMIT)
-  "Extracts parameters information from the *Messages* buffer. Returns a list of
-param-info"
-  (log-dbg "extract-parameters-from-buffer:\n\
+(defun extract-assertion-num-and-list-from-buffer (prefix id
+                                                   &optional no-error LIMIT)
+  "Reads how many assertions to extract from the current buffer, then
+extracts those assertions."
+  (log-dbg "extract-assertion-num-and-list-from-buffer:\n\
 - prefix: %s\n- id: %s" prefix id)
-  ;; Extract the number of messages
-  (let ((id-num (concat id ":num")))
+  ;; Extract the number of assertions
+  (let ((id-num (concat id ":num"))
+        (id-prop (concat id ":prop")))
     (setq num-data (extract-string-from-buffer prefix id-num no-error LIMIT))
     (setq num (string-to-number (meta-info-data num-data)))
-    (log-dbg "> extracting %s parameters" num)
+    (log-dbg "> extracting %s terms" num)
     ;; Extract the proper number of parameters
-    (extract-param-info-list-from-buffer prefix id 0 num no-error
-                                         LIMIT)))
+    (extract-assertion-list-from-buffer prefix id-prop 0 num no-error
+                                        LIMIT)))
 
-(defun extract-eterm-info-from-buffer (prefix id &optional no-error LIMIT)
-  "Extracts effectful term information from the current buffer and returns a
-eterm-info structure."
-  (log-dbg "extract-eterm-info-from-buffer:\n\
+(defun extract-assertions-from-buffer (prefix id
+                                                   &optional no-error LIMIT)
+  "Extracts an assertion structure from the current buffer"
+  (log-dbg "extract-assertions-from-buffer:\n\
 - prefix: %s\n- id: %s" prefix id)
-  (let (extract-type extrac-term extract-parameters)
-    (defun extract-type (id)
-      (extract-type-info-from-buffer prefix id no-error LIMIT))
-    (defun extract-term (id)
-      (extract-term-from-buffer prefix id no-error LIMIT))
-    (defun extract-parameters (id)
-      (extract-parameters-from-buffer prefix id no-error LIMIT))
-    (let ((etype (extract-term (concat id ":etype")))
-          (pre (extract-term (concat id ":pre")))
-          (post (extract-term (concat id ":post")))
-          (ret-type (extract-type (concat id ":ret_type")))
-          (parameters (extract-parameters (concat id ":parameters")))
-          (goal (extract-term (concat id ":goal"))))
-      ;; Return
-      (make-eterm-info :etype etype :pre pre :post post :ret-type ret-type
-                       :parameters parameters :goal goal))))
+  ;; Extract the number of assertions
+  (let ((id-pres (concat id ":pres"))
+        (id-posts (concat id ":posts"))
+        pres posts)
+    (setq pres (extract-assertion-num-and-list-from-buffer prefix id-pres no-error LIMIT))
+    (setq posts (extract-assertion-num-and-list-from-buffer prefix id-posts no-error LIMIT))
+    (make-assertions :pres pres :posts posts)))
 
 (defun copy-data-from-messages-to-buffer (beg-delimiter end-delimiter
                                           include-delimiters dest-buffer
@@ -785,13 +748,13 @@ buffer."
       ;; Return the new end of the region
       (+ (point) new-end)))
 
-(defun extract-eterm-info-from-messages (prefix id &optional process-buffer no-error
+(defun extract-assertions-from-messages (prefix id &optional process-buffer no-error
                                          clear-process-buffer)
-  "Extracts effectful term information from the *Messages* buffer. Returns an
-eterm-info structure. process-buffer is the buffer to use to copy and process
-the raw data (*fstar-data1* by default)."
+  "Extracts assertions from the *Messages* buffer. Returns an assertions structure.
+process-buffer is the buffer to use to copy and process the raw data
+(*fstar-data1* by default)."
   (setq-default process-buffer fstar-temp-buffer2)
-  (log-dbg "extract-eterm-info-from-messages:\n\
+  (log-dbg "extract-assertions-from-messages:\n\
 - prefix: %s\n- id: %s\n- process buffer: '%s'\n" prefix id process-buffer)
   (let ((prev-buffer (current-buffer))
         (region nil)
@@ -818,7 +781,7 @@ the raw data (*fstar-data1* by default)."
         ;; Clean
         (clean-data-from-messages)
         ;; Extract the eterm-info
-        (setq result (extract-eterm-info-from-buffer prefix id no-error)))
+        (setq result (extract-assertions-from-buffer prefix id no-error)))
       ;; Switch back to the original buffer
       (switch-to-buffer prev-buffer)
       ;; Return
@@ -913,7 +876,6 @@ refinement), if necessary."
         (generate-assert-from-term indent-str nil (type-info-rty-refin e-ty))
         ))))
 
-;; TODO HERE
 (defun insert-assert-pre-post--continuation (indent-str p1 p2 PARSE_RESULT overlay
                                              status response)
   "The continuation function called once F* returns. If F* succeeded, extracts
@@ -935,33 +897,18 @@ refinement), if necessary."
     ;;
     ;; Extract the data. Note that we add two spaces to the indentation, because
     ;; if we need to indent the data, it is because it will be in an assertion.
-    (setq info (extract-eterm-info-from-messages "eterm_info" ""
-                                                 fstar-temp-buffer2 t t))
-    ;; Print the information
-    ;; - utilities
-    (let* ((indent2-str (concat indent-str "  "))
-           (indent3-str (concat indent-str "   "))
-           (bterm (subexpr-bterm PARSE_RESULT))
-           ;; TODO: check function names
-           insert-update-shift generate-assert generate-param-assert)
-      ;; - print
-      ;; -- before the focused term
+    (let ((assertions (extract-assertions-from-messages "ainfo" ""
+                                                  fstar-temp-buffer2 t t)))
+      ;; Print the information
+      ;; - before the focused term
       (goto-char p1)
-      (generate-assert-from-term indent-str nil (eterm-info-pre info))
-      (dolist (param (eterm-info-parameters info))
-        (generate-param-asserts indent-str param))
-      ;; -- and insert after the focused term
+      (dolist (a (assertions-pres assertions))
+        (generate-assert-from-term indent-str nil a))
+      ;; - after the focused term
       (forward-char (- p2 p1))
-      ;; TODO: refinement for the returned value
-      (when bterm
-        (let ((ret-type (eterm-info-ret-type info)))
-          (when ret-type
-            (generate-has-rawest-type-assert indent-str t (letb-term-bind bterm)
-                                             ret-type))
-          (generate-assert-from-term indent-str t (type-info-rty-refin ret-type))))
-      (generate-assert-from-term indent-str t (eterm-info-post info))
-      (generate-assert-from-term indent-str t (eterm-info-goal info))
-      )))
+      (dolist (a (assertions-posts assertions))
+        (generate-assert-from-term indent-str t a))
+      ))))
 
 (defun insert-assert-pre-post--process
     (INDENT_STR P1 P2 PARSE_RESULT)
@@ -990,66 +937,28 @@ refinement), if necessary."
       ;; Modify the copied content and leave the pointer at the end of the region
       ;; to send to F*
       ;;
-      ;; Insert the proper wrappers depending on the result of parsing to generate
-      ;; the proper information by running F*. Note that we don't need to keep
-      ;; track of the positions modifications: we will send the whole buffer to F*.
-      (cond
-       ;; 'let _ = _ in'
-       ($is-let-in
-        (let ((bterm (subexpr-bterm PARSE_RESULT)))
-          ;; Insert the tactic after the let binding, and wrap the bound variable
-          (goto-char $lcp2)
-          (insert "\n")
-          (insert "FStar.Tactics.Derived.run_tactic (fun _ \n-> PrintTactics.dprint_eterm")
-          ;; Quoted expression
-          (insert " (quote (")
-          (insert (meta-info-data (letb-term-exp bterm)))
-          (insert "))")
-          ;; The optional string
-          (if (not (letb-term-is-var bterm))
-              (insert " None")
-            (insert " (Some (\"")
-            (insert (meta-info-data (letb-term-bind bterm)))
-            (insert "\"))"))
-          ;; Quoted binding
-          (insert " (quote (")
-          (insert (meta-info-data (letb-term-bind bterm)))
-          (insert "))")
-          ;; Quoted binding for the post
-          ;; Finish
-          (insert ");\nadmit()")
-          )) ;; end of case 'let _ = _ in'
-       ;; '_;' or '_' (return value)
-       ($has-semicol
-        (let ($prefix $prefix-length $suffix $suffix-length)
-          ;; Wrap the term in a tactic to generate the debugging information
-          (setq $prefix (concat "FStar.Tactics.Derived.run_tactic (fun _ -> "
-                                "PrintTactics.dprint_eterm (quote ("))
-          (setq $suffix ")) None (`()))")
-          (setq $prefix-length (length $prefix) $suffix-length (length $suffix))
-          (goto-char $lcp1)
-          (insert $prefix)
-          ;; We need to put the suffix before the ';', if there is
-          (let (($semicol-size (if $has-semicol 1 0)))
-            (goto-char (+ (- $lcp2 $semicol-size) $prefix-length)))
-          (insert $suffix)
-          ;; Insert an admit() at the end
-          (goto-char (+ $lp2 (+ $prefix-length $suffix-length)))
-          (progn (end-of-line)
-                 ;; Insert a ';' if there isn't
-                 (unless $has-semicol (insert ";"))
-                 (newline) (indent-according-to-mode) (insert "admit()"))
-          )) ;; end of '_' case
-       (t (error "Not supported yet: _"))
-       ) ;; end of cond
-      ;; TODO: the following is not necessary anymore, but I keep it in comments
-      ;; just in case
-      ;; Do some greedy replacements: replace the assertions by assumptions
-      ;;    (replace-all-in "assert_norm" "assume(*norm*)")
-      ;;    (replace-all-in "assert" "assume")
+      ;; Insert the ``focus_on_term`` indicator at the proper place, together
+      ;; with an admit after the focused term.
+      ;; Note that we don't need to keep track of the positions modifications:
+      ;; we will send the whole buffer to F*.
+      (let ($prefix $prefix-length)
+        ;; Prefix
+        (goto-char $lcp1)
+        (setq $prefix "let _ = focus_on_term in ")
+        (setq $prefix-length (length $prefix))
+        (insert $prefix)
+        ;; Suffix
+        (goto-char (+ $lcp2 $prefix-length))
+        ;; Insert an admit if it is a 'let' or a ';' expression
+        (when (or $is-let-in $has-semicol)
+          (end-of-line) (newline) (indent-according-to-mode) (insert "admit()")))
       ;; Insert an option to deactivate the proof obligations
       (goto-char (point-min))
       (insert "#push-options \"--admit_smt_queries true\"\n")
+      ;; Insert the post-processing instruction - note that there mustn't be
+      ;; any spaces between the port-process instruction and the definition
+      (skip-comments-and-spaces t)
+      (insert "[@(postprocess_with (pp_focused_term false))]")
       ;; Query F*
       (let* ((overlay (make-overlay $beg P2 $cbuffer nil nil))
              ($payload (buffer-substring-no-properties (point-min) (point-max))))
