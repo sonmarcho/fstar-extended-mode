@@ -57,6 +57,29 @@ let opt_tapply #a #b f x =
 let print_dbg (debug : bool) (s : string) : Tac unit =
   if debug then print s
 
+let print_binder_info (full : bool) (b : binder) : Tac unit =
+  let bv, a = inspect_binder b in
+  let a_str = match a with
+    | Q_Implicit -> "Implicit"
+    | Q_Explicit -> "Explicit"
+    | Q_Meta t -> "Meta: " ^ term_to_string t
+  in
+  let bview = inspect_bv bv in
+  if full then
+    print (
+      "> print_binder_info:" ^
+      "\n- name: " ^ (name_of_binder b) ^
+      "\n- as string: " ^ (binder_to_string b) ^
+      "\n- aqual: " ^ a_str ^
+      "\n- ppname: " ^ bview.bv_ppname ^
+      "\n- index: " ^ string_of_int bview.bv_index ^
+      "\n- sort: " ^ term_to_string bview.bv_sort
+    )
+  else print (binder_to_string b)
+
+let print_binders_info (full : bool) (e:env) : Tac unit =
+  iter (print_binder_info full) (binders_of_env e)
+
 // TODO: remove
 let acomp_to_string (c:comp) : Tot string =
   match inspect_comp c with
@@ -146,17 +169,6 @@ let genv_push_binder (ge:genv) (b:binder) (abs:bool) (t:option term) : Tac genv 
 /// Check if a binder is shadowed by another more recent binder
 let bv_is_shadowed (ge : genv) (bv : bv) : Tot bool =
   List.Tot.existsb (bv_eq bv) ge.svars
-
-(*  let bl = List.Tot.map (fun (x, _, _) -> x) ge.bmap in
-  let bvv = inspect_bv bv in
-  let opt_res = bind_map_get_from_name ge.bmap bvv.bv_ppname in
-  match opt_res with
-  | None -> false (* Actually shouldn't happen if the environment was correctly updated *)
-  | Some (bv', _, _) ->
-    let bvv' = inspect_bv bv' in
-    (* Check if it is the same binder - we don't check the type *)
-    if bvv'.bv_index = bvv.bv_index then false
-    else true *)
 
 let binder_is_shadowed (ge : genv) (b : binder) : Tot bool =
   bv_is_shadowed ge (bv_of_binder b)
@@ -834,86 +846,8 @@ let generate_shadowed_subst ge =
   let dummy = mk_abs (`()) bl in
   _generate_shadowed_subst ge dummy bvl
 
-(*
-/// Substitute a list of binders with fresh binders, added to the environment.
-/// The tricky part comes from the fact that there may be dependent types, in
-/// which we also need to do the substitution. For this reason, we start by
-/// abstracting all the binders, then whenever we need to introduce a new binder,
-/// we take its type from the outermost abstraction, introduce the binder, apply
-/// the abstraction to the binder then normalize.
-/// TODO: use this method everywhere
-val subst_with_fresh_vars : genv -> term -> list binder -> Tac (genv & term & list binder)
-
-let rec _subst_with_fresh_vars (ge:genv) (t:term) (bl : list binder) :
-  Tac (genv & term & list binder) =
-  (* Note that here, we use the initial list of binders only to count *)
-  match bl with
-  | [] -> ge, t, []
-  | _ :: bl' ->
-    match inspect t with
-    | Tv_Abs b _ ->
-      (* Introduce the new binder *)
-      let bv, _ = inspect_binder b in
-      let bvv = inspect_bv bv in
-      let ty = bvv.bv_sort in
-      let name = bvv.bv_ppname in
-      let b', ge1 = genv_push_fresh_binder ge ("__" ^ name) ty in
-      let bv' = bv_of_binder b' in
-      let t1 = mk_e_app t [pack (Tv_Var bv')] in
-      let t2 = norm_term_env ge1.env [] t1 in
-      (* Recursion *)
-      let ge2, t3, nbl = _subst_with_fresh_vars ge1 t2 bl' in
-      (* Return *)
-      ge2, t3, b' :: nbl
-    | _ -> mfail "_subst_with_fresh_vars: not a Tv_Abs"
-
-let subst_with_fresh_vars ge t bl =
-  let t' = mk_abs t bl in
-  _subst_with_fresh_vars ge t' bl
-
-/// TODO: see remark for ``subst_vars`` (problem with dependent types - might be
-/// a problem whenever we introduce new variables/binders elsewhere in the code)
-/// Substitutes the shadowed variables in the term with fresh abstract variables
-/// introduce in the environment.
-val substitute_free_vars_with_abs (ge : genv) (t : term) : Tac (genv & term)
-let substitute_free_vars_with_abs ge t =
-  let free_vars = free_in t in (* *)
-  let free_vars = find_shadowed_bvs ge free_vars in
-  (* The shadowed variables *)
-  let shad_vars = List.Tot.filter (fun (bv, b) -> b) free_vars in
-  let shad_vars = List.Tot.map fst shad_vars in
-  let shad_binders = List.Tot.map (fun bv -> pack_binder bv Q_Explicit) shad_vars in
-  (* Introduce fresh variables and substitute them in the term *)
-  let ge', t', abs_binders = subst_with_fresh_vars ge t shad_binders in
-  (* Introduce variables for *)
-  ge', t'
-
-val opt_substitute_free_vars_with_abs : (ge : genv) -> (opt_t : option term) ->
-                                        Tac (genv & option term)
-let opt_substitute_free_vars_with_abs ge opt_t =
-  match opt_t with
-  | None -> ge, None
-  | Some t ->
-    let ge', t' = substitute_free_vars_with_abs ge t in
-    ge', Some t'
-*)
-
-(*/// Auxiliary function: convert type information to a ``effect_info``
-// TODO: remove
-let _typ_to_effect_info (ge : genv) (etype : effect_type) (tinfo : type_info) (m : list (binder & binder)) :
-  Tac (genv & effect_info) =
-//  let ty = tinfo.ty in
-//  let refin = get_opt_refinment tinfo in
-//  let ge1, ty = substitute_free_vars_with_abs ge ty in
-//  let ge2, refin = opt_substitute_free_vars_with_abs ge1 refin in
-//  ge2, mk_effect_info etype (mk_type_info ty refin) None None
-  ge, mk_effect_info etype tinfo None None *)
-
-/// Converts a ``typ_or_comp`` to an ``effect_info``, introduces abstract variables
-/// to replace the shadowed variables.
-// TODO: the environment should keep track of such replacements so that we
-// don't introduce several variables for one shadowed variable
-// TODO: actually, now, the 
+/// Converts a ``typ_or_comp`` to an ``effect_info``, applies the instantiation
+/// stored in the ``typ_or_comp``.
 let typ_or_comp_to_effect_info (ge : genv) (c : typ_or_comp) :
   Tac effect_info =
   (* Prepare the substitution of the variables from m *)
@@ -937,33 +871,15 @@ let typ_or_comp_to_effect_info (ge : genv) (c : typ_or_comp) :
     let tinfo = get_type_info_from_type ty in
     let tinfo = apply_subst_in_type_info tinfo in
     mk_effect_info E_Total tinfo None None
-//    _typ_to_effect_info ge E_Total tinfo m
   | TC_Comp cv m ->
     let opt_einfo = comp_to_effect_info cv in
     match opt_einfo with
     | None -> mfail ("typ_or_comp_to_effect_info failed on: " ^ acomp_to_string cv)
     | Some einfo ->
-      (* Apply the substitution contained in the  *)
-(*      let subst_src, subst_tgt = unzip m in
-      let subst_tgt = map (fun x -> pack (Tv_Var (bv_of_binder x))) subst_tgt in
-      let subst = zip subst_src subst_tgt in
-      let opt_subst (opt : option term) : Tac (option term) =
-        match opt with
-        | None -> None
-        | Some x -> Some (subst_vars ge.env x subst)
-      in
-      let pre = opt_subst einfo.ei_pre in
-      let post = opt_subst einfo.ei_post in *)
       let ret_type_info = apply_subst_in_type_info einfo.ei_ret_type in
       let pre = opt_apply_subst einfo.ei_pre in
       let post = opt_apply_subst einfo.ei_post in
       mk_effect_info einfo.ei_type ret_type_info pre post
-
-//      ge, 
-//      let ge1, pre = opt_substitute_free_vars_with_abs ge pre in
-//      let ge2, post = opt_substitute_free_vars_with_abs ge1 post in
-//      let ge3, cci0 = _typ_to_effect_info ge2 einfo.ei_type einfo.ei_ret_type m in
-//      ge3, { cci0 with ei_pre = pre; ei_post = post }
 
 (**** Step 2 *)
 /// The retrieved type refinements and post-conditions are not instantiated (they
@@ -1333,11 +1249,6 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
       (* Generate propositions for the type cast *)
       let gcast = mk_cast_info v (Some einfo.ei_ret_type) (Some ei.ei_ret_type) in
       let gcast_props = cast_info_to_propositions ge3 gcast in
-//      let subst_free_vars (ge,pl) t =
-//        let ge', t' = substitute_free_vars_with_abs ge t in
-//        ge', t'::pl
-//      in
-//      let ge4, gcast_props = fold_left subst_free_vars (ge3, []) gcast_props in
       let gcast_props = List.Tot.rev gcast_props in
       (* Some debugging output *)
       (**) print_dbg dbg ("global pre: " ^ option_to_string term_to_string gpre_prop);
@@ -1473,41 +1384,6 @@ let pp_tac () : Tac unit =
   print ("post-processing: " ^ (term_to_string (cur_goal ())));
   dump "";
   trefl()
-
-let test0 () : Lemma(3 >= 2) =
-  _ by (
-    let s = term_to_string (cur_goal ()) in
-    iteri (fun i g -> print ("goal " ^ (string_of_int i) ^ ":" ^
-                          "\n- type: " ^ (term_to_string (goal_type g)) ^
-                          "\n- witness: " ^ (term_to_string (goal_witness g))))
-                          (goals());
-    iteri (fun i g -> print ("smt goal " ^ (string_of_int i) ^ ": " ^
-                          (term_to_string (goal_type g)))) (smt_goals());
-    print ("- qualif: " ^ term_construct (cur_goal ()));
-    tadmit_no_warning())
-
-let print_binder_info (full : bool) (b : binder) : Tac unit =
-  let bv, a = inspect_binder b in
-  let a_str = match a with
-    | Q_Implicit -> "Implicit"
-    | Q_Explicit -> "Explicit"
-    | Q_Meta t -> "Meta: " ^ term_to_string t
-  in
-  let bview = inspect_bv bv in
-  if full then
-    print (
-      "> print_binder_info:" ^
-      "\n- name: " ^ (name_of_binder b) ^
-      "\n- as string: " ^ (binder_to_string b) ^
-      "\n- aqual: " ^ a_str ^
-      "\n- ppname: " ^ bview.bv_ppname ^
-      "\n- index: " ^ string_of_int bview.bv_index ^
-      "\n- sort: " ^ term_to_string bview.bv_sort
-    )
-  else print (binder_to_string b)
-
-let print_binders_info (full : bool) (e:env) : Tac unit =
-  iter (print_binder_info full) (binders_of_env e)
 
 (*** Post-processing tactics *)
 
@@ -1883,30 +1759,15 @@ let test8 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
                           (term_to_string (goal_type g)))) (smt_goals());
     tadmit_no_warning())
 
-//  run_tactic (fun _ -> dprint_eterm (quote (test_fun4 x)) (Some "w") (quote w) [(`())]);
-//  run_tactic (fun _ -> dprint_eterm (quote (test_fun6 x (2 * x) (3 * x))) (Some "a") (quote y) [(`())]);
-//  run_tactic (fun _ -> dprint_eterm (quote (test_fun6 x y z)) (Some "a") (quote y) [(`())]);
 
-(*
-   (setq debug-on-error t)
-
-  let n1, n2 = test_fun5 x in
-//  run_tactic (fun _ -> print ("n1: " ^ term_to_string (quote n1)));
-  run_tactic (fun _ -> _debug_print_var "n1" (quote n1));
-  run_tactic (fun _ -> _debug_print_var "n2" (quote n2));
-  run_tactic (fun _ -> dprint_eterm (quote (test_fun5 x)) None (`(`#(quote n1), `#(quote n2))) [(`())]);
-  x
-
-
-let test2 (x : nat{x >= 4}) : nat =
-  test_lemma1 x; (**)
-  (**) test_lemma1 x; (**)
-  test_lemma1 (let y = x in y); (**)
-  test_lemma2 x;
-  test_lemma2 6;
-  let y = 3 in
-  test_lemma1 y;
-  test_lemma3 x;
-  admit()
-
-  x = 3;
+let test9 () : Lemma(3 >= 2) =
+  _ by (
+    let s = term_to_string (cur_goal ()) in
+    iteri (fun i g -> print ("goal " ^ (string_of_int i) ^ ":" ^
+                          "\n- type: " ^ (term_to_string (goal_type g)) ^
+                          "\n- witness: " ^ (term_to_string (goal_witness g))))
+                          (goals());
+    iteri (fun i g -> print ("smt goal " ^ (string_of_int i) ^ ": " ^
+                          (term_to_string (goal_type g)))) (smt_goals());
+    print ("- qualif: " ^ term_construct (cur_goal ()));
+    tadmit_no_warning())
