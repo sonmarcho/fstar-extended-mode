@@ -407,14 +407,23 @@ let convert_ctrl_flag (flag : ctrl_flag) =
 /// Note that ``explore_term`` doesn't use the environment parameter besides pushing
 /// binders and passing it to ``f``, which means that you can give it arbitrary
 /// environments, ``explore_term`` itself won't fail (but the passed function might).
-val explore_term (dbg : bool)
-                 (#a : Type0) (f : a -> genv -> option typ_or_comp -> term_view -> Tac (a & ctrl_flag))
-                 (x : a) (ge:genv) (c:option typ_or_comp) (t:term) :
+val explore_term :
+     dbg : bool
+  -> #a : Type0
+  -> f : (a -> genv -> option typ_or_comp -> term_view -> Tac (a & ctrl_flag))
+  -> x : a
+  -> ge : genv
+  -> c : option typ_or_comp
+  -> t:term ->
   Tac (a & ctrl_flag)
 
-val explore_pattern (dbg : bool)
-                    (#a : Type0) (f : a -> genv -> option typ_or_comp -> term_view -> Tac (a & ctrl_flag))
-                    (x : a) (ge:genv) (pat:pattern) :
+val explore_pattern :
+     dbg : bool
+  -> #a : Type0
+  -> f : (a -> genv -> option typ_or_comp -> term_view -> Tac (a & ctrl_flag))
+  -> x : a
+  -> ge:genv
+  -> pat:pattern ->
   Tac (genv & a & ctrl_flag)
 
 (* TODO: carry around the list of encompassing terms *)
