@@ -553,14 +553,18 @@ let bv_eq (bv1 bv2 : bv) =
   let bvv2 = inspect_bv bv2 in
   bvv1.bv_ppname = bvv2.bv_ppname && bvv1.bv_index = bvv2.bv_index
 
+/// Returns the list of abstract variables appearing in a term, in the order in
+/// which they were introduced in the context.
 val abs_free_in : genv -> term -> Tac (list bv)
 let abs_free_in ge t =
   let fvl = free_in t in
-  let absl = genv_abstract_bvs ge in
-  let is_abs bv =
-    Some? (List.Tot.find (bv_eq bv) absl)
+  let absl = List.rev (genv_abstract_bvs ge) in
+  let is_free_in_term bv =
+    Some? (List.Tot.find (bv_eq bv) fvl)
+//  let is_abs bv =
+//    Some? (List.Tot.find (bv_eq bv) absl)
   in
-  let absfree = List.Tot.filter is_abs fvl in
+  let absfree = List.Tot.filter is_free_in_term absl in
   absfree
 
 (*** Effectful term analysis *)
