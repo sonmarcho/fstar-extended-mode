@@ -80,78 +80,74 @@ let mfail str =
 
 /// A map linking variables to terms. For now we use a list to define it, because
 /// there shouldn't be too many bindings.
-/// The boolean indicates whether or not the variable is considered abstract. We
-/// often need to introduce variables which don't appear in the user context, for
-/// example when we need to deal with a postcondition for Stack or ST, which handles
-/// the previous and new memory states, and which may not be available in the user
-/// context, or where we don't always know which variable to use.
-/// In this case, whenever we output the term, we write its content as an
-/// asbtraction applied to those missing parameters. For instance, in the
-/// case of the assertion introduced for a post-condition:
-/// [> assert((fun h1 h2 -> post) h1 h2);
-/// Besides the informative goal, the user can replace those parameters (h1
-/// and h2 above) by the proper ones then normalize the assertion by using
-/// the appropriate command to get a valid assertion.
-type bind_map = list (bv & bool & term)
+type bind_map (a : Type) = list (bv & a)
 
-let bind_map_push (m:bind_map) (b:bv) (abs:bool) (t:term) = (b,abs,t)::m
-let bind_map_push_conc (m:bind_map) (b:bv) (t:term) = (b,false,t)::m
-let bind_map_push_abs (m:bind_map) (b:bv) (t:term) = (b,true,t)::m
+let bind_map_push (#a:Type) (m:bind_map a) (b:bv) (x:a) = (b,x)::m
 
-let rec bind_map_get (m:bind_map) (b:bv) : Tot (option (bool & term)) =
+let rec bind_map_get (#a:Type) (m:bind_map a) (b:bv) : Tot (option a) =
   match m with
   | [] -> None
-  | (b',abs,t)::m' ->
-    if compare_bv b b' = Order.Eq then Some (abs, t) else bind_map_get m' b
+  | (b', x)::m' ->
+    if compare_bv b b' = Order.Eq then Some x else bind_map_get m' b
 
-let rec bind_map_get_from_name (m:bind_map) (b:string) : Tot (option (bv & bool & term)) =
+let rec bind_map_get_from_name (#a:Type) (m:bind_map a) (b:string) :
+  Tot (option (bv & a)) =
   match m with
   | [] -> None
-  | (b',abs,t)::m' ->
+  | (b', x)::m' ->
     let b'v = inspect_bv b' in
-    if b'v.bv_ppname = b then Some (b',abs,t) else bind_map_get_from_name m' b
+    if b'v.bv_ppname = b then Some (b', x) else bind_map_get_from_name m' b
 
 noeq type genv =
 {
   env : env;
-  bmap : bind_map;
+  (* Whenever we evaluate a let binding, we keep track of the relation between
+   * the binder and its definition.
+   * The boolean indicates whether or not the variable is considered abstract. We
+   * often need to introduce variables which don't appear in the user context, for
+   * example when we need to deal with a postcondition for Stack or ST, which handles
+   * the previous and new memory states, and which may not be available in the user
+   * context, or where we don't always know which variable to use.
+   * In this case, whenever we output the term, we write its content as an
+   * asbtraction applied to those missing parameters. For instance, in the
+   * case of the assertion introduced for a post-condition:
+   * [> assert((fun h1 h2 -> post) h1 h2);
+   * Besides the informative goal, the user can replace those parameters (h1
+   * and h2 above) by the proper ones then normalize the assertion by using
+   * the appropriate command to get a valid assertion. *)
+  bmap : bind_map (bool & term);
+  (* Whenever we introduce a new variable, we check whether it shadows another
+   * variable because it has the same name, and put it in the below
+   * list. Of course, for the F* internals such shadowing is not an issue, because
+   * the index of every variable should be different, but this is very important
+   * when generating code for the user *)
+  svars : list bv;
 }
+
 let get_env (e:genv) : env = e.env
-let get_bind_map (e:genv) : bind_map = e.bmap
-let mk_genv env bmap : genv =
-  Mkgenv env bmap
+let get_bind_map (e:genv) : bind_map (bool & term) = e.bmap
+let mk_genv env bmap svars : genv =
+  Mkgenv env bmap svars
 
 /// Push a binder to a ``genv``. Optionally takes a ``term`` which provides the
 /// term the binder is bound to (in a `let _ = _ in` construct for example).
 let genv_push_bv (ge:genv) (b:bv) (abs:bool) (t:option term) : Tac genv =
-  match t with
-  | Some t' ->
-    let br = mk_binder b in
-    let e' = push_binder ge.env br in
-    let bmap' = bind_map_push ge.bmap b abs t' in
-    mk_genv e' bmap'
-  | None ->
-    let br = mk_binder b in
-    let e' = push_binder ge.env br in
-    let bmap' = bind_map_push ge.bmap b abs (pack (Tv_Var b)) in
-    mk_genv e' bmap'
+  let br = mk_binder b in
+  let sv = bind_map_get_from_name ge.bmap (name_of_bv b) in
+  let svars' = if Some? sv then fst (Some?.v sv) :: ge.svars else ge.svars in
+  let e' = push_binder ge.env br in
+  let tm = if Some? t then Some?.v t else pack (Tv_Var b) in
+  let bmap' = bind_map_push ge.bmap b (abs, tm) in
+  mk_genv e' bmap' svars'
 
 let genv_push_binder (ge:genv) (b:binder) (abs:bool) (t:option term) : Tac genv =
-  match t with
-  | Some t' ->
-    let e' = push_binder ge.env b in
-    let bmap' = bind_map_push ge.bmap (bv_of_binder b) abs t' in
-    mk_genv e' bmap'
-  | None ->
-    let e' = push_binder ge.env b in
-    let bv = bv_of_binder b in
-    let bmap' = bind_map_push ge.bmap bv abs (pack (Tv_Var bv)) in
-    mk_genv e' bmap'
-
+  genv_push_bv ge (bv_of_binder b) abs t
 
 /// Check if a binder is shadowed by another more recent binder
 let bv_is_shadowed (ge : genv) (bv : bv) : Tot bool =
-  let bl = List.Tot.map (fun (x, _, _) -> x) ge.bmap in
+  List.Tot.existsb (bv_eq bv) ge.svars
+
+(*  let bl = List.Tot.map (fun (x, _, _) -> x) ge.bmap in
   let bvv = inspect_bv bv in
   let opt_res = bind_map_get_from_name ge.bmap bvv.bv_ppname in
   match opt_res with
@@ -160,7 +156,7 @@ let bv_is_shadowed (ge : genv) (bv : bv) : Tot bool =
     let bvv' = inspect_bv bv' in
     (* Check if it is the same binder - we don't check the type *)
     if bvv'.bv_index = bvv.bv_index then false
-    else true
+    else true *)
 
 let binder_is_shadowed (ge : genv) (b : binder) : Tot bool =
   bv_is_shadowed ge (bv_of_binder b)
@@ -170,7 +166,6 @@ let find_shadowed_bvs (ge : genv) (bl : list bv) : Tot (list (bv & bool)) =
 
 let find_shadowed_binders (ge : genv) (bl : list binder) : Tot (list (binder & bool)) =
   List.Tot.map (fun b -> b, binder_is_shadowed ge b) bl
-
 
 val bv_is_abstract : genv -> bv -> Tot bool
 let bv_is_abstract ge bv =
@@ -184,8 +179,8 @@ let binder_is_abstract ge b =
 
 val genv_abstract_bvs : genv -> Tot (list bv)
 let genv_abstract_bvs ge =
-  let abs = List.Tot.filter (fun (_, abs, _) -> abs) ge.bmap in
-  List.Tot.map (fun (bv, _, _) -> bv) abs
+  let abs = List.Tot.filter (fun (_, (abs, _)) -> abs) ge.bmap in
+  List.Tot.map (fun (bv, _) -> bv) abs
 
 /// Versions of ``fresh_bv`` and ``fresh_binder`` inspired by the standard library
 /// We make sure the name is fresh because we need to be able to generate valid code
@@ -213,6 +208,7 @@ let push_fresh_binder (e : env) (basename : string) (ty : typ) : Tac (binder & e
 
 let genv_push_fresh_binder (ge : genv) (basename : string) (ty : typ) : Tac (binder & genv) =
   let b = fresh_binder ge.env basename ty in
+  (* TODO: we can have a shortcircuit push (which performs less checks) *)
   let ge' = genv_push_binder ge b true None in
   b, ge'
 
@@ -543,7 +539,7 @@ let free_in t =
     | _ -> fl, Continue
   in
   let e = top_env () in (* we actually don't care about the environment *)
-  let ge = mk_genv e [] in
+  let ge = mk_genv e [] [] in
   List.Tot.rev (fst (explore_term false update_free [] ge None t))
 
 /// Returns the list of abstract variables appearing in a term, in the order in
@@ -1438,7 +1434,7 @@ let pp_explore (dbg : bool)
       | Some c -> Some (TC_Comp c [])
       | None -> None
     in
-    let ge = mk_genv e [] in
+    let ge = mk_genv e [] [] in
     let x = explore_term dbg #a f x ge c l in
     trefl()
   | _ -> mfail "pp_explore: not a squashed equality"
@@ -1645,7 +1641,7 @@ let pred1 (#a : Type) (x : ty1 a) : Tot bool = Cons? x
 
 /// x is shadowed, so the global precondition should be dropped. However the
 /// global post-condition should be displayed.
-[@(postprocess_with (pp_focused_term false))]
+[@(postprocess_with (pp_focused_term true))]
 let pp_test7 (a : Type) (x : ty1 a) :
   Pure (ty1 a)
   (requires x == x /\ a == a)
