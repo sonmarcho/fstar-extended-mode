@@ -1730,8 +1730,23 @@ let test7 (x : nat) : nat =
   );
   0
 
-//[@(postprocess_with pp_tac)]
+[@(postprocess_with (pp_focused_term false))]
 let test8 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
+  Tot (n:nat{n % 2 = 0}) =
+  let a = 3 in
+  (**) test_lemma1 x; (**)
+  test_lemma1 (let y = x in y); (**)
+  let w = 3 in
+  test_lemma1 w;
+  test_lemma3 x;
+  (**) test_lemma3 x; (**)
+  (**) test_lemma3 y; (**)
+  let _ = focus_on_term in
+  test_lemma4 x y x 1 2;
+  2
+
+//[@(postprocess_with pp_tac)]
+let test9 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
   Tot (n:nat{n % 2 = 0}) =
 //  run_tactic (fun _ -> print (term_to_string (quote ((**) x))));
   let a = 3 in
@@ -1754,7 +1769,7 @@ let test8 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
     tadmit_no_warning())
 
 
-let test9 () : Lemma(3 >= 2) =
+let test10 () : Lemma(3 >= 2) =
   _ by (
     let s = term_to_string (cur_goal ()) in
     iteri (fun i g -> print ("goal " ^ (string_of_int i) ^ ":" ^
