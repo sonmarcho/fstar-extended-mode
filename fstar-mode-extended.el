@@ -995,11 +995,8 @@ TODO: add assertions for the parameters' refinements"
     ;; likely that we are in the next block)
     (setq $next-point (fstar-subp--find-point-to-process 1))
     (when (and $next-point (< $next-point $p))
-      (unless (y-or-n-p (concat "There may be unprocessed definitions above the "
-                                "current position: are you sure you want to "
-                                "continue? We will need to process them, which "
-                                "may take time, and the result will be lost"))
-        (user-error "Aborted")))
+      (user-error (concat "There may be unprocessed definitions above the "
+                          "current position: they must be processed")))
     ;; Restrict the region
     (setq $beg (fstar-subp--untracked-beginning-position))
     (setq $p (- $p $beg))
