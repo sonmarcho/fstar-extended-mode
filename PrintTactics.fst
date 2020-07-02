@@ -1392,29 +1392,35 @@ let printout_string (prefix data:string) : Tac unit =
    * output to be mixed here *)
   print (prefix ^ ":\n" ^ data ^ "\n")
 
-let printout_term (prefix:string) (t:term) : Tac unit =
+let printout_term (ge:genv) (prefix:string) (t:term) : Tac unit =
+  (* We need to look for abstract variables and abstract them away *)
+  let abs = abs_free_in ge t in
+  let abs_binders = List.Tot.map mk_binder abs in
+  let abs_terms = map (fun bv -> pack (Tv_Var bv)) abs in
+  let t = mk_abs t abs_binders in
+  let t = mk_e_app t abs_terms in
   printout_string prefix (term_to_string t)
 
-let printout_opt_term (prefix:string) (t:option term) : Tac unit =
+let printout_opt_term (ge:genv) (prefix:string) (t:option term) : Tac unit =
   match t with
-  | Some t' -> printout_term prefix t'
+  | Some t' -> printout_term ge prefix t'
   | None -> printout_string prefix ""
 
-let printout_proposition (prefix:string) (p:proposition) : Tac unit =
-  printout_term prefix p.body
+let printout_proposition (ge:genv) (prefix:string) (p:proposition) : Tac unit =
+  printout_term ge prefix p
 
-let printout_propositions (prefix:string) (pl:list proposition) : Tac unit =
+let printout_propositions (ge:genv) (prefix:string) (pl:list proposition) : Tac unit =
   let print_prop i p =
     let prefix' = prefix ^ ":prop" ^ string_of_int i in
-    printout_proposition prefix' p
+    printout_proposition ge prefix' p
   in
   printout_string (prefix ^ ":num") (string_of_int (List.Tot.length pl));
   iteri print_prop pl
 
-let printout_assertions (prefix:string) (a:assertions) : Tac unit =
+let printout_assertions (ge:genv) (prefix:string) (a:assertions) : Tac unit =
   print (prefix ^ ":BEGIN");
-  printout_propositions (prefix ^ ":pres") a.pres;
-  printout_propositions (prefix ^ ":posts") a.posts;
+  printout_propositions ge (prefix ^ ":pres") a.pres;
+  printout_propositions ge (prefix ^ ":posts") a.posts;
   print (prefix ^ ":END")
 
 let _debug_print_var (name : string) (t : term) : Tac unit =
@@ -1554,7 +1560,7 @@ let analyze_effectful_term dbg () ge opt_c t =
        (* Simplify and filter *)
        let sasserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
        (* Print *)
-       printout_assertions "ainfo" sasserts;
+       printout_assertions ge2 "ainfo" sasserts;
        (), Abort
        end
      else (), Continue
