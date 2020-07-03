@@ -1122,13 +1122,15 @@ val pre_post_to_propositions :
 
 let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt_post =
   print_dbg dbg "[> pre_post_to_propositions: begin";
+  (**) print_dbg dbg ("- uninstantiated pre: " ^ option_to_string term_to_string opt_pre);
+  (**) print_dbg dbg ("- uninstantiated post: " ^ option_to_string term_to_string opt_post);
   let brs = match ret_abs_binder with | None -> [] | Some b -> [b] in
   (* Analyze the pre and the postcondition and introduce the necessary variables *)
   let ge3, (pre_values, pre_binders), (post_values, post_binders) =
     match etype with
     | E_Lemma ->
       print_dbg dbg "E_Lemma";
-      ge0, ([], []), ([], [])
+      ge0, ([], []), ([(`())], [])
     | E_Total | E_GTotal ->
       print_dbg dbg "E_Total/E_GTotal";
       ge0, ([], []), ([], [])
@@ -1185,7 +1187,6 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
   print_dbg dbg "[> pre_post_to_propositions: end";
   ge3, pre_prop, post_prop
 
-(* TODO HERE *)
 /// Convert effectful type information to a list of propositions. May have to
 /// introduce additional binders for the preconditions/postconditions/goal (hence
 /// the environment in the return type).
@@ -1223,9 +1224,12 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
       else ge, t, None
   in
   (* Generate propositions from the pre and the post-conditions *)
+  (**) print_dbg dbg "> Instantiating local pre/post";
   let ge1, pre_prop, post_prop =
     pre_post_to_propositions dbg ge0 einfo.ei_type v opt_b einfo.ei_ret_type
                              einfo.ei_pre einfo.ei_post in
+  print_dbg dbg ("- pre prop: " ^ option_to_string term_to_string pre_prop);
+  print_dbg dbg ("- post prop: " ^ option_to_string term_to_string post_prop);
   (* Generate propositions from the target computation (pre, post, type cast) *)
   let ge2, gpre_prop, gcast_props, gpost_prop =
     begin match opt_c with
@@ -1264,12 +1268,13 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
       in
       (* Generate the propositions from the precondition and the postcondition *)
       (* TODO: not sure about the return type parameter: maybe catch failures *)
+      print_dbg dbg "> Instantiating global pre/post";
       let ge2, gpre_prop, gpost_prop =
         pre_post_to_propositions dbg ge1 ei.ei_type v opt_b einfo.ei_ret_type
                                  gpre gpost in
       (* Some debugging output *)
-      (**) print_dbg dbg ("global pre: " ^ option_to_string term_to_string gpre_prop);
-      (**) print_dbg dbg ("global post: " ^ option_to_string term_to_string gpost_prop);
+      print_dbg dbg ("- global pre prop: " ^ option_to_string term_to_string gpre_prop);
+      print_dbg dbg ("- global post prop: " ^ option_to_string term_to_string gpost_prop);
       (* Return type: TODO *)
       ge2, gpre_prop, gcast_props, gpost_prop
     end <: Tac _
