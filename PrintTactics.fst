@@ -1638,7 +1638,6 @@ let pp_test7 (a : Type) (x : ty1 a) :
   let _ = focus_on_term in
   y
 
-(* TODO HERE *)
 /// The global precondition should be displayed.
 [@(postprocess_with (pp_focused_term true))]
 let pp_test8 (a : Type) (x : ty1 a) :
@@ -1651,6 +1650,14 @@ let pp_test8 (a : Type) (x : ty1 a) :
   let x = 3 in
   let _ = focus_on_term in
   y
+
+(* TODO HERE : fix that *)
+[@(postprocess_with (pp_focused_term true))]
+let pp_test9 (y : int{y >= 10}) :
+  Tot nat =
+  let _ = focus_on_term in
+  test_lemma3 y;
+  0
 
 (**** Wrapping with tactics *)
 
@@ -1767,9 +1774,7 @@ let test8 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
 //[@(postprocess_with pp_tac)]
 let test9 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
   Tot (n:nat{n % 2 = 0}) =
-//  run_tactic (fun _ -> print (term_to_string (quote ((**) x))));
   let a = 3 in
-//  FStar.Tactics.Derived.run_tactic (fun _ -> PrintTactics.dprint_eterm (quote (test_lemma1 x)) None (`()) [(`())]);
   (**) test_lemma1 x; (**)
   test_lemma1 (let y = x in y); (**)
   let w = 3 in
