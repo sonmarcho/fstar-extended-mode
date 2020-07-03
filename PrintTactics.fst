@@ -473,12 +473,21 @@ let convert_ctrl_flag (flag : ctrl_flag) =
 /// Note that ``explore_term`` doesn't use the environment parameter besides pushing
 /// binders and passing it to ``f``, which means that you can give it arbitrary
 /// environments, ``explore_term`` itself won't fail (but the passed function might).
+
+let explorer (a : Type) =
+  a -> genv -> list (genv & term_view) -> option typ_or_comp -> term_view ->
+  Tac (a & ctrl_flag)
+
+// TODO: change the signature to move the dbg flag
 val explore_term :
      dbg : bool
   -> #a : Type0
-  -> f : (a -> genv -> option typ_or_comp -> term_view -> Tac (a & ctrl_flag))
+  -> f : explorer a
   -> x : a
   -> ge : genv
+  (* the list of terms traversed so far (first is most recent) with the environment
+   * at the time they were traversed *)
+  -> parents : list (genv & term_view)
   -> c : option typ_or_comp
   -> t:term ->
   Tac (a & ctrl_flag)
@@ -486,56 +495,57 @@ val explore_term :
 val explore_pattern :
      dbg : bool
   -> #a : Type0
-  -> f : (a -> genv -> option typ_or_comp -> term_view -> Tac (a & ctrl_flag))
+  -> f : explorer a
   -> x : a
   -> ge:genv
   -> pat:pattern ->
   Tac (genv & a & ctrl_flag)
 
 (* TODO: carry around the list of encompassing terms *)
-let rec explore_term dbg #a f x ge c t =
+let rec explore_term dbg #a f x ge0 pl0 c0 t0 =
   if dbg then
     begin
-    print ("[> explore_term: " ^ term_construct t ^ ":\n" ^ term_to_string t)
+    print ("[> explore_term: " ^ term_construct t0 ^ ":\n" ^ term_to_string t0)
     end;
-  let tv = inspect t in
-  let x0, flag = f x ge c tv in
+  let tv0 = inspect t0 in
+  let x0, flag = f x ge0 pl0 c0 tv0 in
+  let pl1 = (ge0, tv0) :: pl0 in
   if flag = Continue then
-    begin match tv with
+    begin match tv0 with
     | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> x0, Continue
     | Tv_App hd (a,qual) ->
       (* Explore the argument - we update the target typ_or_comp when doing so *)
-      let a_c = safe_typ_or_comp ge.env a in
-      let x1, flag1 = explore_term dbg f x0 ge a_c a in
+      let a_c = safe_typ_or_comp ge0.env a in
+      let x1, flag1 = explore_term dbg f x0 ge0 pl1 a_c a in
       (* Explore the head - no type information here: we can compute it,
        * but it seems useless (or maybe use it only if it is not Total) *)
       if flag1 = Continue then
-        explore_term dbg f x1 ge None hd
+        explore_term dbg f x1 ge0 pl1 None hd
       else x1, convert_ctrl_flag flag1
     | Tv_Abs br body ->
-      let ge1 = genv_push_binder ge br false None in
-      let e2, c1 = abs_update_opt_typ_or_comp br c ge1.env in
+      let ge1 = genv_push_binder ge0 br false None in
+      let e2, c1 = abs_update_opt_typ_or_comp br c0 ge1.env in
       let ge2 = { ge1 with env = e2 } in
-      explore_term dbg f x0 ge2 c1 body
-    | Tv_Arrow br c -> x0, Continue (* TODO: we might want to explore that *)
+      explore_term dbg f x0 ge2 pl1 c1 body
+    | Tv_Arrow br c0 -> x0, Continue (* TODO: we might want to explore that *)
     | Tv_Type () -> x0, Continue
     | Tv_Refine bv ref ->
       let bvv = inspect_bv bv in
-      let x1, flag1 = explore_term dbg f x0 ge None bvv.bv_sort in
+      let x1, flag1 = explore_term dbg f x0 ge0 pl1 None bvv.bv_sort in
       if flag1 = Continue then
-        let ge1 = genv_push_bv ge bv false None in
-        explore_term dbg f x1 ge1 None ref
+        let ge1 = genv_push_bv ge0 bv false None in
+        explore_term dbg f x1 ge1 pl1 None ref
       else x1, convert_ctrl_flag flag1
     | Tv_Const _ -> x0, Continue
     | Tv_Uvar _ _ -> x0, Continue
     | Tv_Let recf attrs bv def body ->
       (* Explore the binding definition *)
-      let def_c = safe_typ_or_comp ge.env def in
-      let x1, flag1 = explore_term dbg f x0 ge def_c def in
+      let def_c = safe_typ_or_comp ge0.env def in
+      let x1, flag1 = explore_term dbg f x0 ge0 pl1 def_c def in
       if flag1 = Continue then
         (* Explore the next subterm *)
-        let ge1 = genv_push_bv ge bv false (Some def) in
-        explore_term dbg f x0 ge1 c body
+        let ge1 = genv_push_bv ge0 bv false (Some def) in
+        explore_term dbg f x1 ge1 pl1 c0 body
       else x1, convert_ctrl_flag flag1
     | Tv_Match scrutinee branches ->
       (* Auxiliary function to explore the branches *)
@@ -544,54 +554,54 @@ let rec explore_term dbg #a f x ge c t =
         if flag = Continue then
           let pat, branch_body = br in
           (* Explore the pattern *)
-          let ge1, x1, flag1 = explore_pattern dbg #a f x0 ge pat in
+          let ge1, x1, flag1 = explore_pattern dbg #a f x0 ge0 pat in
           if flag1 = Continue then
             (* Explore the branch body *)
-            explore_term dbg #a f x1 ge1 c branch_body
+            explore_term dbg #a f x1 ge1 pl1 c0 branch_body
           else x1, convert_ctrl_flag flag1
         (* Don't convert the flag *)
         else x0, flag
       in
       (* Explore the scrutinee *)
-      let scrut_c = safe_typ_or_comp ge.env scrutinee in
-      let x1 = explore_term dbg #a f x0 ge scrut_c scrutinee in
+      let scrut_c = safe_typ_or_comp ge0.env scrutinee in
+      let x1 = explore_term dbg #a f x0 ge0 pl1 scrut_c scrutinee in
       (* Explore the branches *)
       fold_left explore_branch x1 branches
     | Tv_AscribedT e ty tac ->
       let c1 = Some (TC_Typ ty []) in
-      let x1, flag = explore_term dbg #a f x0 ge None ty in
+      let x1, flag = explore_term dbg #a f x0 ge0 pl1 None ty in
       if flag = Continue then
-        explore_term dbg #a f x1 ge c1 e
+        explore_term dbg #a f x1 ge0 pl1 c1 e
       else x1, convert_ctrl_flag flag
     | Tv_AscribedC e c1 tac ->
       (* TODO: explore the comp *)
-      explore_term dbg #a f x0 ge (Some (TC_Comp c1 [])) e
+      explore_term dbg #a f x0 ge0 pl1 (Some (TC_Comp c1 [])) e
     | _ ->
       (* Unknown *)
       x0, Continue
     end
   else x0, convert_ctrl_flag flag
 
-and explore_pattern dbg #a f x ge pat =
+and explore_pattern dbg #a f x ge0 pat =
   match pat with
-  | Pat_Constant _ -> ge, x, Continue
+  | Pat_Constant _ -> ge0, x, Continue
   | Pat_Cons fv patterns ->
     let explore_pat ge_x_flag pat =
-      let ge, x, flag = ge_x_flag in
+      let ge0, x, flag = ge_x_flag in
       let pat1, _ = pat in
       if flag = Continue then
-        explore_pattern dbg #a f x ge pat1
+        explore_pattern dbg #a f x ge0 pat1
       else
         (* Don't convert the flag *)
-        ge, x, flag
+        ge0, x, flag
     in
-    fold_left explore_pat (ge, x, Continue) patterns
+    fold_left explore_pat (ge0, x, Continue) patterns
   | Pat_Var bv | Pat_Wild bv ->
-    let ge1 = genv_push_bv ge bv false None in
+    let ge1 = genv_push_bv ge0 bv false None in
     ge1, x, Continue
   | Pat_Dot_Term bv t ->
     (* TODO: I'm not sure what this is *)
-    let ge1 = genv_push_bv ge bv false None in
+    let ge1 = genv_push_bv ge0 bv false None in
     ge1, x, Continue
 
 /// Returns the list of variables free in a term
@@ -600,7 +610,8 @@ let free_in t =
   let same_name (bv1 bv2 : bv) : Tot bool =
     name_of_bv bv1 = name_of_bv bv2
   in
-  let update_free (fl:list bv) (ge:genv) (c:option typ_or_comp) (tv:term_view) :
+  let update_free (fl:list bv) (ge:genv) (pl:list (genv & term_view))
+                  (c:option typ_or_comp) (tv:term_view) :
     Tac (list bv & ctrl_flag) =
     match tv with
     | Tv_Var bv | Tv_BVar bv ->
@@ -617,7 +628,7 @@ let free_in t =
   in
   let e = top_env () in (* we actually don't care about the environment *)
   let ge = mk_genv e [] [] in
-  List.Tot.rev (fst (explore_term false update_free [] ge None t))
+  List.Tot.rev (fst (explore_term false update_free [] ge [] None t))
 
 /// Returns the list of abstract variables appearing in a term, in the order in
 /// which they were introduced in the context.
@@ -630,16 +641,6 @@ let abs_free_in ge t =
   in
   let absfree = List.Tot.filter is_free_in_term absl in
   absfree
-
-(*val abs_free_in : list bv -> term -> Tac (list bv)
-let abs_free_in context_absl t =
-  let fvl = free_in t in
-  let absl = List.rev (genv_abstract_bvs ge) in
-  let is_free_in_term bv =
-    Some? (List.Tot.find (bv_eq bv) fvl)
-  in
-  let absfree = List.Tot.filter is_free_in_term absl in
-  absfree*)
 
 (*** Effectful term analysis *)
 /// Analyze a term to retrieve its effectful information
@@ -1453,18 +1454,6 @@ let subst_shadowed_with_abs_in_assertions dbg ge shadowed_bv as =
   let apply = (fun s -> map (fun t -> apply_subst ge1.env t s)) in
   let pres = apply pre_subst as.pres in
   let posts = apply post_subst as.posts in
-  (* Abstract the abstract variables *)
-(*  let pre_abs = List.Tot.map fst pre_subst in
-  let post_abs = List.Tot.map fst post_subst in
-  let abstract_term (abs : list bv) (t : term) : Tac term =
-    let abs = abs_free_in abs t in
-    let abs_binders = List.Tot.map mk_binder abs in
-    let abs_terms = map (fun bv -> pack (Tv_Var bv)) abs in
-    let t = mk_abs t abs_binders in
-    mk_e_app t abs_terms
-  in
-  let pres = map (abstract_term pre_abs) pres in
-  let posts = map (abstract_term post_abs) posts in *)
   ge1, mk_assertions pres posts
 
 (**** Step 5 *)
@@ -1547,26 +1536,29 @@ let pp_tac () : Tac unit =
 assume type meta_info
 assume val focus_on_term : meta_info
 
+let unsquash_equality (t:term) : Tac (option (term & term)) =
+  begin match term_as_formula t with
+  | Comp (Eq _) l r -> Some (l, r)
+  | _ -> None
+  end
+
 let pp_explore (dbg : bool)
-               (#a : Type0) (f : a -> genv -> option typ_or_comp -> term_view -> Tac (a & ctrl_flag))
+               (#a : Type0)
+               (f : explorer a)
                (x : a) :
   Tac unit =
   let g = cur_goal () in
   let e = cur_env () in
   print_dbg dbg ("[> pp_explore:\n" ^ term_to_string g);
-  begin match term_as_formula g with
-  | Comp (Eq _) l r ->
+  begin match unsquash_equality g with
+  | Some (l, _) ->
     let c = safe_typ_or_comp e l in
     let ge = mk_genv e [] [] in
     print_dbg dbg ("[> About to explore term:\n" ^ term_to_string l);
-    let x = explore_term dbg #a f x ge c l in
+    let x = explore_term dbg #a f x ge [] c l in
     trefl()
   | _ -> mfail "pp_explore: not a squashed equality"
   end
-
-
-/// Effectful term analysis: analyze a term in order to print propertly instantiated
-/// pre/postconditions and type conditions.
 
 /// Check for meta-identifiers. Note that we can't simply use ``term_eq`` which
 /// sometimes unexpectedly fails (maybe because of information hidden to Meta-F*)
@@ -1588,78 +1580,195 @@ let term_is_assert t =
     end
   | _ -> false
 
-val analyze_effectful_term : bool -> unit -> genv -> option typ_or_comp -> term_view -> Tac (unit & ctrl_flag)
+/// Check if the given term view is of the form: 'let _ = focus_on_term in body'
+/// Returns 'body' if it is the case.
+val is_focused_term : term_view -> Tac (option term)
+let is_focused_term tv =
+  match tv with
+  | Tv_Let recf attrs _ def body ->
+    if is_focus_on_term def then Some body else None
+  | _ -> None
 
-let analyze_effectful_term dbg () ge opt_c t =
+noeq type exploration_result (a : Type)= {
+  ge : genv;
+  parents : list (genv & term_view);
+  tgt_comp : option typ_or_comp;
+  res : a;
+}
+
+let mk_exploration_result = Mkexploration_result
+
+let pred_explorer (a:Type) = 
+  genv -> list (genv & term_view) -> option typ_or_comp -> term_view ->
+  Tac (option a)
+
+val find_predicated_term_explorer : #a:Type0 -> pred_explorer a -> bool ->
+                                    explorer (option (exploration_result a))
+let find_predicated_term_explorer #a pred dbg acc ge pl opt_c t =
+  if Some? acc then mfail "find_focused_term_explorer: non empty accumulator";
+  if dbg then
+    begin
+    print ("[> find_focused_term_explorer: " ^ term_view_construct t ^ ":\n" ^ term_to_string t)
+    end;
+  match pred ge pl opt_c t with
+  | Some ft -> Some (mk_exploration_result ge pl opt_c ft), Abort
+  | None -> None, Continue
+
+val find_predicated_term : #a:Type0 -> pred_explorer a -> bool ->
+                           genv -> list (genv & term_view) ->
+                           option typ_or_comp -> term ->
+                           Tac (option (exploration_result a))
+let find_predicated_term #a pred dbg ge pl opt_c t =
+  fst (explore_term dbg #(option (exploration_result a))
+                    (find_predicated_term_explorer #a pred dbg)
+                    None ge pl opt_c t)
+
+val _is_focused_term_explorer : pred_explorer term
+let _is_focused_term_explorer ge pl opt_c tv =
+  is_focused_term tv
+
+val find_focused_term : bool -> genv -> list (genv & term_view) -> option typ_or_comp -> term ->
+                        Tac (option (exploration_result term))
+let find_focused_term dbg ge pl opt_c t =
+  find_predicated_term #term _is_focused_term_explorer dbg ge pl opt_c t
+
+
+(**** Effectful term analysis *)
+/// Aanalyze a term in order to print propertly instantiated pre/postconditions
+/// and type conditions.
+
+val analyze_effectful_term : bool -> explorer unit
+
+let analyze_effectful_term dbg () ge pl opt_c t =
   if dbg then
     begin
     print ("[> analyze_effectful_term: " ^ term_view_construct t ^ ":\n" ^ term_to_string t)
     end;
-  match t with
-  | Tv_Let recf attrs _ def body ->
-    (* We need to check if the let definition is a meta identifier *)
-    if is_focus_on_term def then
-      begin
-      print_dbg dbg ("[> Focus on term: " ^ term_to_string body);
-      print_dbg dbg ("[> Environment information:\n" ^ genv_to_string ge);
-      (* Analyze the effectful term and check whether it is a 'let' or not *)
-      let ge1, studied_term, info, ret_bv, shadowed_bv, is_let =
-        begin match inspect body with
-        | Tv_Let _ _ bv0 fterm _ ->
-          (* Before pushing the binder, check if it shadows another variable.
-           * If it is the case, we will need it to correctly output the pre
-           * and post-assertions (because for the pre-assertions the variable
-           * will not be shadowed yet, while it will be the case for the post-
-           * assertions) *)
-          let shadowed_bv =
-            match bind_map_get_from_name ge.bmap (name_of_bv bv0) with
-            | None -> None
-            | Some (sbv, _) -> Some sbv
-          in
-          let ge1 = genv_push_bv ge bv0 false None in
-          (* If the bv name is "uu___", introduce a fresh variable and use it instead:
-           * the underscore might have been introduced when desugaring a let using
-           * tuples. If doing that is not necessary, the introduced variable will
-           * not appear in the generated assertions anyway. *)
-          let ge2, (bv1 : bv) =
-            let bvv0 = inspect_bv bv0 in
-            let _ = print_dbg dbg ("Variable bound in let: " ^ abv_to_string bv0) in
-            if bvv0.bv_ppname = "uu___" (* this is a bit hacky *)
-            then genv_push_fresh_bv ge1 "ret" bvv0.bv_sort
-            else ge1, bv0
-          in
-          let info = compute_eterm_info ge2.env fterm in
-          (ge2, fterm, (info <: eterm_info), Some bv1, shadowed_bv, true)
-        | _ -> (ge, body, compute_eterm_info ge.env body, None, None, false)
-        end
-      in
-      print_dbg dbg ("[> Environment information (after effect analysis):\n" ^ genv_to_string ge1);
-      (* Check if the considered term is an assert, in which case we will only
-       * display the precondition (otherwise we introduce too many assertions
-       * in the context) *)
-      let is_assert = term_is_assert studied_term in
-      (* Instantiate the refinements *)
-      (* TODO: use bv rather than term for ret_arg *)
-      let ret_arg = opt_tapply (fun x -> pack (Tv_Var x)) ret_bv in
-      let ge2, asserts =
-        eterm_info_to_assertions dbg ge1 studied_term is_let is_assert info ret_arg opt_c in
-      (* Simplify and filter *)
-      let asserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
-      (* Introduce fresh variables for the shadowed ones and substitute *)
-      let ge3, asserts = subst_shadowed_with_abs_in_assertions dbg ge2 shadowed_bv asserts in
-      (* If not a let, insert all the assertions before the term *)
-      let asserts =
-        if is_let then asserts
-        else  mk_assertions (List.Tot.append asserts.pres asserts.posts) []
-      in
-      (* Print *)
-      printout_assertions ge3 "ainfo" asserts;
-      (), Abort
+  match is_focused_term t with
+  | Some body ->
+    print_dbg dbg ("[> Focus on term: " ^ term_to_string body);
+    print_dbg dbg ("[> Environment information:\n" ^ genv_to_string ge);
+    (* Analyze the effectful term and check whether it is a 'let' or not *)
+    let ge1, studied_term, info, ret_bv, shadowed_bv, is_let =
+      begin match inspect body with
+      | Tv_Let _ _ bv0 fterm _ ->
+        (* Before pushing the binder, check if it shadows another variable.
+         * If it is the case, we will need it to correctly output the pre
+         * and post-assertions (because for the pre-assertions the variable
+         * will not be shadowed yet, while it will be the case for the post-
+         * assertions) *)
+        let shadowed_bv =
+          match bind_map_get_from_name ge.bmap (name_of_bv bv0) with
+          | None -> None
+          | Some (sbv, _) -> Some sbv
+        in
+        let ge1 = genv_push_bv ge bv0 false None in
+        (* If the bv name is "uu___", introduce a fresh variable and use it instead:
+         * the underscore might have been introduced when desugaring a let using
+         * tuples. If doing that is not necessary, the introduced variable will
+         * not appear in the generated assertions anyway. *)
+        let ge2, (bv1 : bv) =
+          let bvv0 = inspect_bv bv0 in
+          let _ = print_dbg dbg ("Variable bound in let: " ^ abv_to_string bv0) in
+          if bvv0.bv_ppname = "uu___" (* this is a bit hacky *)
+          then genv_push_fresh_bv ge1 "ret" bvv0.bv_sort
+          else ge1, bv0
+        in
+        let info = compute_eterm_info ge2.env fterm in
+        (ge2, fterm, (info <: eterm_info), Some bv1, shadowed_bv, true)
+      | _ -> (ge, body, compute_eterm_info ge.env body, None, None, false)
       end
-    else (), Continue
+    in
+    print_dbg dbg ("[> Environment information (after effect analysis):\n" ^ genv_to_string ge1);
+    (* Check if the considered term is an assert, in which case we will only
+     * display the precondition (otherwise we introduce too many assertions
+     * in the context) *)
+    let is_assert = term_is_assert studied_term in
+    (* Instantiate the refinements *)
+    (* TODO: use bv rather than term for ret_arg *)
+    let ret_arg = opt_tapply (fun x -> pack (Tv_Var x)) ret_bv in
+    let ge2, asserts =
+      eterm_info_to_assertions dbg ge1 studied_term is_let is_assert info ret_arg opt_c in
+    (* Simplify and filter *)
+    let asserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
+    (* Introduce fresh variables for the shadowed ones and substitute *)
+    let ge3, asserts = subst_shadowed_with_abs_in_assertions dbg ge2 shadowed_bv asserts in
+    (* If not a let, insert all the assertions before the term *)
+    let asserts =
+      if is_let then asserts
+      else  mk_assertions (List.Tot.append asserts.pres asserts.posts) []
+    in
+    (* Print *)
+    printout_assertions ge3 "ainfo" asserts;
+    (), Abort
   | _ -> (), Continue
 
-val pp_focused_term : bool -> unit -> Tac unit
-let pp_focused_term dbg () =
+val pp_analyze_effectful_term : bool -> unit -> Tac unit
+let pp_analyze_effectful_term dbg () =
   pp_explore dbg (analyze_effectful_term dbg) ()
 
+(**** Split conjunctions in an assert *)
+/// Split an assert made of conjunctions so that there is one assert per
+/// conjunction.
+
+val split_conjunctions : term -> Tac (list term)
+
+let rec _split_conjunctions (ls : list term) (t : term) : Tac (list term) =
+  match inspect t with
+  | Tv_App hd0 (a1, Q_Explicit) ->
+    begin match inspect hd0 with
+    | Tv_App hd1 (a2, Q_Explicit) ->
+      begin match inspect hd1 with
+      | Tv_FVar fv ->
+        if flatten_name (inspect_fv fv) = flatten_name and_qn then
+          let ls1 = _split_conjunctions ls a2 in
+          let ls2 = _split_conjunctions ls1 a1 in
+          ls2
+        else ls
+      | _ -> ls
+      end
+    | _ -> ls
+    end
+  | _ -> ls
+
+let split_conjunctions t =
+  _split_conjunctions [] t
+
+val split_assert_conjs : bool -> explorer unit
+let split_assert_conjs dbg () ge0 pl opt_c tv =
+  if dbg then
+    begin
+    print ("[> split_assert_conjs: " ^ term_view_construct tv ^ ":\n" ^ term_to_string tv)
+    end;
+  match is_focused_term tv with
+  | Some t ->
+    print_dbg dbg ("[> Focus on term: " ^ term_to_string t);
+    print_dbg dbg ("[> Environment information:\n" ^ genv_to_string ge0);
+    (* Check that it is an assert, retrieve the assertion *)
+    begin match inspect t with
+    | Tv_Let _ _ bv0 fterm _ ->
+      if term_is_assert fterm then
+        begin
+        (* Simplify the term (it may be an abstraction applied to some parameters) *)
+        let t = norm_term_env ge0.env [primops; simplify] t in
+        (* Split the conjunctions *)
+        let conjs = split_conjunctions t in
+        let asserts = mk_assertions conjs [] in
+        (* Print *)
+        printout_assertions ge0 "ainfo" asserts;
+        (), Abort
+        end
+      else mfail ("split_assert_conjs: focused term is not an assert: " ^ term_to_string t)
+    | _ -> mfail ("split_assert_conjs: focused term is not an assert: " ^ term_to_string t)
+    end
+  | None -> (), Continue
+
+val pp_split_assert_conjs : bool -> unit -> Tac unit
+let pp_split_assert_conjs dbg () =
+  pp_explore dbg (split_assert_conjs dbg) ()
+
+(**** Term unfolding in assert *)
+/// Unfolds an identifier in an assert. If the assert is an equality, unfolds
+/// only on the side chosen by the user.
+/// Tries to be a bit smart: it the identifier is a variable local to the function,
+/// looks for an equality or a pure let-binding to replace it with.

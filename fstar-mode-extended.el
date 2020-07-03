@@ -1015,7 +1015,7 @@ refinement), if necessary."
       (goto-char (point-min))
       (insert "#push-options \"--admit_smt_queries true\"\n")
       ;; Insert the post-processing instruction
-      (insert "[@(FStar.Tactics.postprocess_with (PrintTactics.pp_focused_term false))]\n")
+      (insert "[@(FStar.Tactics.postprocess_with (PrintTactics.pp_analyze_effectful_term false))]\n")
       ;; Query F*
       (let* ((overlay (make-overlay $beg P2 $cbuffer nil nil))
              ($payload (buffer-substring-no-properties (point-min) (point-max))))
@@ -1039,7 +1039,8 @@ refinement), if necessary."
   "Inserts assertions with the instanciated pre and post-conditions around a
 function call.
 TODO: take into account if/match branches
-TODO: add assertions for the parameters' refinements"
+TODO: add assertions for the parameters' refinements
+TODO: don't restrict the region because moves the view"
   (interactive)
   (log-dbg "insert-assert-pre-post")
   (let ($next-point $beg $p $delimiters $indent $indent-str

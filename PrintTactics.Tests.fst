@@ -73,14 +73,14 @@ let test_lemma4 (n1 : nat{n1 >= 3}) (n2 : int{n2 >= 5}) (n3 n4 n5 : nat):
 
 (**** Post-processing *)
 //#push-options "--admit_smt_queries true"
-[@(postprocess_with (pp_focused_term false))]
+[@(postprocess_with (pp_analyze_effectful_term false))]
 let pp_test0 () : Tot nat =
   let x = 1 in
   let y = 2 in
   let _ = focus_on_term in
   test_fun1 (3 * x + y)
 
-[@(postprocess_with (pp_focused_term false))]
+[@(postprocess_with (pp_analyze_effectful_term false))]
 let pp_test1 () : Tot nat =
   let x = 1 in
   let y = 2 in
@@ -89,7 +89,7 @@ let pp_test1 () : Tot nat =
     test_fun1 (3 * x + y)
   else 0
 
-[@(postprocess_with (pp_focused_term false))]
+[@(postprocess_with (pp_analyze_effectful_term false))]
 let pp_test2 () : Tot int =
   let x = 4 in
   let y = 9 in
@@ -99,7 +99,7 @@ let pp_test2 () : Tot int =
     test_fun6 x y z
   else 0
 
-[@(postprocess_with (pp_focused_term false))]
+[@(postprocess_with (pp_analyze_effectful_term false))]
 let pp_test3 () : Tot nat =
   let x = 4 in
   let y = 9 in
@@ -110,7 +110,7 @@ let pp_test3 () : Tot nat =
     w
   else 0
 
-[@(postprocess_with (pp_focused_term false))]
+[@(postprocess_with (pp_analyze_effectful_term false))]
 let pp_test4 (y : nat) :
   ST.Stack nat
   (requires (fun _ -> y >= 2))
@@ -120,7 +120,7 @@ let pp_test4 (y : nat) :
   let w = test_stack1 x in
   w
 
-[@(postprocess_with (pp_focused_term false))]
+[@(postprocess_with (pp_analyze_effectful_term false))]
 let pp_test4_1 (y : nat) :
   ST.Stack nat
   (requires (fun _ -> y >= 2))
@@ -131,7 +131,7 @@ let pp_test4_1 (y : nat) :
   let w = test_stack1 x in
   w
 
-[@(postprocess_with (pp_focused_term false))]
+[@(postprocess_with (pp_analyze_effectful_term false))]
 let pp_test5 () :
   ST.Stack nat
   (requires (fun _ -> True))
@@ -140,7 +140,7 @@ let pp_test5 () :
   let _ = focus_on_term in
   test_stack1 x
 
-[@(postprocess_with (pp_focused_term true))]
+[@(postprocess_with (pp_analyze_effectful_term true))]
 let pp_test6 () :
   ST.Stack (n:nat{n % 2 = 0})
   (requires (fun _ -> True))
@@ -156,7 +156,7 @@ let pred1 (#a : Type) (x : ty1 a) : Tot bool = Cons? x
 
 /// x is shadowed, so the global precondition should be dropped. However the
 /// global post-condition should be displayed.
-[@(postprocess_with (pp_focused_term true))]
+[@(postprocess_with (pp_analyze_effectful_term true))]
 let pp_test7 (a : Type) (x : ty1 a) :
   Pure (ty1 a)
   (requires x == x /\ a == a)
@@ -168,7 +168,7 @@ let pp_test7 (a : Type) (x : ty1 a) :
   y
 
 /// The global precondition should be displayed.
-[@(postprocess_with (pp_focused_term true))]
+[@(postprocess_with (pp_analyze_effectful_term true))]
 let pp_test8 (a : Type) (x : ty1 a) :
   Pure (ty1 a)
   (requires x == x /\ a == a /\ pred1 x)
@@ -180,21 +180,21 @@ let pp_test8 (a : Type) (x : ty1 a) :
   let _ = focus_on_term in
   y
 
-[@(postprocess_with (pp_focused_term true))]
+[@(postprocess_with (pp_analyze_effectful_term true))]
 let pp_test9 (y : int{y >= 10}) :
   Tot nat =
   let _ = focus_on_term in
   test_lemma3 y;
   0
 
-[@(postprocess_with (pp_focused_term true))]
+[@(postprocess_with (pp_analyze_effectful_term true))]
 let pp_test10 (n : nat{n % 4 = 0}) :
   Tot (n:nat{n % 2 = 0}) =
   let _ = focus_on_term in
   2 * n
 
 (* Shadowing a parameter with a function's return value *)
-[@(postprocess_with (pp_focused_term true))]
+[@(postprocess_with (pp_analyze_effectful_term true))]
 let pp_test11 (n : nat{n >= 4}) :
   Tot (n:nat{n % 2 = 0}) =
   let _ = focus_on_term in
@@ -203,7 +203,7 @@ let pp_test11 (n : nat{n >= 4}) :
 
 /// Tests with tuples
 (* Warning: the variables used for the matching are replaced by '_' if they are not used *)
-[@(postprocess_with (pp_focused_term true))]
+[@(postprocess_with (pp_analyze_effectful_term true))]
 let pp_test12 (n : nat) : Tot nat =
   let _ = focus_on_term in
   let x, y, z = 1, 2, 3 in
