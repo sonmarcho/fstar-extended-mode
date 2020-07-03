@@ -1523,3 +1523,16 @@ let analyze_effectful_term dbg () ge opt_c t =
 val pp_focused_term : bool -> unit -> Tac unit
 let pp_focused_term dbg () =
   pp_explore dbg (analyze_effectful_term dbg) ()
+
+(* TODO HERE *)
+let tuple_test1 (n : nat) :
+  Pure (nat & nat)
+  (requires True)
+  (ensures (fun r -> let n1, n2 = r in n1 = n2)) =
+  n, n
+
+[@(postprocess_with (pp_focused_term false))]
+let pp_test0 () : Tot nat =
+  let _ = focus_on_term in
+  let n1, n2 = tuple_test1 3 in
+  n1 + n2
