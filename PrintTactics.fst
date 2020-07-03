@@ -224,16 +224,21 @@ let fresh_binder (e : env) (basename : string) (ty : typ) : Tac binder =
   let bv = fresh_bv e basename ty in
   mk_binder bv
 
-let push_fresh_binder (e : env) (basename : string) (ty : typ) : Tac (binder & env) =
-  let b = fresh_binder e basename ty in
-  let e' = push_binder e b in
-  b, e'
-
-let genv_push_fresh_binder (ge : genv) (basename : string) (ty : typ) : Tac (binder & genv) =
+let genv_push_fresh_binder (ge : genv) (basename : string) (ty : typ) : Tac (genv & binder) =
   let b = fresh_binder ge.env basename ty in
   (* TODO: we can have a shortcircuit push (which performs less checks) *)
   let ge' = genv_push_binder ge b true None in
-  b, ge'
+  ge', b
+
+// TODO: actually we should use push_fresh_bv more
+let push_fresh_binder (e : env) (basename : string) (ty : typ) : Tac (env & binder) =
+  let b = fresh_binder e basename ty in
+  let e' = push_binder e b in
+  e', b
+
+let genv_push_fresh_bv (ge : genv) (basename : string) (ty : typ) : Tac (genv & bv) =
+  let ge', b = genv_push_fresh_binder ge basename ty in
+  ge', bv_of_binder b
 
 /// Some constants
 let prims_true_qn = "Prims.l_True"
@@ -844,14 +849,13 @@ let rec _generate_shadowed_subst (ge:genv) (t:term) (bvl : list bv) :
       let bvv = inspect_bv bv in
       let ty = bvv.bv_sort in
       let name = bvv.bv_ppname in
-      let fresh, ge1 = genv_push_fresh_binder ge ("__" ^ name) ty in
-      let fresh_bv = bv_of_binder fresh in
-      let t1 = mk_e_app t [pack (Tv_Var fresh_bv)] in
+      let ge1, fresh = genv_push_fresh_bv ge ("__" ^ name) ty in
+      let t1 = mk_e_app t [pack (Tv_Var fresh)] in
       let t2 = norm_term_env ge1.env [] t1 in
       (* Recursion *)
       let ge2, nbvl = _generate_shadowed_subst ge1 t2 bvl' in
       (* Return *)
-      ge2, (old_bv, fresh_bv) :: nbvl
+      ge2, (old_bv, fresh) :: nbvl
     | _ -> mfail "_subst_with_fresh_vars: not a Tv_Abs"
 
 let generate_shadowed_subst ge =
@@ -1072,16 +1076,16 @@ let check_opt_pre_post_type dbg e opt_pre ret_type opt_post =
 
 val push_two_fresh_vars : env -> string -> typ -> Tac (term & binder & term & binder & env)
 let push_two_fresh_vars e0 basename ty =
-  let b1, e1 = push_fresh_binder e0 basename ty in
-  let b2, e2 = push_fresh_binder e1 basename ty in
+  let e1, b1 = push_fresh_binder e0 basename ty in
+  let e2, b2 = push_fresh_binder e1 basename ty in
   let v1 = pack (Tv_Var (bv_of_binder b1)) in
   let v2 = pack (Tv_Var (bv_of_binder b2)) in
   v1, b1, v2, b2,  e2
 
 val genv_push_two_fresh_vars : genv -> string -> typ -> Tac (term & binder & term & binder & genv)
 let genv_push_two_fresh_vars ge0 basename ty =
-  let b1, ge1 = genv_push_fresh_binder ge0 basename ty in
-  let b2, ge2 = genv_push_fresh_binder ge1 basename ty in
+  let ge1, b1 = genv_push_fresh_binder ge0 basename ty in
+  let ge2, b2 = genv_push_fresh_binder ge1 basename ty in
   let v1 = pack (Tv_Var (bv_of_binder b1)) in
   let v2 = pack (Tv_Var (bv_of_binder b2)) in
   v1, b1, v2, b2,  ge2
@@ -1090,7 +1094,7 @@ val _introduce_variables_for_abs : genv -> typ -> Tac (list term & list binder &
 let rec _introduce_variables_for_abs ge ty =
   match inspect ty with
   | Tv_Arrow b c ->
-    let b1, ge1 = genv_push_fresh_binder ge ("__" ^ name_of_binder b) (type_of_binder b) in
+    let ge1, b1 = genv_push_fresh_binder ge ("__" ^ name_of_binder b) (type_of_binder b) in
     let bv1 = bv_of_binder b1 in
     let v1 = pack (Tv_Var bv1) in
     begin match get_total_or_gtotal_ret_type c with
@@ -1494,10 +1498,23 @@ let analyze_effectful_term dbg () ge opt_c t =
        * a 'let' or not *)
       let ge1, studied_term, info, ret_arg, is_let =
         begin match inspect body with
-        | Tv_Let _ _ fbv fterm _ ->
-          let ret_arg = pack (Tv_Var fbv) in
-          (genv_push_bv ge fbv false None, fterm,
-           compute_eterm_info ge.env fterm, Some ret_arg, true)
+        | Tv_Let _ _ bv0 fterm _ ->
+          let ge1 = genv_push_bv ge bv0 false None in
+          (* If the bv name is "uu___", introduce a fresh variable and use it instead:
+           * the underscore might have been introduced when desugaring a let using
+           * tuples. If doing that is not necessary, the introduced variable will
+           * not appear in the generated assertions anyway. *)
+          let ge2, bv1 =
+            let bvv0 = inspect_bv bv0 in
+            let _ = print_dbg dbg ("Let variable name: " ^ bvv0.bv_ppname) in
+            if bvv0.bv_ppname = "uu___" (* this is a bit hacky *)
+            then genv_push_fresh_bv ge1 "ret" bvv0.bv_sort
+            else ge1, bv0
+          in
+          let ret_arg = pack (Tv_Var bv1) in
+          let ge3 = genv_push_bv ge2 bv1 false None in
+          let info = compute_eterm_info ge3.env fterm in
+          (ge3, fterm, info, Some ret_arg, true)
         | _ -> (ge, body, compute_eterm_info ge.env body, None, false)
         end
       in
@@ -1550,3 +1567,19 @@ let pp_test2 (n : nat) : Tot unit =
   let _ = focus_on_term in
   assert(n >= 0);
   ()
+
+(* Warning: the variables used for the matching are replaced by '_' if they are not used *)
+[@(postprocess_with (pp_focused_term true))]
+let pp_test3 (n : nat) : Tot nat =
+  let _ = focus_on_term in
+  let x, y, z = 1, 2, 3 in
+  let a, (b, c) = 4, (5, 6) in
+  x + y + z + a + b + c
+
+[@(postprocess_with (pp_focused_term true))]
+let pp_test4 () : Tot nat =
+  let _ = focus_on_term in
+  let x = 3 in
+  2
+  
+// Tv_FVar Prims._assert
