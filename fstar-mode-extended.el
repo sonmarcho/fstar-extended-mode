@@ -901,7 +901,7 @@ refinement), if necessary."
       (forward-char (- p2 p1))
       (dolist (a (assertions-posts assertions))
         (generate-assert-from-term indent-str t a))
-      ))))
+      )))
 
 (defun insert-assert-pre-post--process
     (INDENT_STR P1 P2 PARSE_RESULT)
