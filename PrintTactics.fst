@@ -54,8 +54,19 @@ let opt_tapply #a #b f x =
   | Some x' -> Some (f x')
 
 /// Some debugging facilities
-let print_dbg (debug : bool) (s : string) : Tac unit =
+val print_dbg : bool -> string -> Tac unit
+let print_dbg debug s =
   if debug then print s
+
+val option_to_string : (#a : Type) -> (a -> Tot string) -> option a -> Tot string
+let option_to_string #a f x =
+  match x with
+  | None -> "None"
+  | Some x' -> "Some (" ^ f x' ^ ")"
+
+val list_to_string : #a : Type -> (a -> Tot string) -> list a -> Tot string
+let list_to_string #a f ls =
+  (List.Tot.fold_left (fun s x -> s ^ " (" ^ f x ^ ");") "[" ls) ^ "]"
 
 let print_binder_info (full : bool) (b : binder) : Tac unit =
   let bv, a = inspect_binder b in
@@ -308,6 +319,12 @@ noeq type type_info = {
 }
 
 let mk_type_info = Mktype_info
+
+val type_info_to_string : type_info -> Tot string
+let type_info_to_string info =
+  "Mktype_info (" ^
+  term_to_string info.ty ^ ") (" ^
+  option_to_string term_to_string info.refin ^ ")"
 
 let unit_type_info = mk_type_info (`unit) None
 
@@ -592,12 +609,6 @@ type proposition = term
 val proposition_to_string : proposition -> Tot string
 let proposition_to_string p = term_to_string p
 
-val option_to_string : (#a : Type) -> (a -> Tot string) -> option a -> Tot string
-let option_to_string #a f x =
-  match x with
-  | None -> "None"
-  | Some x' -> "Some (" ^ f x' ^ ")"
-
 /// Cast information
 noeq type cast_info = {
   term : term;
@@ -608,6 +619,12 @@ noeq type cast_info = {
 let mk_cast_info t p_ty exp_ty : cast_info =
   Mkcast_info t p_ty exp_ty
 
+val cast_info_to_string : cast_info -> Tot string
+let cast_info_to_string info =
+  "Mkcast_info (" ^ term_to_string info.term ^ ") (" ^
+  option_to_string type_info_to_string info.p_ty ^ ") (" ^
+  option_to_string type_info_to_string info.exp_ty ^ ")"
+
 /// Extracts the effectful information from a computation
 noeq type effect_info = {
   ei_type : effect_type;
@@ -617,12 +634,6 @@ noeq type effect_info = {
 }
 
 let mk_effect_info = Mkeffect_info
-
-val type_info_to_string : type_info -> Tot string
-let type_info_to_string info =
-  "Mktype_info (" ^
-  term_to_string info.ty ^ ") (" ^
-  option_to_string term_to_string info.refin ^ ")"
 
 /// Convert a ``typ_or_comp`` to cast information
 val effect_info_to_string : effect_info -> Tot string
@@ -1122,8 +1133,8 @@ val pre_post_to_propositions :
 
 let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt_post =
   print_dbg dbg "[> pre_post_to_propositions: begin";
-  (**) print_dbg dbg ("- uninstantiated pre: " ^ option_to_string term_to_string opt_pre);
-  (**) print_dbg dbg ("- uninstantiated post: " ^ option_to_string term_to_string opt_post);
+  print_dbg dbg ("- uninstantiated pre: " ^ option_to_string term_to_string opt_pre);
+  print_dbg dbg ("- uninstantiated post: " ^ option_to_string term_to_string opt_post);
   let brs = match ret_abs_binder with | None -> [] | Some b -> [b] in
   (* Analyze the pre and the postcondition and introduce the necessary variables *)
   let ge3, (pre_values, pre_binders), (post_values, post_binders) =
@@ -1181,7 +1192,10 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
    *   drop the post if there is a problem *)
   let post_prop =
     try opt_mk_app_norm ge3 opt_post post_values
-    with | _ -> None
+    with
+    | _ ->
+      print_dbg dbg "Dropping a postcondition because of incoherent typing";
+      None
   in
   (* return *)
   print_dbg dbg "[> pre_post_to_propositions: end";
@@ -1236,7 +1250,9 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
     | None -> ge1, None, [], None
     | Some c ->
       let ei = typ_or_comp_to_effect_info ge1 c in
-      print_dbg dbg (effect_info_to_string ei);
+      print_dbg dbg ("- target effect: " ^ effect_info_to_string ei);
+      print_dbg dbg ("- global unfilt. pre: " ^ option_to_string term_to_string ei.ei_pre);
+      print_dbg dbg ("- global unfilt. post: " ^ option_to_string term_to_string ei.ei_post);
       (* The global pre-condition is to be used only if none of its variables
        * are shadowed (which implies that we are close enough to the top of
        * the function *)
@@ -1245,13 +1261,22 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
         | None -> None
         | Some pre ->
           let abs_vars = abs_free_in ge1 pre in
-          if Cons? abs_vars then None else ei.ei_pre
+          if Cons? abs_vars then
+            begin
+            print_dbg dbg "Dropping the global precondition because of shadowed variables";
+            None
+            end
+          else ei.ei_pre
         end
       in
       (* The global post-condition and the type cast are relevant only if the
        * studied term is not the definition in a let binding *)
       let gpost, gcast_props =
-        if is_let then None, []
+        if is_let then
+          begin
+          print_dbg dbg "Dropping the global postcondition and return type because we are studying a let expression";
+          None, []
+          end
         else
           (* Because of the way the studied function is rewritten before being sent to F*
            * we might have a problem with the return type (we might instantiate
@@ -1261,10 +1286,17 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
            * refinement. Note that here only the type refinement may be instantiated,
            * we thus also need to check for the post inside ``pre_post_to_propositions`` *)
           try
+            print_dbg dbg "> Generating propositions from the global type cast";
             let gcast = mk_cast_info v (Some einfo.ei_ret_type) (Some ei.ei_ret_type) in
+            print_dbg dbg (cast_info_to_string gcast);
             let gcast_props = cast_info_to_propositions ge1 gcast in
+            print_dbg dbg "> Propositions for global type cast:";
+            print_dbg dbg (list_to_string term_to_string gcast_props);
             ei.ei_post, List.Tot.rev gcast_props
-          with | _ -> None, []
+          with
+          | _ ->
+            print_dbg dbg "Dropping the global postcondition and return type because of incoherent typing";
+            None, []
       in
       (* Generate the propositions from the precondition and the postcondition *)
       (* TODO: not sure about the return type parameter: maybe catch failures *)
@@ -1424,6 +1456,7 @@ let pp_explore (dbg : bool)
   | Comp (Eq _) l r ->
     let c = safe_typ_or_comp e l in
     let ge = mk_genv e [] [] in
+    print_dbg dbg ("[> About to explore term:\n" ^ term_to_string l);
     let x = explore_term dbg #a f x ge c l in
     trefl()
   | _ -> mfail "pp_explore: not a squashed equality"
@@ -1663,12 +1696,11 @@ let pp_test9 (y : int{y >= 10}) :
   test_lemma3 y;
   0
 
-(* TODO HERE : fix that *)
 [@(postprocess_with (pp_focused_term true))]
-let test10 () :
+let test10 (n : nat{n % 4 = 0}) :
   Tot (n:nat{n % 2 = 0}) =
   let _ = focus_on_term in
-  2
+  2 * n
 
 (**** Wrapping with tactics *)
 
