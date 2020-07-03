@@ -1656,13 +1656,28 @@ let pp_test8 (a : Type) (x : ty1 a) :
   let _ = focus_on_term in
   y
 
-(* TODO HERE : fix that *)
 [@(postprocess_with (pp_focused_term true))]
 let pp_test9 (y : int{y >= 10}) :
   Tot nat =
   let _ = focus_on_term in
   test_lemma3 y;
   0
+
+(* TODO HERE : fix that *)
+[@(postprocess_with (pp_focused_term true))]
+let test8 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
+  Tot (n:nat{n % 2 = 0}) =
+  let a = 3 in
+  (**) test_lemma1 x; (**)
+  test_lemma1 (let y = x in y); (**)
+  let w = 3 in
+  test_lemma1 w;
+  test_lemma3 x;
+  (**) test_lemma3 x; (**)
+  (**) test_lemma3 y; (**)
+  test_lemma4 x y x 1 2;
+  let _ = focus_on_term in
+  2
 
 (**** Wrapping with tactics *)
 
@@ -1761,7 +1776,6 @@ let test7 (x : nat) : nat =
   );
   0
 
-[@(postprocess_with (pp_focused_term false))]
 let test8 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
   Tot (n:nat{n % 2 = 0}) =
   let a = 3 in
@@ -1772,7 +1786,6 @@ let test8 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
   test_lemma3 x;
   (**) test_lemma3 x; (**)
   (**) test_lemma3 y; (**)
-  let _ = focus_on_term in
   test_lemma4 x y x 1 2;
   2
 
