@@ -361,9 +361,17 @@ let is_total_or_gtotal c =
 /// Whenever we go inside an abstraction, we store how  we instantiated the outer
 /// lambda (in an order reverse to the instantiation order), so that we can correctly
 /// instantiate the pre/post-conditions and type refinements.
+// TODO: actually we only need to carry a comp (if typ: consider it total)
 noeq type typ_or_comp =
 | TC_Typ : v:typ -> m:list (bv & bv) -> typ_or_comp
 | TC_Comp : v:comp -> m:list (bv & bv) -> typ_or_comp
+
+/// Compute a ``typ_or_comp`` from the type of a term
+val safe_typ_or_comp : env -> term -> Tac (option typ_or_comp)
+let safe_typ_or_comp e t =
+  match safe_tcc e t with
+  | None -> None
+  | Some c -> Some (TC_Comp c [])
 
 /// Update the current ``typ_or_comp`` before going into the body of an abstraction
 /// Any new binder needs to be added to the current environment (otherwise we can't,
@@ -372,7 +380,6 @@ noeq type typ_or_comp =
 /// that we don't add this binder to a more general environment, because we don't
 /// need it besides that.
 val abs_update_typ_or_comp : binder -> typ_or_comp -> env -> Tac (env & typ_or_comp)
-
 let _abs_update_typ (b:binder) (ty:typ) (m:list (bv & bv)) (e:env) :
   Tac (env & typ_or_comp) =
   begin match inspect ty with
@@ -451,13 +458,10 @@ let rec explore_term dbg #a f x ge c t =
     | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> x0, Continue
     | Tv_App hd (a,qual) ->
       (* Explore the argument - we update the target typ_or_comp when doing so *)
-      let a_c =
-        match safe_tcc ge.env a with
-        | None -> None
-        | Some cp -> Some (TC_Comp cp [])
-      in
-        let x1, flag1 = explore_term dbg f x0 ge a_c a in
-      (* Explore the head *)
+      let a_c = safe_typ_or_comp ge.env a in
+      let x1, flag1 = explore_term dbg f x0 ge a_c a in
+      (* Explore the head - no type information here: we can compute it,
+       * but it seems useless (or maybe use it only if it is not Total) *)
       if flag1 = Continue then
         explore_term dbg f x1 ge None hd
       else x1, convert_ctrl_flag flag1
@@ -479,13 +483,15 @@ let rec explore_term dbg #a f x ge c t =
     | Tv_Uvar _ _ -> x0, Continue
     | Tv_Let recf attrs bv def body ->
       (* Explore the binding definition *)
-      let x1, flag1 = explore_term dbg f x0 ge None def in
+      let def_c = safe_typ_or_comp ge.env def in
+      let x1, flag1 = explore_term dbg f x0 ge def_c def in
       if flag1 = Continue then
         (* Explore the next subterm *)
         let ge1 = genv_push_bv ge bv false (Some def) in
         explore_term dbg f x0 ge1 c body
       else x1, convert_ctrl_flag flag1
     | Tv_Match scrutinee branches ->
+      (* Auxiliary function to explore the branches *)
       let explore_branch (x_flag : a & ctrl_flag) (br : branch) : Tac (a & ctrl_flag)=
         let x0, flag = x_flag in
         if flag = Continue then
@@ -499,7 +505,10 @@ let rec explore_term dbg #a f x ge c t =
         (* Don't convert the flag *)
         else x0, flag
       in
-      let x1 = explore_term dbg #a f x0 ge None scrutinee in
+      (* Explore the scrutinee *)
+      let scrut_c = safe_typ_or_comp ge.env scrutinee in
+      let x1 = explore_term dbg #a f x0 ge scrut_c scrutinee in
+      (* Explore the branches *)
       fold_left explore_branch x1 branches
     | Tv_AscribedT e ty tac ->
       let c1 = Some (TC_Typ ty []) in
@@ -1395,11 +1404,7 @@ let pp_explore (dbg : bool)
   print_dbg dbg ("[> pp_explore:\n" ^ term_to_string g);
   begin match term_as_formula g with
   | Comp (Eq _) l r ->
-    let c : option typ_or_comp =
-      match safe_tcc e l with
-      | Some c -> Some (TC_Comp c [])
-      | None -> None
-    in
+    let c = safe_typ_or_comp e l in
     let ge = mk_genv e [] [] in
     let x = explore_term dbg #a f x ge c l in
     trefl()
