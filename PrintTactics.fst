@@ -1665,17 +1665,8 @@ let pp_test9 (y : int{y >= 10}) :
 
 (* TODO HERE : fix that *)
 [@(postprocess_with (pp_focused_term true))]
-let test8 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
+let test10 () :
   Tot (n:nat{n % 2 = 0}) =
-  let a = 3 in
-  (**) test_lemma1 x; (**)
-  test_lemma1 (let y = x in y); (**)
-  let w = 3 in
-  test_lemma1 w;
-  test_lemma3 x;
-  (**) test_lemma3 x; (**)
-  (**) test_lemma3 y; (**)
-  test_lemma4 x y x 1 2;
   let _ = focus_on_term in
   2
 
