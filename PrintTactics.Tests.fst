@@ -201,6 +201,15 @@ let pp_test11 (n : nat{n >= 4}) :
   let n = test_fun1 n in
   n
 
+/// Tests with tuples
+(* Warning: the variables used for the matching are replaced by '_' if they are not used *)
+[@(postprocess_with (pp_focused_term true))]
+let pp_test12 (n : nat) : Tot nat =
+  let _ = focus_on_term in
+  let x, y, z = 1, 2, 3 in
+  let a, (b, c) = 4, (5, 6) in
+  x + y + z + a + b + c
+
 (**** Wrapping with tactics *)
 
 // Rk.: problems with naming: use synth: let x = _ by (...)
@@ -311,7 +320,7 @@ let test8 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
   test_lemma4 x y x 1 2;
   2
 
-//[@(postprocess_with pp_tac)]
+[@(postprocess_with pp_tac)]
 let test9 (x : nat{x >= 4}) (y : int{y >= 10}) (z : nat{z >= 12}) :
   Tot (n:nat{n % 2 = 0}) =
   let a = 3 in

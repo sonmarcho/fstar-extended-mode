@@ -32,6 +32,7 @@ TODO: for now just calls message"
 (define-error 'fstar-meta-parsing "Error while parsing F*")
 
 (defun replace-in-string (FROM TO STR)
+  "Replace FROM with TO in string STR."
   (replace-regexp-in-string (regexp-quote FROM) TO STR nil 'literal))
 
 (defun back-to-indentation-or-beginning () (interactive)
@@ -39,14 +40,13 @@ TODO: for now just calls message"
        (beginning-of-line)))
 
 (defun current-line-is-whitespaces-p ()
-  "Checks if the current line is only made of spaces"
+  "Check if the current line is only made of spaces."
   (save-excursion
     (beginning-of-line)
     (looking-at-p "[[:space:]]*$")))
 
 (defun insert-newline-term (TERM)
-  "If the current line is not empty, insert a new line after the current one,
-   then insert TERM"
+  "Insert a new line if the current one is not empty, then insert TERM."
   (interactive)
   (progn
    (if (current-line-is-whitespaces-p) () (progn (end-of-line) (newline)))
@@ -54,7 +54,8 @@ TODO: for now just calls message"
    (insert TERM)))
 
 (defun empty-line ()
-  "Delete all the characters on the current line and returns the number of deleted caracters"
+  "Delete all the characters on the current line.
+Return the number of deleted characters."
   (interactive)
   (let ($p)
    (setq $p (- (line-end-position) (line-beginning-position)))
@@ -62,13 +63,13 @@ TODO: for now just calls message"
    $p))
 
 (defun empty-delete-line ()
-  "Remove all the characters on the line if not empty, delete the line otherwise"
+  "Remove all the characters on the line if not empty, delete the line otherwise."
   (interactive)
   (if (equal (line-beginning-position) (line-end-position))
       (progn (delete-backward-char 1) 1) (empty-line)))
 
 (defun delete-always-line ()
-  "Remove all the characters on the line if not empty, delete the line otherwise"
+  "Remove all the characters on the line if not empty, delete the line otherwise."
   (interactive)
   (let ($c)
     (if (equal (line-beginning-position) (line-end-position))
@@ -262,6 +263,22 @@ Takes optional region delimiters as arguments."
 (use-package fstar-mode
   :demand)
 
+(defun consume-string-forward (STR &optional NO_ERROR)
+  "If the pointer looks at string STR, moves the pointer after it. Otherwise,
+returns nil or raises an error depending on NO_ERROR."
+  (if (looking-at-p (regexp-quote STR))
+      (progn (forward-char (length STR)) t)
+    (if NO_ERROR nil (error (format "consume-string-forward %s failed" STR)))))      
+
+(defun search-forward-not-comment (STR &optional LIMIT)
+    "Looks for the first occurrence of STR not inside a comment, returns t and
+moves the pointer immediately after if it finds one, doesn't move the pointer
+and returns nil otherwise."
+    (let (($p (point)))
+      (fstar--search-predicated-forward
+       (lambda () (not (fstar-in-comment-p))) STR LIMIT)
+      (not (= $p (point)))))
+
 (defun skip-comment (FORWARD &optional LIMIT)
   "Move the cursor forward or backward until we are out of a comment or we
 reach the end of the buffer"
@@ -269,12 +286,19 @@ reach the end of the buffer"
     ;; Set the limit to the move
     (if FORWARD (setq $stop (or LIMIT (point-max)))
                 (setq $stop (or LIMIT (point-min))))
-    (if (fstar-in-comment-p)
-        (if FORWARD
-            ;; Forward: go forward until we are out of the comment
-            (while (and (fstar-in-comment-p) (< (point) $stop)) (forward-char))
-            ;; Backward:
-            (goto-char (nth 8 (fstar--syntax-ppss (point))))))))
+    (cond
+     ;; Inside a comment
+     ((fstar-in-comment-p)
+      (if FORWARD
+          ;; Forward: go forward until we are out of the comment
+          (while (and (fstar-in-comment-p) (< (point) $stop)) (forward-char))
+        ;; Backward: we can use the parsing state to jump
+        (goto-char (nth 8 (fstar--syntax-ppss (point))))))
+     ;; Inside a literate comment
+     ((fstar-in-literate-comment-p)
+      (if FORWARD (if (search-forward "\n" $stop t) (point) (goto-char $stop))
+        (if (search-backward "\n" $stop t) (point) (goto-char $stop))))
+     (t (point)))))
 
 (defun is-at-comment-limit (FORWARD &optional LIMIT)
   (if FORWARD
@@ -290,13 +314,15 @@ reach the end of the buffer"
           (fstar-in-comment-p (- (point) 1))))))
 
 (defun skip-chars (FORWARD CHARS &optional LIMIT)
+  "Move until the current character is not in CHARS.
+FORWARD controls the direction, LIMIT controls where to stop."
   (if FORWARD
       (skip-chars-forward CHARS LIMIT)
       (skip-chars-backward CHARS LIMIT)))
 
 (defun skip-comments-and-spaces (FORWARD &optional LIMIT)
-  "Move the cursor forward or backward until we are out of a comment and there
-are no spaces"
+  "Move the cursor until we are out of a comment and there are no spaces.
+FORWARD controls the direction, LIMIT delimits the region."
   (let ($continue $p1 $p2 $limit $reached-limit)
     (if FORWARD (setq $p1 (point) $p2 (or LIMIT (point-max)))
                 (setq $p2 (point) $p1 (or LIMIT (point-min))))
@@ -311,11 +337,58 @@ are no spaces"
         (if $reached-limit (setq $continue nil)
           (if (is-at-comment-limit FORWARD)
             (if FORWARD (forward-char 2) (backward-char 1))
-            (setq $continue nil)))))))
+            (setq $continue nil)))))
+    (point)))
+
+(defun skip-forward-pragma (&optional LIMIT)
+    "Skip a pragma instruction (#push-options, #pop-options...).
+If we are at the beginning of a #push-options or #pop-options instruction,
+move forward until we are out of it or reach LIMIT.
+Returns the position where the pointer is left."
+  (save-restriction
+    (narrow-to-region (point) (if LIMIT LIMIT (point-max)))
+    (let (($continue t) $go)
+      (defun go (STR)
+        (if (looking-at-p (regexp-quote STR))
+            (progn (forward-char (length STR)) (setq $continue t) t)
+          nil))
+      (cond ((go "#set-options") ())
+            ((go "#reset-options") ())
+            ((go "#push-options") ())
+            ((go "#pop-options") ())
+            ((go "#restart-solver") ())
+            ((go "#ligth") ())
+            (t (setq $continue nil)))
+      ;; Skip the parameters (the string)
+      (when $continue (forward-sexp)))))
+
+(defun skip-forward-square-brackets (&optional LIMIT)
+  "If look at '[', go after the closing ']'.
+LIMIT delimits the end of the search."
+  (save-restriction
+    (narrow-to-region (point) (if LIMIT LIMIT (point-max)))
+    (when (looking-at-p (regexp-quote "["))
+      (forward-sexp)))
+  (point))
+
+(defun skip-forward-comments-pragmas-spaces (&optional LIMIT)
+  "Go forward until there are no comments and pragma instructions.
+Stop at LIMIT."
+  (save-restriction
+    (narrow-to-region (point) (or LIMIT (point-max)))
+    (let (($continue t)
+          ($p (point)))
+      (while $continue
+        (skip-comments-and-spaces t)
+        (skip-forward-pragma)
+        (when (or (= (point) $p) (= (point) (point-max)))
+          (setq $continue nil))
+        (setq $p (point))))))
 
 (defun region-is-comments-and-spaces (BEG END &optional NO_NEWLINE)
-  "Return t if the region delimited by BEG and END is only made of spaces, new line
-characters (if NO_NEWLINE is not nil) and comments."
+  "Check if a region is only made of spaces and comments.
+The region is delimited by BEG and END.
+NO_NEWLINE controls whether newline characters are considered spaces or not."
   (let (($p (point)) ($continue t))
     (goto-char BEG)
     (skip-comments-and-spaces t END)
@@ -345,22 +418,6 @@ characters (if NO_NEWLINE is not nil) and comments."
   e-beg e-end ;; delimiters
   is-var ;; nil if tuple
   )
-
-(defun consume-string-forward (STR &optional NO_ERROR)
-  "If the pointer looks at string STR, moves the pointer after it. Otherwise,
-returns nil or raises an error depending on NO_ERROR."
-  (if (looking-at-p (regexp-quote STR))
-      (progn (forward-char (length STR)) t)
-    (if NO_ERROR nil (error (format "consume-string-forward %s failed" STR)))))      
-
-(defun search-forward-not-comment (STR &optional LIMIT)
-    "Looks for the first occurrence of STR not inside a comment, returns t and
-moves the pointer immediately after if finds one, doesn't move the pointer
-and returns nil otherwise."
-    (let (($p (point)))
-      (fstar--search-predicated-forward
-       (lambda () (not (fstar-in-comment-p))) STR LIMIT)
-      (not (= $p (point)))))
 
 (defun region-is-tuple (BEG END)
   "Returns t if the text region delimited by BEG and END is a tuple (simply
@@ -945,13 +1002,16 @@ refinement), if necessary."
         ;; Insert an admit if it is a 'let' or a ';' expression
         (when (or $is-let-in $has-semicol)
           (end-of-line) (newline) (indent-according-to-mode) (insert "admit()")))
-      ;; Insert an option to deactivate the proof obligations
+      ;; Delete the comments, the push/pop/set/reset options instructions,
+      ;; and the potential attributes
       (goto-char (point-min))
+      (skip-forward-comments-pragmas-spaces)
+      (skip-forward-square-brackets) ;; the attribute
+      (delete-region (point-min) (point))
+      ;; Insert an option to deactivate the proof obligations
       (insert "#push-options \"--admit_smt_queries true\"\n")
-      ;; Insert the post-processing instruction - note that there mustn't be
-      ;; any spaces between the port-process instruction and the definition
-      (skip-comments-and-spaces t)
-      (insert "[@(FStar.Tactics.postprocess_with (PrintTactics.pp_focused_term false))]")
+      ;; Insert the post-processing instruction
+      (insert "[@(FStar.Tactics.postprocess_with (PrintTactics.pp_focused_term false))]\n")
       ;; Query F*
       (let* ((overlay (make-overlay $beg P2 $cbuffer nil nil))
              ($payload (buffer-substring-no-properties (point-min) (point-max))))
@@ -972,11 +1032,11 @@ refinement), if necessary."
   ) ;; end of function
 
 (defun insert-assert-pre-post ()
-  (interactive)
   "Inserts assertions with the instanciated pre and post-conditions around a
 function call.
 TODO: take into account if/match branches
 TODO: add assertions for the parameters' refinements"
+  (interactive)
   (log-dbg "insert-assert-pre-post")
   (let ($next-point $beg $p $delimiters $indent $indent-str
         $p1 $p2 $parse-result $cp1 $cp2
