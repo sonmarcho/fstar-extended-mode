@@ -42,19 +42,24 @@
   (interactive)
   (with-demoted-errors "Error when constructing arg string: %S"
     (let* ((fname (file-name-nondirectory buffer-file-name))
-            (target (concat fname "-in"))
-            (argstr (condition-case nil
+           (target (concat fname "-in"))
+           (argstr (condition-case nil
+                       (concat
                         (car (process-lines "make" "--quiet" target))
-                      (error (concat
-                              "--include " "/home/son/kremlin/kremlib "
-                              "--include " "/home/son/hacl-star/lib"
-                              ;; "--debug yes --log_queries --use_hints --cache_checked_modules"
-                              )))))
-                      ;; (error (concat
-                      ;;         "--include " (getenv "HOME") "/kremlin/kremlib "
-                      ;;         ;; "--debug yes --log_queries --use_hints --cache_checked_modules"
-                      ;;         )))))
-            (split-string argstr))))
+                        " --include " (getenv "HOME") "/misc " ;; for the F* extended mode
+                        )
+                     (error (concat
+                             "--include " (getenv "HOME") "/kremlin/kremlib "
+                             "--include " (getenv "HOME") "/hacl-star/lib "
+                             "--include " (getenv "HOME") "/misc/ "
+                             ;; "--debug yes --log_queries --use_hints --cache_checked_modules"
+                             )))))
+      (message (concat "F* arguments: " argstr))
+      ;; (error (concat
+      ;;         "--include " (getenv "HOME") "/kremlin/kremlib "
+      ;;         ;; "--debug yes --log_queries --use_hints --cache_checked_modules"
+      ;;         )))))
+      (split-string argstr))))
 (setq fstar-subp-prover-args #'my-fstar-compute-prover-args-using-make)
 (setq fstar-subp-debug t)
 

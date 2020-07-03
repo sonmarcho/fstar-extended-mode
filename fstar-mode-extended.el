@@ -937,7 +937,7 @@ refinement), if necessary."
       (let ($prefix $prefix-length)
         ;; Prefix
         (goto-char $lcp1)
-        (setq $prefix "let _ = focus_on_term in ")
+        (setq $prefix "let _ = PrintTactics.focus_on_term in ")
         (setq $prefix-length (length $prefix))
         (insert $prefix)
         ;; Suffix
@@ -951,7 +951,7 @@ refinement), if necessary."
       ;; Insert the post-processing instruction - note that there mustn't be
       ;; any spaces between the port-process instruction and the definition
       (skip-comments-and-spaces t)
-      (insert "[@(postprocess_with (pp_focused_term false))]")
+      (insert "[@(FStar.Tactics.postprocess_with (PrintTactics.pp_focused_term false))]")
       ;; Query F*
       (let* ((overlay (make-overlay $beg P2 $cbuffer nil nil))
              ($payload (buffer-substring-no-properties (point-min) (point-max))))
