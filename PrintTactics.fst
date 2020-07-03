@@ -1215,12 +1215,13 @@ val eterm_info_to_assertions :
   -> ge:genv
   -> t:term
   -> is_let:bool (* the term is the bound expression in a let binding *)
+  -> is_assert:bool (* the term is an assert - in which case we only output the precondition *)
   -> info:eterm_info
   -> opt_bind_var:option term (* if let binding: the bound var *)
   -> opt_c:option typ_or_comp ->
   Tac (genv & assertions)
 
-let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
+let eterm_info_to_assertions dbg ge t is_let is_assert info bind_var opt_c =
   print_dbg dbg "[> eterm_info_to_assertions";
   (* Introduce additional variables to instantiate the return type refinement,
    * the precondition, the postcondition and the goal *)
@@ -1248,86 +1249,94 @@ let eterm_info_to_assertions dbg ge t is_let info bind_var opt_c =
                              einfo.ei_pre einfo.ei_post in
   print_dbg dbg ("- pre prop: " ^ option_to_string term_to_string pre_prop);
   print_dbg dbg ("- post prop: " ^ option_to_string term_to_string post_prop);
-  (* Generate propositions from the target computation (pre, post, type cast) *)
-  let ge2, gpre_prop, gcast_props, gpost_prop =
-    begin match opt_c with
-    | None -> ge1, None, [], None
-    | Some c ->
-      let ei = typ_or_comp_to_effect_info ge1 c in
-      print_dbg dbg ("- target effect: " ^ effect_info_to_string ei);
-      print_dbg dbg ("- global unfilt. pre: " ^ option_to_string term_to_string ei.ei_pre);
-      print_dbg dbg ("- global unfilt. post: " ^ option_to_string term_to_string ei.ei_post);
-      (* The global pre-condition is to be used only if none of its variables
-       * are shadowed (which implies that we are close enough to the top of
-       * the function *)
-      let gpre =
-        begin match ei.ei_pre with
-        | None -> None
-        | Some pre ->
-          let abs_vars = abs_free_in ge1 pre in
-          if Cons? abs_vars then
-            begin
-            print_dbg dbg "Dropping the global precondition because of shadowed variables";
-            None
-            end
-          else ei.ei_pre
-        end
-      in
-      (* The global post-condition and the type cast are relevant only if the
-       * studied term is not the definition in a let binding *)
-      let gpost, gcast_props =
-        if is_let then
-          begin
-          print_dbg dbg "Dropping the global postcondition and return type because we are studying a let expression";
-          None, []
+  (* If the term is an assert, only output the precondition *)
+  if is_assert then
+    begin
+    print_dbg dbg "The term is an assert: only keep the precondition";
+    ge1, { pres = opt_cons pre_prop []; posts = [] }  
+    end
+  else begin
+    (* Generate propositions from the target computation (pre, post, type cast) *)
+    let ge2, gpre_prop, gcast_props, gpost_prop =
+      begin match opt_c with
+      | None -> ge1, None, [], None
+      | Some c ->
+        let ei = typ_or_comp_to_effect_info ge1 c in
+        print_dbg dbg ("- target effect: " ^ effect_info_to_string ei);
+        print_dbg dbg ("- global unfilt. pre: " ^ option_to_string term_to_string ei.ei_pre);
+        print_dbg dbg ("- global unfilt. post: " ^ option_to_string term_to_string ei.ei_post);
+        (* The global pre-condition is to be used only if none of its variables
+         * are shadowed (which implies that we are close enough to the top of
+         * the function *)
+        let gpre =
+          begin match ei.ei_pre with
+          | None -> None
+          | Some pre ->
+            let abs_vars = abs_free_in ge1 pre in
+            if Cons? abs_vars then
+              begin
+              print_dbg dbg "Dropping the global precondition because of shadowed variables";
+              None
+              end
+            else ei.ei_pre
           end
-        else
-          (* Because of the way the studied function is rewritten before being sent to F*
-           * we might have a problem with the return type (we might instantiate
-           * the return variable from the global post or from the return type
-           * refinement with a variable whose type is not valid for that, triggering
-           * an exception. In that case, we drop the post and the target type
-           * refinement. Note that here only the type refinement may be instantiated,
-           * we thus also need to check for the post inside ``pre_post_to_propositions`` *)
-          try
-            print_dbg dbg "> Generating propositions from the global type cast";
-            let gcast = mk_cast_info v (Some einfo.ei_ret_type) (Some ei.ei_ret_type) in
-            print_dbg dbg (cast_info_to_string gcast);
-            let gcast_props = cast_info_to_propositions ge1 gcast in
-            print_dbg dbg "> Propositions for global type cast:";
-            print_dbg dbg (list_to_string term_to_string gcast_props);
-            ei.ei_post, List.Tot.rev gcast_props
-          with
-          | _ ->
-            print_dbg dbg "Dropping the global postcondition and return type because of incoherent typing";
+        in
+        (* The global post-condition and the type cast are relevant only if the
+         * studied term is not the definition in a let binding *)
+        let gpost, gcast_props =
+          if is_let then
+            begin
+            print_dbg dbg "Dropping the global postcondition and return type because we are studying a let expression";
             None, []
-      in
-      (* Generate the propositions from the precondition and the postcondition *)
-      (* TODO: not sure about the return type parameter: maybe catch failures *)
-      print_dbg dbg "> Instantiating global pre/post";
-      let ge2, gpre_prop, gpost_prop =
-        pre_post_to_propositions dbg ge1 ei.ei_type v opt_b einfo.ei_ret_type
-                                 gpre gpost in
-      (* Some debugging output *)
-      print_dbg dbg ("- global pre prop: " ^ option_to_string term_to_string gpre_prop);
-      print_dbg dbg ("- global post prop: " ^ option_to_string term_to_string gpost_prop);
-      (* Return type: TODO *)
-      ge2, gpre_prop, gcast_props, gpost_prop
-    end <: Tac _
-  in
-  (* Generate the propositions: *)
-  (* - from the parameters' cast info *)
-  let params_props = cast_info_list_to_propositions ge2 info.parameters in
-  (* - from the return type *)
-  let (ret_values : list term), (ret_binders : list binder) =
-    if E_Lemma? einfo.ei_type then ([] <: list term), ([] <: list binder)
-    else [v], (match opt_b with | Some b -> [b] | None -> []) in
-  let ret_refin_prop = opt_mk_app_norm ge2 (get_opt_refinment einfo.ei_ret_type) ret_values in
-  (* Concatenate, revert and return *)
-  let pres = opt_cons gpre_prop (List.Tot.rev (opt_cons pre_prop params_props)) in
-  let posts = opt_cons ret_refin_prop (opt_cons post_prop
-               (List.append gcast_props (opt_cons gpost_prop []))) in
-  ge2, { pres = pres; posts = posts }
+            end
+          else
+            (* Because of the way the studied function is rewritten before being sent to F*
+             * we might have a problem with the return type (we might instantiate
+             * the return variable from the global post or from the return type
+             * refinement with a variable whose type is not valid for that, triggering
+             * an exception. In that case, we drop the post and the target type
+             * refinement. Note that here only the type refinement may be instantiated,
+             * we thus also need to check for the post inside ``pre_post_to_propositions`` *)
+            try
+              print_dbg dbg "> Generating propositions from the global type cast";
+              let gcast = mk_cast_info v (Some einfo.ei_ret_type) (Some ei.ei_ret_type) in
+              print_dbg dbg (cast_info_to_string gcast);
+              let gcast_props = cast_info_to_propositions ge1 gcast in
+              print_dbg dbg "> Propositions for global type cast:";
+              print_dbg dbg (list_to_string term_to_string gcast_props);
+              ei.ei_post, List.Tot.rev gcast_props
+            with
+            | _ ->
+              print_dbg dbg "Dropping the global postcondition and return type because of incoherent typing";
+              None, []
+        in
+        (* Generate the propositions from the precondition and the postcondition *)
+        (* TODO: not sure about the return type parameter: maybe catch failures *)
+        print_dbg dbg "> Instantiating global pre/post";
+        let ge2, gpre_prop, gpost_prop =
+          pre_post_to_propositions dbg ge1 ei.ei_type v opt_b einfo.ei_ret_type
+                                   gpre gpost in
+        (* Some debugging output *)
+        print_dbg dbg ("- global pre prop: " ^ option_to_string term_to_string gpre_prop);
+        print_dbg dbg ("- global post prop: " ^ option_to_string term_to_string gpost_prop);
+        (* Return type: TODO *)
+        ge2, gpre_prop, gcast_props, gpost_prop
+      end <: Tac _
+    in
+    (* Generate the propositions: *)
+    (* - from the parameters' cast info *)
+    let params_props = cast_info_list_to_propositions ge2 info.parameters in
+    (* - from the return type *)
+    let (ret_values : list term), (ret_binders : list binder) =
+      if E_Lemma? einfo.ei_type then ([] <: list term), ([] <: list binder)
+      else [v], (match opt_b with | Some b -> [b] | None -> []) in
+    let ret_refin_prop = opt_mk_app_norm ge2 (get_opt_refinment einfo.ei_ret_type) ret_values in
+    (* Concatenate, revert and return *)
+    let pres = opt_cons gpre_prop (List.Tot.rev (opt_cons pre_prop params_props)) in
+    let posts = opt_cons ret_refin_prop (opt_cons post_prop
+                 (List.append gcast_props (opt_cons gpost_prop []))) in
+    ge2, { pres = pres; posts = posts }
+    end
 
 (**** Step 3 *)
 /// Simplify the propositions and filter the trivial ones.
@@ -1476,7 +1485,18 @@ val is_focus_on_term : term -> Tac bool
 let is_focus_on_term t =
   match inspect t with
   | Tv_FVar fv ->
-    if flatten_name (inspect_fv fv) = `%PrintTactics.focus_on_term then true else false
+    flatten_name (inspect_fv fv) = `%PrintTactics.focus_on_term
+  | _ -> false
+
+val term_is_assert : term -> Tac bool
+let term_is_assert t =
+  match inspect t with
+  | Tv_App hd a ->
+    begin match inspect hd with
+    | Tv_FVar fv ->
+      flatten_name (inspect_fv fv) = "Prims._assert"
+    | _ -> false
+    end
   | _ -> false
 
 val analyze_effectful_term : bool -> unit -> genv -> option typ_or_comp -> term_view -> Tac (unit & ctrl_flag)
@@ -1494,8 +1514,7 @@ let analyze_effectful_term dbg () ge opt_c t =
       print_dbg dbg ("[> Focus on term: " ^ term_to_string body);
       print_dbg dbg ("[> Environment information: ");
       if dbg then print_binders_info false ge.env;
-      (* Start by analyzing the effectful term and checking whether it is
-       * a 'let' or not *)
+      (* Analyze the effectful term and check whether it is a 'let' or not *)
       let ge1, studied_term, info, ret_arg, is_let =
         begin match inspect body with
         | Tv_Let _ _ bv0 fterm _ ->
@@ -1518,9 +1537,13 @@ let analyze_effectful_term dbg () ge opt_c t =
         | _ -> (ge, body, compute_eterm_info ge.env body, None, false)
         end
       in
+      (* Check if the considered term is an assert, in which case we will only
+       * display the precondition (otherwise we introduce too many assertions
+       * in the context) *)
+      let is_assert = term_is_assert studied_term in
       (* Instantiate the refinements *)
       let ge2, asserts =
-        eterm_info_to_assertions dbg ge1 studied_term is_let info ret_arg opt_c in
+        eterm_info_to_assertions dbg ge1 studied_term is_let is_assert info ret_arg opt_c in
       (* Simplify and filter *)
       let asserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
       (* Introduce fresh variables for the shadowed ones and substitute *)
