@@ -1949,8 +1949,7 @@ let unfold_in_assert_or_assume dbg ares =
    * - rebuild: a Tot function which, given a term, rebuilds the equality by
    *   replacing the above subterm with the given term
    * - insert_before: whether to insert the new assertion before or after the
-   *   current assertion in the user file
-   *)
+   *   current assertion in the user file *)
   let subterm, unf_res, rebuild, insert_before =
     match term_as_formula ares.res with
     | Comp comp_kind l r
@@ -1972,15 +1971,15 @@ let unfold_in_assert_or_assume dbg ares =
       else find_in_whole_term ()
     | _ -> find_in_whole_term ()
   in
-  (* Find out which kind of unfolding to perform on the focused term *)
-  let unf_tm =
+  (* Unfold the term *)
+  let ge1, unf_tm =
     match inspect unf_res.res with
     | Tv_FVar fv ->
       (* The easy case: just use the normalizer *)
       let fname = flatten_name (inspect_fv fv) in
       let unf_tm = norm_term_env ares.ge.env [delta_only [fname]] subterm in
-      rebuild unf_tm
-    | Tv_Var bv ->
+      ares.ge, rebuild unf_tm
+    | Tv_Var bv -> 
       (* We need to find out how to unfold this binder: look for an equality
        * given by an assertion/assumption or for a pure let-binding defining
        * this equality *)
@@ -1990,9 +1989,19 @@ let unfold_in_assert_or_assume dbg ares =
          mfail ("unfold_in_assert_or_assume: can't unfold the following term: "
                 ^ term_to_string unf_res.res);
        (* Look for the equality to apply *)
+       let parents = List.Tot.map snd ares.parents in
+       let ge1, eq_tm =
+         begin match find_context_equality_for_bv dbg ares.ge bv parents with
+         | ge1, Some unf_tm -> ge1, unf_tm
+         | _, None ->
+           mfail ("unfold_in_assert_or_assume: " ^
+                 "couldn't find equalities with which to rewrite: " ^ (name_of_bv bv))
+         end
+       in
+       (* Apply *)
        admit()
-       
     | _ -> mfail ("unfold_in_assert_or_assume: can't unfold the following term: "
-                  ^ term_to_string unf_res.res)
+           ^ term_to_string unf_res.res)
   in
+  (* Output *)
   admit()
