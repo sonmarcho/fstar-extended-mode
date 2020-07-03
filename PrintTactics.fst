@@ -1525,14 +1525,28 @@ let pp_focused_term dbg () =
   pp_explore dbg (analyze_effectful_term dbg) ()
 
 (* TODO HERE *)
-let tuple_test1 (n : nat) :
+let tuple_test0 (n : nat) :
   Pure (nat & nat)
   (requires True)
   (ensures (fun r -> let n1, n2 = r in n1 = n2)) =
   n, n
 
-[@(postprocess_with (pp_focused_term false))]
+let pp_dump () : Tac unit =
+  dump ""; trefl()
+
+[@(postprocess_with pp_dump)]
 let pp_test0 () : Tot nat =
-  let _ = focus_on_term in
-  let n1, n2 = tuple_test1 3 in
+  let n1, n2 = tuple_test0 3 in
   n1 + n2
+
+[@(postprocess_with (pp_focused_term true))]
+let pp_test1 () : Tot nat =
+  let _ = focus_on_term in
+  let n1, n2 = tuple_test0 3 in
+  n1 + n2
+
+[@(postprocess_with (pp_focused_term true))]
+let pp_test2 (n : nat) : Tot unit =
+  let _ = focus_on_term in
+  assert(n >= 0);
+  ()
