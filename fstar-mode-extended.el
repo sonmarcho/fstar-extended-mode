@@ -359,8 +359,11 @@ Returns the position where the pointer is left."
             ((go "#restart-solver") ())
             ((go "#ligth") ())
             (t (setq $continue nil)))
-      ;; Skip the parameters (the string)
-      (when $continue (forward-sexp)))))
+      ;; Skip the parameters (the string) - note that there may be comments
+      ;; between the pragma and the paramters
+      (when $continue
+        (skip-comments-and-spaces t)
+        (forward-sexp)))))
 
 (defun skip-forward-square-brackets (&optional LIMIT)
   "If look at '[', go after the closing ']'.
@@ -968,7 +971,14 @@ refinement), if necessary."
         ($has-semicol (subexpr-has-semicol PARSE_RESULT))
         $beg $cbuffer $shift $lbeg $lp1 $lp2 $lcp1 $lcp2)
     ;; Copy the relevant content of the buffer for modification
-    (setq $beg (fstar-subp--untracked-beginning-position))
+    ;; Ignore the comments, the push/pop/set/reset options instructions,
+    ;; and the potential attributes. Note that we need to do that in the F*
+    ;; buffer because we need to use the F* parser.
+    (goto-char (fstar-subp--untracked-beginning-position))
+    (skip-forward-comments-pragmas-spaces P2)
+    (skip-forward-square-brackets P2) ;; the attribute
+    (skip-forward-comments-pragmas-spaces P2)
+    (setq $beg (point))
     ;; - copy and switch buffer
     (setq $cbuffer (current-buffer))
     (kill-ring-save $beg P2)
@@ -976,7 +986,6 @@ refinement), if necessary."
     (erase-buffer)
     ;; - change the reference position
     (goto-char (point-max))
-    (insert "\n\n- Starting new processing:\n\n")
     (save-restriction
       (narrow-to-region (point) (point))
       ;; TODO: cleanup the mess with the different position pointers
@@ -1002,13 +1011,8 @@ refinement), if necessary."
         ;; Insert an admit if it is a 'let' or a ';' expression
         (when (or $is-let-in $has-semicol)
           (end-of-line) (newline) (indent-according-to-mode) (insert "admit()")))
-      ;; Delete the comments, the push/pop/set/reset options instructions,
-      ;; and the potential attributes
-      (goto-char (point-min))
-      (skip-forward-comments-pragmas-spaces)
-      (skip-forward-square-brackets) ;; the attribute
-      (delete-region (point-min) (point))
       ;; Insert an option to deactivate the proof obligations
+      (goto-char (point-min))
       (insert "#push-options \"--admit_smt_queries true\"\n")
       ;; Insert the post-processing instruction
       (insert "[@(FStar.Tactics.postprocess_with (PrintTactics.pp_focused_term false))]\n")
@@ -1154,3 +1158,4 @@ TODO: add assertions for the parameters' refinements"
 (global-set-key (kbd "C-S-a") 'switch-assert-assume-in-current-line)
 
 (global-set-key (kbd "C-c C-e") 'insert-assert-pre-post)
+
