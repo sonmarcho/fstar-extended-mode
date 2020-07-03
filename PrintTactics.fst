@@ -68,6 +68,13 @@ val list_to_string : #a : Type -> (a -> Tot string) -> list a -> Tot string
 let list_to_string #a f ls =
   (List.Tot.fold_left (fun s x -> s ^ " (" ^ f x ^ ");") "[" ls) ^ "]"
 
+/// Alternative ``bv_to_string`` function where we print the index of the bv.
+/// It can be very useful for debugging.
+let abv_to_string bv : Tot string =
+  let bvv = inspect_bv bv in
+  bvv.bv_ppname ^ " (%" ^ string_of_int (bvv.bv_index) ^ ") : " ^
+  term_to_string bvv.bv_sort
+
 let print_binder_info (full : bool) (b : binder) : Tac unit =
   let bv, a = inspect_binder b in
   let a_str = match a with
@@ -162,6 +169,24 @@ let get_env (e:genv) : env = e.env
 let get_bind_map (e:genv) : bind_map (bool & term) = e.bmap
 let mk_genv env bmap svars : genv =
   Mkgenv env bmap svars
+
+val genv_to_string : genv -> Tot string
+let genv_to_string ge =
+  let binder_to_string (b : binder) : Tot string =
+    abv_to_string (bv_of_binder b) ^ "\n"
+  in
+  let binders_str = List.Tot.map binder_to_string (binders_of_env ge.env) in
+  let bmap_elem_to_string (e : bv & (bool & term)) : Tot string =
+    let bv, (abs, t) = e in
+    "(" ^ abv_to_string bv ^" -> (" ^
+    string_of_bool abs ^ ", " ^ term_to_string t ^ "))\n"
+  in
+  let bmap_str = List.Tot.map bmap_elem_to_string ge.bmap in
+  let svars_str = List.Tot.map (fun bv -> abv_to_string bv ^ "\n") ge.svars in
+  let flatten = List.Tot.fold_left (fun x y -> x ^ y) "" in
+  "> env:\n" ^ flatten binders_str ^
+  "> bmap:\n" ^ flatten bmap_str ^
+  "> svars:\n" ^ flatten svars_str
 
 /// Push a binder to a ``genv``. Optionally takes a ``term`` which provides the
 /// term the binder is bound to (in a `let _ = _ in` construct for example).
@@ -605,6 +630,16 @@ let abs_free_in ge t =
   in
   let absfree = List.Tot.filter is_free_in_term absl in
   absfree
+
+(*val abs_free_in : list bv -> term -> Tac (list bv)
+let abs_free_in context_absl t =
+  let fvl = free_in t in
+  let absl = List.rev (genv_abstract_bvs ge) in
+  let is_free_in_term bv =
+    Some? (List.Tot.find (bv_eq bv) fvl)
+  in
+  let absfree = List.Tot.filter is_free_in_term absl in
+  absfree*)
 
 (*** Effectful term analysis *)
 /// Analyze a term to retrieve its effectful information
@@ -1366,17 +1401,70 @@ let simp_filter_assertions (e:env) (steps:list norm_step) (a:assertions) :
 
 (**** Step 4 *)
 /// Introduce fresh variables for the variables shadowed in the current environment
-/// and substitute them in the terms.
+/// and substitute them in the terms. Note that as the binding of the value returned
+/// by a function application might shadow one of its parameters, we need to treat
+/// differently the pre-assertions and the post-assertions. Moreover, we need to
+/// keep track of which variables are shadowed for every assertion.
+  
+let rec _split_subst_at_bv (#a : Type) (b : bv) (subst : list (bv & a)) :
+  Tot (list (bv & a) & list (bv & a))
+  (decreases subst) =
+  match subst with
+  | [] -> [], []
+  | (src, tgt) :: subst' ->
+    if bv_eq b src then
+      [], subst'
+    else 
+      let s1, s2 = _split_subst_at_bv b subst' in
+      (src, tgt) :: s1, s2
 
-val subst_shadowed_with_abs_in_assertions : genv -> assertions -> Tac (genv & assertions)
-let subst_shadowed_with_abs_in_assertions ge as =
+val subst_shadowed_with_abs_in_assertions : bool -> genv -> option bv -> assertions -> Tac (genv & assertions)
+let subst_shadowed_with_abs_in_assertions dbg ge shadowed_bv as =
+  (* When generating the substitution, we need to pay attention to the fact that
+   * the returned value potentially bound by a let may shadow another variable.
+   * We need to take this into account for the post-assertions (but not the
+   * pre-assertions). *)
+  print_dbg dbg ("subst_shadowed_with_abs_in_assertions:\n" ^ genv_to_string ge);
   (* Generate the substitution *)
   let ge1, subst = generate_shadowed_subst ge in
-  let subst = map (fun (src, tgt) -> src, pack (Tv_Var tgt)) subst in
+  let post_subst = map (fun (src, tgt) -> src, pack (Tv_Var tgt)) subst in
+  (* The current substitution is valid for the post-assertions: derive from it
+   * a substitution valid for the pre-assertions (just cut it where the bv
+   * shadowed by the return value appears). Note that because we might introduce
+   * dummy variables for the return value, it is not valid just to ignore
+   * the last substitution pair. *)
+  let pre_subst =
+    if Some? shadowed_bv then fst (_split_subst_at_bv (Some?.v shadowed_bv) post_subst)
+    else post_subst
+  in
+  let subst_to_string subst : Tot string =
+    let to_string (x, y) =
+      "(" ^ abv_to_string x ^ " -> " ^ term_to_string y ^ ")\n"
+    in
+    let str = List.Tot.map to_string subst in
+    List.Tot.fold_left (fun x y -> x ^ y) "" str
+  in
+  if dbg then
+    begin
+    print_dbg dbg ("- pre_subst:\n" ^ subst_to_string pre_subst);
+    print_dbg dbg ("- post_subst:\n" ^ subst_to_string post_subst)
+    end;
   (* Apply *)
-  let apply = map (fun t -> apply_subst ge1.env t subst) in
-  let pres = apply as.pres in
-  let posts = apply as.posts in
+  let apply = (fun s -> map (fun t -> apply_subst ge1.env t s)) in
+  let pres = apply pre_subst as.pres in
+  let posts = apply post_subst as.posts in
+  (* Abstract the abstract variables *)
+(*  let pre_abs = List.Tot.map fst pre_subst in
+  let post_abs = List.Tot.map fst post_subst in
+  let abstract_term (abs : list bv) (t : term) : Tac term =
+    let abs = abs_free_in abs t in
+    let abs_binders = List.Tot.map mk_binder abs in
+    let abs_terms = map (fun bv -> pack (Tv_Var bv)) abs in
+    let t = mk_abs t abs_binders in
+    mk_e_app t abs_terms
+  in
+  let pres = map (abstract_term pre_abs) pres in
+  let posts = map (abstract_term post_abs) posts in *)
   ge1, mk_assertions pres posts
 
 (**** Step 5 *)
@@ -1442,6 +1530,7 @@ let _debug_print_var (name : string) (t : term) : Tac unit =
 /// typecheck correctly). We can't use the tactic ``tadmit`` for the simple
 /// reason that it generates a warning which may mess up with the subsequent
 /// parsing of the data generated by the tactics.
+// TODO: actually, there already exists Prims.magic
 assume val magic_witness (#a : Type) : a
 
 let tadmit_no_warning () : Tac unit =
@@ -1507,47 +1596,57 @@ let analyze_effectful_term dbg () ge opt_c t =
     print ("[> analyze_effectful_term: " ^ term_view_construct t ^ ":\n" ^ term_to_string t)
     end;
   match t with
-  | Tv_Let recf attrs bv def body ->
+  | Tv_Let recf attrs _ def body ->
     (* We need to check if the let definition is a meta identifier *)
     if is_focus_on_term def then
       begin
       print_dbg dbg ("[> Focus on term: " ^ term_to_string body);
-      print_dbg dbg ("[> Environment information: ");
-      if dbg then print_binders_info false ge.env;
+      print_dbg dbg ("[> Environment information:\n" ^ genv_to_string ge);
       (* Analyze the effectful term and check whether it is a 'let' or not *)
-      let ge1, studied_term, info, ret_arg, is_let =
+      let ge1, studied_term, info, ret_bv, shadowed_bv, is_let =
         begin match inspect body with
         | Tv_Let _ _ bv0 fterm _ ->
+          (* Before pushing the binder, check if it shadows another variable.
+           * If it is the case, we will need it to correctly output the pre
+           * and post-assertions (because for the pre-assertions the variable
+           * will not be shadowed yet, while it will be the case for the post-
+           * assertions) *)
+          let shadowed_bv =
+            match bind_map_get_from_name ge.bmap (name_of_bv bv0) with
+            | None -> None
+            | Some (sbv, _) -> Some sbv
+          in
           let ge1 = genv_push_bv ge bv0 false None in
           (* If the bv name is "uu___", introduce a fresh variable and use it instead:
            * the underscore might have been introduced when desugaring a let using
            * tuples. If doing that is not necessary, the introduced variable will
            * not appear in the generated assertions anyway. *)
-          let ge2, bv1 =
+          let ge2, (bv1 : bv) =
             let bvv0 = inspect_bv bv0 in
-            let _ = print_dbg dbg ("Let variable name: " ^ bvv0.bv_ppname) in
+            let _ = print_dbg dbg ("Variable bound in let: " ^ abv_to_string bv0) in
             if bvv0.bv_ppname = "uu___" (* this is a bit hacky *)
             then genv_push_fresh_bv ge1 "ret" bvv0.bv_sort
             else ge1, bv0
           in
-          let ret_arg = pack (Tv_Var bv1) in
-          let ge3 = genv_push_bv ge2 bv1 false None in
-          let info = compute_eterm_info ge3.env fterm in
-          (ge3, fterm, info, Some ret_arg, true)
-        | _ -> (ge, body, compute_eterm_info ge.env body, None, false)
+          let info = compute_eterm_info ge2.env fterm in
+          (ge2, fterm, (info <: eterm_info), Some bv1, shadowed_bv, true)
+        | _ -> (ge, body, compute_eterm_info ge.env body, None, None, false)
         end
       in
+      print_dbg dbg ("[> Environment information (after effect analysis):\n" ^ genv_to_string ge1);
       (* Check if the considered term is an assert, in which case we will only
        * display the precondition (otherwise we introduce too many assertions
        * in the context) *)
       let is_assert = term_is_assert studied_term in
       (* Instantiate the refinements *)
+      (* TODO: use bv rather than term for ret_arg *)
+      let ret_arg = opt_tapply (fun x -> pack (Tv_Var x)) ret_bv in
       let ge2, asserts =
         eterm_info_to_assertions dbg ge1 studied_term is_let is_assert info ret_arg opt_c in
       (* Simplify and filter *)
       let asserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
       (* Introduce fresh variables for the shadowed ones and substitute *)
-      let ge3, asserts = subst_shadowed_with_abs_in_assertions ge2 asserts in
+      let ge3, asserts = subst_shadowed_with_abs_in_assertions dbg ge2 shadowed_bv asserts in
       (* If not a let, insert all the assertions before the term *)
       let asserts =
         if is_let then asserts
@@ -1571,6 +1670,7 @@ let tuple_test0 (n : nat) :
   (ensures (fun r -> let n1, n2 = r in n1 = n2)) =
   n, n
 
+(*
 let pp_dump () : Tac unit =
   dump ""; trefl()
 
@@ -1578,6 +1678,7 @@ let pp_dump () : Tac unit =
 let pp_test0 () : Tot nat =
   let n1, n2 = tuple_test0 3 in
   n1 + n2
+*)
 
 [@(postprocess_with (pp_focused_term true))]
 let pp_test1 () : Tot nat =
@@ -1604,5 +1705,3 @@ let pp_test4 () : Tot nat =
   let _ = focus_on_term in
   let x = 3 in
   2
-  
-// Tv_FVar Prims._assert

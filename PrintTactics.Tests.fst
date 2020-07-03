@@ -193,6 +193,14 @@ let pp_test10 (n : nat{n % 4 = 0}) :
   let _ = focus_on_term in
   2 * n
 
+(* Shadowing a parameter with a function's return value *)
+[@(postprocess_with (pp_focused_term true))]
+let pp_test11 (n : nat{n >= 4}) :
+  Tot (n:nat{n % 2 = 0}) =
+  let _ = focus_on_term in
+  let n = test_fun1 n in
+  n
+
 (**** Wrapping with tactics *)
 
 // Rk.: problems with naming: use synth: let x = _ by (...)
