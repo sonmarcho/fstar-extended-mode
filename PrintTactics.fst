@@ -23,6 +23,14 @@ val iteri: (int -> 'a -> Tac unit) -> list 'a -> Tac unit
 let iteri f x = iteri_aux 0 f x
 #pop-options
 
+val tryPick: ('a -> Tac (option 'b)) -> list 'a -> Tac (option 'b)
+let rec tryPick f l = match l with
+    | [] -> None
+    | hd::tl ->
+       match f hd with
+         | Some x -> Some x
+         | None -> tryPick f tl
+
 (* TODO: move to FStar.Tactics.Derived.fst *)
 let rec mk_abs (t : term) (args : list binder) : Tac term (decreases args) =
   match args with
@@ -131,13 +139,13 @@ let rec bind_map_get (#a:Type) (m:bind_map a) (b:bv) : Tot (option a) =
   | (b', x)::m' ->
     if compare_bv b b' = Order.Eq then Some x else bind_map_get m' b
 
-let rec bind_map_get_from_name (#a:Type) (m:bind_map a) (b:string) :
+let rec bind_map_get_from_name (#a:Type) (m:bind_map a) (name:string) :
   Tot (option (bv & a)) =
   match m with
   | [] -> None
   | (b', x)::m' ->
     let b'v = inspect_bv b' in
-    if b'v.bv_ppname = b then Some (b', x) else bind_map_get_from_name m' b
+    if b'v.bv_ppname = name then Some (b', x) else bind_map_get_from_name m' name
 
 noeq type genv =
 {
@@ -188,11 +196,17 @@ let genv_to_string ge =
   "> bmap:\n" ^ flatten bmap_str ^
   "> svars:\n" ^ flatten svars_str
 
+let genv_get (ge:genv) (b:bv) : Tot (option (bool & term)) =
+  bind_map_get ge.bmap b
+
+let genv_get_from_name (ge:genv) (name:string) : Tot (option (bv & (bool & term))) =
+  bind_map_get_from_name ge.bmap name
+
 /// Push a binder to a ``genv``. Optionally takes a ``term`` which provides the
 /// term the binder is bound to (in a `let _ = _ in` construct for example).
 let genv_push_bv (ge:genv) (b:bv) (abs:bool) (t:option term) : Tac genv =
   let br = mk_binder b in
-  let sv = bind_map_get_from_name ge.bmap (name_of_bv b) in
+  let sv = genv_get_from_name ge (name_of_bv b) in
   let svars' = if Some? sv then fst (Some?.v sv) :: ge.svars else ge.svars in
   let e' = push_binder ge.env br in
   let tm = if Some? t then Some?.v t else pack (Tv_Var b) in
@@ -217,7 +231,7 @@ let find_shadowed_binders (ge : genv) (bl : list binder) : Tot (list (binder & b
 
 val bv_is_abstract : genv -> bv -> Tot bool
 let bv_is_abstract ge bv =
-  match bind_map_get ge.bmap bv with
+  match genv_get ge bv with
   | None -> false
   | Some (abs, _) -> abs
 
@@ -341,6 +355,12 @@ let effect_name_to_type (ename : name) : Tot effect_type =
   else if ename = stack_effect_qn then E_Stack
   else if ename = st_effect_qn then E_ST
   else E_Unknown
+
+val effect_type_is_pure : effect_type -> Tot bool
+let effect_type_is_pure etype =
+  match etype with
+  | E_Total | E_GTotal | E_Lemma | E_PURE | E_Pure -> true
+  | E_Stack | E_ST | E_Unknown -> false
 
 /// Type information
 noeq type type_info = {
@@ -617,7 +637,7 @@ let free_in t =
     | Tv_Var bv | Tv_BVar bv ->
       let bvv = inspect_bv bv in
       (* Check if the binding was not introduced during the traversal *)
-      begin match bind_map_get_from_name ge.bmap bvv.bv_ppname with
+      begin match genv_get_from_name ge bvv.bv_ppname with
       | None ->
         (* Check if we didn't already count the binding *)
         let fl' = if Some? (List.Tot.tryFind (same_name bv) fl) then fl else bv :: fl in
@@ -1569,16 +1589,23 @@ let is_focus_on_term t =
     flatten_name (inspect_fv fv) = `%PrintTactics.focus_on_term
   | _ -> false
 
-val term_is_assert : term -> Tac bool
-let term_is_assert t =
+/// Check if a term is an assertion or an assumption and return its content
+/// if it is the case.
+val term_is_assert_or_assume : term -> Tac (option term)
+let term_is_assert_or_assume t =
   match inspect t with
-  | Tv_App hd a ->
+  | Tv_App hd (a, Q_Explicit) ->
     begin match inspect hd with
     | Tv_FVar fv ->
-      flatten_name (inspect_fv fv) = "Prims._assert"
-    | _ -> false
+      let fname = flatten_name (inspect_fv fv) in
+      if fname = "Prims._assert"
+         || fname = "FStar.Pervasives.assert_norm"
+         || fname = "Prims._assume"
+      then Some a
+      else None
+    | _ -> None
     end
-  | _ -> false
+  | _ -> None
 
 /// Check if the given term view is of the form: 'let _ = focus_on_term in body'
 /// Returns 'body' if it is the case.
@@ -1657,10 +1684,11 @@ let find_focused_assert_in_current_goal dbg =
   match find_focused_term_in_current_goal dbg with
   | Some res ->
     print_dbg dbg ("[> Found focused term:\n" ^ term_to_string res.res);
-    (* Check that it is an assert, retrieve the assertion *)
+    (* Check that it is an assert or an assume, retrieve the assertion *)
     begin match inspect res.res with
     | Tv_Let _ _ bv0 fterm _ ->
-      if term_is_assert fterm then Some ({ res with res = fterm }) else None
+      if Some? (term_is_assert_or_assume fterm)
+      then Some ({ res with res = fterm }) else None
     | _ -> None
     end
   | None -> None
@@ -1683,7 +1711,7 @@ let analyze_effectful_term dbg res =
        * will not be shadowed yet, while it will be the case for the post-
        * assertions) *)
       let shadowed_bv =
-        match bind_map_get_from_name ge.bmap (name_of_bv bv0) with
+        match genv_get_from_name ge (name_of_bv bv0) with
         | None -> None
         | Some (sbv, _) -> Some sbv
       in
@@ -1708,7 +1736,7 @@ let analyze_effectful_term dbg res =
   (* Check if the considered term is an assert, in which case we will only
    * display the precondition (otherwise we introduce too many assertions
    * in the context) *)
-  let is_assert = term_is_assert studied_term in
+  let is_assert = Some? (term_is_assert_or_assume studied_term) in
   (* Instantiate the refinements *)
   (* TODO: use bv rather than term for ret_arg *)
   let ret_arg = opt_tapply (fun x -> pack (Tv_Var x)) ret_bv in
@@ -1730,7 +1758,7 @@ val pp_analyze_effectful_term : bool -> unit -> Tac unit
 
 let pp_analyze_effectful_term dbg () =
   match find_focused_term_in_current_goal dbg with
-  | Some res -> analyze_effectful_term dbg res
+  | Some res -> analyze_effectful_term dbg res; trefl()
   | _ -> mfail "Could not find a focused term"
 
 (**** Split conjunctions in an assert *)
@@ -1739,6 +1767,7 @@ let pp_analyze_effectful_term dbg () =
 
 val split_conjunctions : term -> Tac (list term)
 
+// TODO: b2t? use term_as_formula?
 let rec _split_conjunctions (ls : list term) (t : term) : Tac (list term) =
   match inspect t with
   | Tv_App hd0 (a1, Q_Explicit) ->
@@ -1774,7 +1803,7 @@ let split_assert_conjs dbg res =
 val pp_split_assert_conjs : bool -> unit -> Tac unit
 let pp_split_assert_conjs dbg () =
   match find_focused_assert_in_current_goal dbg with
-  | Some res -> split_assert_conjs dbg res
+  | Some res -> split_assert_conjs dbg res; trefl()
   | _ ->
     let gstr = term_to_string (cur_goal ()) in
     mfail ("Could not find a focused assert in the current goal: " ^ gstr)
@@ -1784,3 +1813,186 @@ let pp_split_assert_conjs dbg () =
 /// only on the side chosen by the user.
 /// Tries to be a bit smart: it the identifier is a variable local to the function,
 /// looks for an equality or a pure let-binding to replace it with.
+
+(*// TODO: use kind rather than type above
+/// An equality kind
+type eq_kind =
+  | Eq_Dec     (* =   *)
+  | Eq_Undec   (* ==  *)
+  | Eq_Hetero  (* === *)
+
+/// Deconstruct an equality
+val is_eq : term -> Tac (option (eq_kind & term & term))
+let is_eq t =
+  let hd, params = collect_app t in
+  begin match inspect hd with
+  | Tv_Fvar fv ->
+    let name = flatten_name (inspect_fv fv) in
+    begin match params with
+    | [a;x;y] ->
+      if fv = "Prims.equals" || fv = "Prims.op_Equals" then
+        Some (Eq_Dec
+    | [a;b;x;y] ->
+    end
+    
+  match inspect t with
+  | Tv_App hd1 (a1, Q_Explicit) ->
+    begin match inspect hd1 with
+    | Tv_App hd2 (a2, Q_Explicit) ->
+      begin match inspect hd2 with
+      | Tv_App_
+        if fv 
+
+[@(postprocess_with (pp_analyze_effectful_term true))]
+let f () : unit =
+  assert((1 <: nat) == (1 <: int));
+  assert(1 = 1)
+
+Prims.eq1
+Prims.eq2
+Prims.eq3
+op_Equals_Equals_Equals *)
+
+/// Check if a term is an equality of which one operand is the given bv, in
+/// which case return the other operand.
+val is_equality_for_bv : bv -> term -> Tac (option term)
+let is_equality_for_bv bv t =
+  let is_bv (t:term) : Tac bool =
+    match inspect t with
+    | Tv_Var bv' -> bv_eq bv bv'
+    | _ -> true
+  in
+  match term_as_formula t with
+  | Comp (Eq _) l r
+  | Comp (BoolEq _) l r ->
+    if is_bv l then Some r
+    else if is_bv r then Some l
+    else None
+  | _ -> None
+
+/// If a term is a conjunction of equalities, check if one of them has bv as an
+/// operand, and return the other operand if it is the case.
+val find_subequality_for_bv : bv -> term -> Tac (option term)
+
+let find_subequality_for_bv bv t =
+  tryPick (is_equality_for_bv bv) (split_conjunctions t)
+
+/// Given a list of parent terms (as generated by ``explore_term``), look for an
+/// equality given by a let-binding or an assertion/assumption which can be used
+/// for a given bv. Return a term by which to replace the bv.
+val find_context_equality_for_bv : bool -> genv -> bv -> list term_view -> Tac (genv & option term)
+let rec find_context_equality_for_bv dbg ge0 bv parents =
+  match parents with
+  | [] -> ge0, None
+  | tv :: parents' ->
+    (* We are looking for a let binding bv, or for an assertion/assumption
+     * (which must actually be contained in a let binding) *)
+     match tv with
+     | Tv_Let _ _ bv' def _ ->
+       (* If bv' = bv: use the def *)
+       if bv_eq bv bv' then
+         let tm_info = compute_eterm_info ge0.env def in
+         let einfo = tm_info.einfo in
+         (* If the effect is pure, we can directly use def *)
+         if effect_type_is_pure einfo.ei_type then ge0, Some def
+         (* Otherwise, try to use the postcondition *)
+         else
+           begin
+           let ret_value = pack (Tv_Var bv) in
+           let tinfo = get_type_info_from_type (type_of_bv bv) in
+           let ge1, _, post_prop =
+             pre_post_to_propositions dbg ge0 einfo.ei_type ret_value (Some (mk_binder bv))
+                                      tinfo einfo.ei_pre einfo.ei_post
+           in
+           (* This let introduces the bv: we can't go further and have to
+            * satisfy ourselves with the result *)
+           let res =
+             match post_prop with
+             | None -> None
+             | Some p -> find_subequality_for_bv bv p
+           in
+           (* If we found something, we return the updated environment,
+            * otherwise we can return the original one *)
+           match res with
+           | None -> ge0, None
+           | Some tm -> ge1, Some tm
+           end
+       else
+         (* Otherwise, check if it is an assumption/assertion *)
+         begin match term_is_assert_or_assume def with
+         | None -> find_context_equality_for_bv dbg ge0 bv parents'
+         | Some atm ->
+           begin match find_subequality_for_bv bv atm with
+           | None -> find_context_equality_for_bv dbg ge0 bv parents'
+           | Some tm -> ge0, Some tm
+           end
+         end
+     | _ -> find_context_equality_for_bv dbg ge0 bv parents'
+
+val unfold_in_assert_or_assume : bool -> exploration_result term -> Tac unit
+let unfold_in_assert_or_assume dbg ares =
+  (* Find the focused term inside the assert, and on which side of the
+   * equality if the assert is an equality *)
+  let find_focused_in_term t =
+    find_focused_term dbg ares.ge ares.parents ares.tgt_comp t
+  in
+  let find_in_whole_term () : Tac _ =
+    match find_focused_in_term ares.res with
+    | Some res ->
+      ares.res, res, (fun x -> x <: Tot term), true
+    | None -> mfail "unfold_in_assert_or_assume: could not find a focused term in the assert"
+  in
+  (* - subterm: the subterm of the assertion in which we found the focused term
+   *   (if an equality, left or right operand, otherwise whole assertion)
+   * - unf_res: the result of the exploration for the focused term inside the
+   *   assertion, which gives the term to unfold
+   * - rebuild: a Tot function which, given a term, rebuilds the equality by
+   *   replacing the above subterm with the given term
+   * - insert_before: whether to insert the new assertion before or after the
+   *   current assertion in the user file
+   *)
+  let subterm, unf_res, rebuild, insert_before =
+    match term_as_formula ares.res with
+    | Comp comp_kind l r
+    | Comp comp_kind l r ->
+      if Eq? comp_kind || BoolEq? comp_kind then
+        begin match find_focused_in_term l with
+        | Some res ->
+          let rebuild t = formula_as_term (Comp comp_kind t r) in
+          l, res, rebuild, true
+        | None ->
+          begin match find_focused_in_term r with
+          | Some res ->
+            let rebuild t = formula_as_term (Comp comp_kind t r) in
+            r, res, rebuild, false
+          | None ->
+            mfail "unfold_in_assert_or_assume: could not find a focused term in the assert"
+          end
+        end
+      else find_in_whole_term ()
+    | _ -> find_in_whole_term ()
+  in
+  (* Find out which kind of unfolding to perform on the focused term *)
+  let unf_tm =
+    match inspect unf_res.res with
+    | Tv_FVar fv ->
+      (* The easy case: just use the normalizer *)
+      let fname = flatten_name (inspect_fv fv) in
+      let unf_tm = norm_term_env ares.ge.env [delta_only [fname]] subterm in
+      rebuild unf_tm
+    | Tv_Var bv ->
+      (* We need to find out how to unfold this binder: look for an equality
+       * given by an assertion/assumption or for a pure let-binding defining
+       * this equality *)
+       (* First check that the binder was not introduced by an abstraction
+        * inside the assertion *)
+       if not (Some? (genv_get ares.ge bv)) then
+         mfail ("unfold_in_assert_or_assume: can't unfold the following term: "
+                ^ term_to_string unf_res.res);
+       (* Look for the equality to apply *)
+       admit()
+       
+    | _ -> mfail ("unfold_in_assert_or_assume: can't unfold the following term: "
+                  ^ term_to_string unf_res.res)
+  in
+  admit()
