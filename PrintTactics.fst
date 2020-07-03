@@ -1632,80 +1632,106 @@ val find_focused_term : bool -> genv -> list (genv & term_view) -> option typ_or
 let find_focused_term dbg ge pl opt_c t =
   find_predicated_term #term _is_focused_term_explorer dbg ge pl opt_c t
 
+val find_focused_term_in_current_goal : bool -> Tac (option (exploration_result term))
+let find_focused_term_in_current_goal dbg =
+  let g = cur_goal () in
+  let e = cur_env () in
+  print_dbg dbg ("[> find_focused_assert_in_current_goal:\n" ^ term_to_string g);
+  begin match unsquash_equality g with
+  | Some (l, _) ->
+    let c = safe_typ_or_comp e l in
+    let ge = mk_genv e [] [] in
+    print_dbg dbg ("[> About to explore term:\n" ^ term_to_string l);
+    begin match find_focused_term dbg ge [] c l with
+    | Some res ->
+      print_dbg dbg ("[> Found focused term:\n" ^ term_to_string res.res);
+      Some res
+    | None -> None
+    end
+  | _ -> mfail "pp_explore: not a squashed equality"
+  end
+
+val find_focused_assert_in_current_goal : bool -> Tac (option (exploration_result term))
+let find_focused_assert_in_current_goal dbg =
+  print_dbg dbg ("[> find_focused_assert_in_current_goal");
+  match find_focused_term_in_current_goal dbg with
+  | Some res ->
+    print_dbg dbg ("[> Found focused term:\n" ^ term_to_string res.res);
+    (* Check that it is an assert, retrieve the assertion *)
+    begin match inspect res.res with
+    | Tv_Let _ _ bv0 fterm _ ->
+      if term_is_assert fterm then Some ({ res with res = fterm }) else None
+    | _ -> None
+    end
+  | None -> None
 
 (**** Effectful term analysis *)
 /// Aanalyze a term in order to print propertly instantiated pre/postconditions
 /// and type conditions.
 
-val analyze_effectful_term : bool -> explorer unit
-
-let analyze_effectful_term dbg () ge pl opt_c t =
-  if dbg then
-    begin
-    print ("[> analyze_effectful_term: " ^ term_view_construct t ^ ":\n" ^ term_to_string t)
-    end;
-  match is_focused_term t with
-  | Some body ->
-    print_dbg dbg ("[> Focus on term: " ^ term_to_string body);
-    print_dbg dbg ("[> Environment information:\n" ^ genv_to_string ge);
-    (* Analyze the effectful term and check whether it is a 'let' or not *)
-    let ge1, studied_term, info, ret_bv, shadowed_bv, is_let =
-      begin match inspect body with
-      | Tv_Let _ _ bv0 fterm _ ->
-        (* Before pushing the binder, check if it shadows another variable.
-         * If it is the case, we will need it to correctly output the pre
-         * and post-assertions (because for the pre-assertions the variable
-         * will not be shadowed yet, while it will be the case for the post-
-         * assertions) *)
-        let shadowed_bv =
-          match bind_map_get_from_name ge.bmap (name_of_bv bv0) with
-          | None -> None
-          | Some (sbv, _) -> Some sbv
-        in
-        let ge1 = genv_push_bv ge bv0 false None in
-        (* If the bv name is "uu___", introduce a fresh variable and use it instead:
-         * the underscore might have been introduced when desugaring a let using
-         * tuples. If doing that is not necessary, the introduced variable will
-         * not appear in the generated assertions anyway. *)
-        let ge2, (bv1 : bv) =
-          let bvv0 = inspect_bv bv0 in
-          let _ = print_dbg dbg ("Variable bound in let: " ^ abv_to_string bv0) in
-          if bvv0.bv_ppname = "uu___" (* this is a bit hacky *)
-          then genv_push_fresh_bv ge1 "ret" bvv0.bv_sort
-          else ge1, bv0
-        in
-        let info = compute_eterm_info ge2.env fterm in
-        (ge2, fterm, (info <: eterm_info), Some bv1, shadowed_bv, true)
-      | _ -> (ge, body, compute_eterm_info ge.env body, None, None, false)
-      end
-    in
-    print_dbg dbg ("[> Environment information (after effect analysis):\n" ^ genv_to_string ge1);
-    (* Check if the considered term is an assert, in which case we will only
-     * display the precondition (otherwise we introduce too many assertions
-     * in the context) *)
-    let is_assert = term_is_assert studied_term in
-    (* Instantiate the refinements *)
-    (* TODO: use bv rather than term for ret_arg *)
-    let ret_arg = opt_tapply (fun x -> pack (Tv_Var x)) ret_bv in
-    let ge2, asserts =
-      eterm_info_to_assertions dbg ge1 studied_term is_let is_assert info ret_arg opt_c in
-    (* Simplify and filter *)
-    let asserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
-    (* Introduce fresh variables for the shadowed ones and substitute *)
-    let ge3, asserts = subst_shadowed_with_abs_in_assertions dbg ge2 shadowed_bv asserts in
-    (* If not a let, insert all the assertions before the term *)
-    let asserts =
-      if is_let then asserts
-      else  mk_assertions (List.Tot.append asserts.pres asserts.posts) []
-    in
-    (* Print *)
-    printout_assertions ge3 "ainfo" asserts;
-    (), Abort
-  | _ -> (), Continue
+val analyze_effectful_term : bool -> exploration_result term -> Tac unit
+let analyze_effectful_term dbg res =
+  let ge = res.ge in
+  let opt_c = res.tgt_comp in
+  (* Analyze the effectful term and check whether it is a 'let' or not *)
+  let ge1, studied_term, info, ret_bv, shadowed_bv, is_let =
+    begin match inspect res.res with
+    | Tv_Let _ _ bv0 fterm _ ->
+      (* Before pushing the binder, check if it shadows another variable.
+       * If it is the case, we will need it to correctly output the pre
+       * and post-assertions (because for the pre-assertions the variable
+       * will not be shadowed yet, while it will be the case for the post-
+       * assertions) *)
+      let shadowed_bv =
+        match bind_map_get_from_name ge.bmap (name_of_bv bv0) with
+        | None -> None
+        | Some (sbv, _) -> Some sbv
+      in
+      let ge1 = genv_push_bv ge bv0 false None in
+      (* If the bv name is "uu___", introduce a fresh variable and use it instead:
+       * the underscore might have been introduced when desugaring a let using
+       * tuples. If doing that is not necessary, the introduced variable will
+       * not appear in the generated assertions anyway. *)
+      let ge2, (bv1 : bv) =
+        let bvv0 = inspect_bv bv0 in
+        let _ = print_dbg dbg ("Variable bound in let: " ^ abv_to_string bv0) in
+        if bvv0.bv_ppname = "uu___" (* this is a bit hacky *)
+        then genv_push_fresh_bv ge1 "ret" bvv0.bv_sort
+        else ge1, bv0
+      in
+      let info = compute_eterm_info ge2.env fterm in
+      (ge2, fterm, (info <: eterm_info), Some bv1, shadowed_bv, true)
+    | _ -> (ge, res.res, compute_eterm_info ge.env res.res, None, None, false)
+    end
+  in
+  print_dbg dbg ("[> Environment information (after effect analysis):\n" ^ genv_to_string ge1);
+  (* Check if the considered term is an assert, in which case we will only
+   * display the precondition (otherwise we introduce too many assertions
+   * in the context) *)
+  let is_assert = term_is_assert studied_term in
+  (* Instantiate the refinements *)
+  (* TODO: use bv rather than term for ret_arg *)
+  let ret_arg = opt_tapply (fun x -> pack (Tv_Var x)) ret_bv in
+  let ge2, asserts =
+    eterm_info_to_assertions dbg ge1 studied_term is_let is_assert info ret_arg opt_c in
+  (* Simplify and filter *)
+  let asserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
+  (* Introduce fresh variables for the shadowed ones and substitute *)
+  let ge3, asserts = subst_shadowed_with_abs_in_assertions dbg ge2 shadowed_bv asserts in
+  (* If not a let, insert all the assertions before the term *)
+  let asserts =
+    if is_let then asserts
+    else  mk_assertions (List.Tot.append asserts.pres asserts.posts) []
+  in
+  (* Print *)
+  printout_assertions ge3 "ainfo" asserts
 
 val pp_analyze_effectful_term : bool -> unit -> Tac unit
+
 let pp_analyze_effectful_term dbg () =
-  pp_explore dbg (analyze_effectful_term dbg) ()
+  match find_focused_term_in_current_goal dbg with
+  | Some res -> analyze_effectful_term dbg res
+  | _ -> mfail "Could not find a focused term"
 
 (**** Split conjunctions in an assert *)
 /// Split an assert made of conjunctions so that there is one assert per
@@ -1734,38 +1760,24 @@ let rec _split_conjunctions (ls : list term) (t : term) : Tac (list term) =
 let split_conjunctions t =
   _split_conjunctions [] t
 
-val split_assert_conjs : bool -> explorer unit
-let split_assert_conjs dbg () ge0 pl opt_c tv =
-  if dbg then
-    begin
-    print ("[> split_assert_conjs: " ^ term_view_construct tv ^ ":\n" ^ term_to_string tv)
-    end;
-  match is_focused_term tv with
-  | Some t ->
-    print_dbg dbg ("[> Focus on term: " ^ term_to_string t);
-    print_dbg dbg ("[> Environment information:\n" ^ genv_to_string ge0);
-    (* Check that it is an assert, retrieve the assertion *)
-    begin match inspect t with
-    | Tv_Let _ _ bv0 fterm _ ->
-      if term_is_assert fterm then
-        begin
-        (* Simplify the term (it may be an abstraction applied to some parameters) *)
-        let t = norm_term_env ge0.env [primops; simplify] t in
-        (* Split the conjunctions *)
-        let conjs = split_conjunctions t in
-        let asserts = mk_assertions conjs [] in
-        (* Print *)
-        printout_assertions ge0 "ainfo" asserts;
-        (), Abort
-        end
-      else mfail ("split_assert_conjs: focused term is not an assert: " ^ term_to_string t)
-    | _ -> mfail ("split_assert_conjs: focused term is not an assert: " ^ term_to_string t)
-    end
-  | None -> (), Continue
+val split_assert_conjs : bool -> exploration_result term -> Tac unit
+let split_assert_conjs dbg res =
+  let ge0 = res.ge in
+  (* Simplify the term (it may be an abstraction applied to some parameters) *)
+  let t = norm_term_env ge0.env [primops; simplify] res.res in
+  (* Split the conjunctions *)
+  let conjs = split_conjunctions t in
+  let asserts = mk_assertions conjs [] in
+  (* Print *)
+  printout_assertions ge0 "ainfo" asserts
 
 val pp_split_assert_conjs : bool -> unit -> Tac unit
 let pp_split_assert_conjs dbg () =
-  pp_explore dbg (split_assert_conjs dbg) ()
+  match find_focused_assert_in_current_goal dbg with
+  | Some res -> split_assert_conjs dbg res
+  | _ ->
+    let gstr = term_to_string (cur_goal ()) in
+    mfail ("Could not find a focused assert in the current goal: " ^ gstr)
 
 (**** Term unfolding in assert *)
 /// Unfolds an identifier in an assert. If the assert is an equality, unfolds
