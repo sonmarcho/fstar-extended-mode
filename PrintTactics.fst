@@ -1508,6 +1508,11 @@ let analyze_effectful_term dbg () ge opt_c t =
       let asserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
       (* Introduce fresh variables for the shadowed ones and substitute *)
       let ge3, asserts = subst_shadowed_with_abs_in_assertions ge2 asserts in
+      (* If not a let, insert all the assertions before the term *)
+      let asserts =
+        if is_let then asserts
+        else  mk_assertions (List.Tot.append asserts.pres asserts.posts) []
+      in
       (* Print *)
       printout_assertions ge3 "ainfo" asserts;
       (), Abort
