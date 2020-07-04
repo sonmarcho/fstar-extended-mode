@@ -71,7 +71,7 @@ let test_lemma4 (n1 : nat{n1 >= 3}) (n2 : int{n2 >= 5}) (n3 n4 n5 : nat):
   (requires (n3 + n4 + n5 >= 1))
   (ensures (n1 * n2 * (n3 + n4 + n5) >= 15)) = ()
 
-(**** Post-processing *)
+(**** Analyze effectful term *)
 //#push-options "--admit_smt_queries true"
 [@(postprocess_with (pp_analyze_effectful_term false))]
 let pp_test0 () : Tot nat =
@@ -210,6 +210,71 @@ let pp_test12 (n : nat) : Tot nat =
   let a, (b, c) = 4, (5, 6) in
   x + y + z + a + b + c
 
+(**** Unfold in assert *)
+let uf_test_fun1 (x : nat) : nat = x + 2
+let uf_test_fun2 (x : nat) :
+  Pure nat (requires True) (ensures (fun y -> y = 2 * x)) =
+  2 * x
+
+assume val uf_test_fun3 : unit -> Tot nat
+assume val uf_test_fun4 : nat -> Tot nat
+assume val uf_test_lem1 (x : nat) : Lemma (requires x == uf_test_fun3 ()) (ensures x = 7)
+assume val uf_test_lem2 (x : nat) (y : nat) :
+  Lemma (requires x == uf_test_fun3 ()) (ensures x = 7 && y = 3)
+assume val uf_test_lem3 (x : nat) (y : nat) :
+  Lemma (ensures x == 7 /\ y = 3)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let uf_test1 () : Tot unit =
+  let x = 3 in
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in x) >= 1)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let uf_test2 () : Tot unit =
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in uf_test_fun1) 3 >= 1)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let uf_test3 () : Tot unit =
+  let x = uf_test_fun3 () in
+  uf_test_lem1 x;
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in x) >= 1)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let uf_test4 () : Tot unit =
+  let x = uf_test_fun3 () in
+  let y = uf_test_fun4 0 in
+  uf_test_lem2 x y;
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in x) >= 5)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let uf_test5 () : Tot unit =
+  let x = uf_test_fun3 () in
+  let y = uf_test_fun4 0 in
+  uf_test_lem2 x y;
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in y) >= 1)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let uf_test6 () : Tot unit =
+  let x = uf_test_fun3 () in
+  let y = uf_test_fun4 0 in
+  uf_test_lem3 x y;
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in x) >= 5)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let uf_test7 () : Tot unit =
+  let x = uf_test_fun3 () in
+  let y = uf_test_fun4 0 in
+  uf_test_lem3 x y;
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in y) >= 1)
+
+// TODO: remove below
 (**** Wrapping with tactics *)
 
 // Rk.: problems with naming: use synth: let x = _ by (...)
