@@ -1609,6 +1609,15 @@ let pp_explore (dbg : bool)
   | _ -> mfail "pp_explore: not a squashed equality"
   end
 
+/// This function goes through the goal and prints all the subterms of its left
+/// operand. Very useful for debugging.
+val pp_explore_print_goal : unit -> Tac unit
+let pp_explore_print_goal () =
+  let f : explorer unit =
+    fun _ _ _ _ _ -> ((), Continue)
+  in
+  pp_explore true f ()
+
 /// Check for meta-identifiers. Note that we can't simply use ``term_eq`` which
 /// sometimes unexpectedly fails (maybe because of information hidden to Meta-F*)
 val is_focus_on_term : term -> Tac bool
@@ -1898,16 +1907,6 @@ let is_eq dbg t =
     | _ -> None
     end
   | _ -> None
-
-(*[@(postprocess_with (pp_analyze_effectful_term true))]
-let f () : unit =
-  assert((1 <: nat) == (1 <: int));
-  assert(1 = 1)
-
-//Prims.eq1
-Prims.eq2
-Prims.eq3
-op_Equals_Equals_Equals *)
 
 let formula_construct (f : formula) : Tac string =
   match f with
