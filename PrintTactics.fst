@@ -1796,27 +1796,45 @@ let pp_analyze_effectful_term dbg () =
 /// Split an assert made of conjunctions so that there is one assert per
 /// conjunction.
 
-val split_conjunctions : term -> Tac (list term)
+/// Remove ``b2t`` if it is the head of the term
+val remove_b2t : term -> Tac term
+let remove_b2t (t:term) : Tac term =
+  match inspect t with
+  | Tv_App hd (a, Q_Explicit) ->
+    begin match inspect hd with
+    | Tv_FVar fv ->
+      if fv_eq_name fv b2t_qn then a else t
+    | _ -> t
+    end
+  | _ -> t
 
+// TODO: gather all the functions like split_conjunctions, is_eq...
 // TODO: b2t? use term_as_formula?
 // TODO: take into account &&
-let rec _split_conjunctions (ls : list term) (t : term) : Tac (list term) =
-  match inspect t with
-  | Tv_App hd0 (a1, Q_Explicit) ->
-    begin match inspect hd0 with
-    | Tv_App hd1 (a2, Q_Explicit) ->
-      begin match inspect hd1 with
-      | Tv_FVar fv ->
-        if flatten_name (inspect_fv fv) = flatten_name and_qn then
-          let ls1 = _split_conjunctions ls a2 in
-          let ls2 = _split_conjunctions ls1 a1 in
-          ls2
-        else t :: ls
-      | _ -> t :: ls
-      end
-    | _ -> t :: ls
+val is_conjunction : term -> Tac (option (term & term))
+let is_conjunction t =
+  let t = remove_b2t t in
+  let hd, params = collect_app t in
+  match params with
+  | [(x,Q_Explicit);(y,Q_Explicit)] ->
+    begin match inspect hd with
+    | Tv_FVar fv ->
+      let fvn = inspect_fv fv in
+      if name_eq fvn and_qn || name_eq fvn ["Prims"; "op_AmpAmp"]
+      then Some (x, y) else None
+    | _ -> None
     end
-  | _ -> t :: ls
+  | _ -> None
+
+val split_conjunctions : term -> Tac (list term)
+
+let rec _split_conjunctions (ls : list term) (t : term) : Tac (list term) =
+  match is_conjunction t with
+  | None -> t :: ls
+  | Some (l, r) ->
+    let ls1 = _split_conjunctions ls l in
+    let ls2 = _split_conjunctions ls1 r in
+    ls2
 
 let split_conjunctions t =
   _split_conjunctions [] t
@@ -1845,16 +1863,6 @@ let pp_split_assert_conjs dbg () =
 /// only on the side chosen by the user.
 /// Tries to be a bit smart: it the identifier is a variable local to the function,
 /// looks for an equality or a pure let-binding to replace it with.
-
-let remove_b2t (t:term) : Tac term =
-  match inspect t with
-  | Tv_App hd (a, Q_Explicit) ->
-    begin match inspect hd with
-    | Tv_FVar fv ->
-      if fv_eq_name fv b2t_qn then a else t
-    | _ -> t
-    end
-  | _ -> t
 
 // TODO: use kind rather than type above
 /// An equality kind
@@ -2122,26 +2130,64 @@ let pp_unfold_in_assert_or_assume dbg () =
 // TODO: remove
 
 let test_fun1 (x : nat) : nat = x + 2
-let test_fun2 (x : nat) : Pure nat (requires True) (ensures (fun y -> y = 2 * x)) =
+let test_fun2 (x : nat) :
+  Pure nat (requires True) (ensures (fun y -> y = 2 * x)) =
   2 * x
 
 assume val test_fun3 : unit -> Tot nat
-assume val test_fun4 (x : nat) : Lemma (requires x == test_fun3 ()) (ensures x = 7)
+assume val test_fun4 : nat -> Tot nat
+assume val test_lem1 (x : nat) : Lemma (requires x == test_fun3 ()) (ensures x = 7)
+assume val test_lem2 (x : nat) (y : nat) :
+  Lemma (requires x == test_fun3 ()) (ensures x = 7 && y = 3)
+assume val test_lem3 (x : nat) (y : nat) :
+  Lemma (ensures x == 7 /\ y = 3)
 
-[@(postprocess_with (pp_unfold_in_assert_or_assume true))]
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
 let test1 () : Tot unit =
   let x = 3 in
   let _ = focus_on_term in
   assert((let _ = focus_on_term in x) >= 1)
 
-[@(postprocess_with (pp_unfold_in_assert_or_assume true))]
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
 let test2 () : Tot unit =
   let _ = focus_on_term in
   assert((let _ = focus_on_term in test_fun1) 3 >= 1)
 
-[@(postprocess_with (pp_unfold_in_assert_or_assume true))]
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
 let test3 () : Tot unit =
   let x = test_fun3 () in
-  test_fun4 x;
+  test_lem1 x;
   let _ = focus_on_term in
   assert((let _ = focus_on_term in x) >= 1)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let test4 () : Tot unit =
+  let x = test_fun3 () in
+  let y = test_fun4 0 in
+  test_lem2 x y;
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in x) >= 5)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let test5 () : Tot unit =
+  let x = test_fun3 () in
+  let y = test_fun4 0 in
+  test_lem2 x y;
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in y) >= 1)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let test6 () : Tot unit =
+  let x = test_fun3 () in
+  let y = test_fun4 0 in
+  test_lem3 x y;
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in x) >= 5)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let test7 () : Tot unit =
+  let x = test_fun3 () in
+  let y = test_fun4 0 in
+  test_lem3 x y;
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in y) >= 1)
