@@ -47,6 +47,26 @@ let bv_eq (bv1 bv2 : bv) =
    * have the same name and index is an invariant which must be enforced *)
   bvv1.bv_ppname = bvv2.bv_ppname && bvv1.bv_index = bvv2.bv_index
 
+val name_eq : name -> name -> Tot bool
+let rec name_eq n1 n2 =
+  match n1, n2 with
+  | [], [] -> true
+  | x1::n1', x2::n2' ->
+    x1 = x2 && name_eq n1' n2'
+  | _ -> false
+
+val fv_eq : fv -> fv -> Tot bool
+let fv_eq fv1 fv2 =
+  let n1 = inspect_fv fv1 in
+  let n2 = inspect_fv fv2 in
+  name_eq n1 n2
+
+// TODO: use everywhere
+val fv_eq_name : fv -> name -> Tot bool
+let fv_eq_name fv n =
+  let fvn = inspect_fv fv in
+  name_eq fvn n
+
 (*** General utilities *)
 // TODO: use more
 val opt_apply (#a #b : Type) (f : a -> Tot b) (x : option a) : Tot (option b)
@@ -712,6 +732,15 @@ noeq type eterm_info = {
   head : term;
   parameters : list cast_info;
 }
+
+val eterm_info_to_string : eterm_info -> Tot string
+let eterm_info_to_string info =
+  let params = List.Tot.map (fun x -> "(" ^ cast_info_to_string x ^ ");  \n") info.parameters in
+  let params_str = List.Tot.fold_left (fun x y -> x ^ y) "" params in
+  "Mketerm_info (" ^
+  effect_info_to_string info.einfo ^ ") (" ^
+  term_to_string info.head ^ ")\n[" ^
+  params_str ^ "]"
 
 let mk_eterm_info = Mketerm_info
 
@@ -1689,7 +1718,9 @@ let find_focused_assert_in_current_goal dbg =
     | Tv_Let _ _ bv0 fterm _ ->
       if Some? (term_is_assert_or_assume fterm)
       then Some ({ res with res = fterm }) else None
-    | _ -> None
+    | _ ->
+      if Some? (term_is_assert_or_assume res.res)
+      then Some res else None
     end
   | None -> None
 
@@ -1768,6 +1799,7 @@ let pp_analyze_effectful_term dbg () =
 val split_conjunctions : term -> Tac (list term)
 
 // TODO: b2t? use term_as_formula?
+// TODO: take into account &&
 let rec _split_conjunctions (ls : list term) (t : term) : Tac (list term) =
   match inspect t with
   | Tv_App hd0 (a1, Q_Explicit) ->
@@ -1779,12 +1811,12 @@ let rec _split_conjunctions (ls : list term) (t : term) : Tac (list term) =
           let ls1 = _split_conjunctions ls a2 in
           let ls2 = _split_conjunctions ls1 a1 in
           ls2
-        else ls
-      | _ -> ls
+        else t :: ls
+      | _ -> t :: ls
       end
-    | _ -> ls
+    | _ -> t :: ls
     end
-  | _ -> ls
+  | _ -> t :: ls
 
 let split_conjunctions t =
   _split_conjunctions [] t
@@ -1814,123 +1846,186 @@ let pp_split_assert_conjs dbg () =
 /// Tries to be a bit smart: it the identifier is a variable local to the function,
 /// looks for an equality or a pure let-binding to replace it with.
 
-(*// TODO: use kind rather than type above
+let remove_b2t (t:term) : Tac term =
+  match inspect t with
+  | Tv_App hd (a, Q_Explicit) ->
+    begin match inspect hd with
+    | Tv_FVar fv ->
+      if fv_eq_name fv b2t_qn then a else t
+    | _ -> t
+    end
+  | _ -> t
+
+// TODO: use kind rather than type above
 /// An equality kind
-type eq_kind =
-  | Eq_Dec     (* =   *)
-  | Eq_Undec   (* ==  *)
-  | Eq_Hetero  (* === *)
+noeq type eq_kind =
+  | Eq_Dec    : typ -> eq_kind          (* =   *)
+  | Eq_Undec  : typ -> eq_kind          (* ==  *)
+  | Eq_Hetero : typ -> typ -> eq_kind   (* === *)
 
 /// Deconstruct an equality
-val is_eq : term -> Tac (option (eq_kind & term & term))
-let is_eq t =
+// We use our own construct because ``term_as_formula`` doesn't always work
+// TODO: update ``term_as_formula``
+val is_eq : bool -> term -> Tac (option (eq_kind & term & term))
+let is_eq dbg t =
+  let t = remove_b2t t in
+  print_dbg dbg ("[> is_eq: " ^ term_to_string t);
   let hd, params = collect_app t in
-  begin match inspect hd with
-  | Tv_Fvar fv ->
+  print_dbg dbg ("- hd:\n" ^ term_to_string hd);
+  print_dbg dbg ("- parameters:\n" ^ list_to_string (fun (x, y) -> term_to_string x) params);
+  match inspect hd with
+  | Tv_FVar fv ->
     let name = flatten_name (inspect_fv fv) in
     begin match params with
-    | [a;x;y] ->
-      if fv = "Prims.equals" || fv = "Prims.op_Equals" then
-        Some (Eq_Dec
-    | [a;b;x;y] ->
+    | [(a,Q_Implicit);(x,Q_Explicit);(y,Q_Explicit)] ->
+      if name = "Prims.op_Equality" || name = "Prims.equals" || name = "Prims.op_Equals" then
+        Some ((Eq_Dec a), x, y)
+      else if name = "Prims.eq2" || name = "Prims.op_Equals_Equals" then
+        Some ((Eq_Undec a), x, y)
+      else None
+    | [(a,Q_Implicit);(b,Q_Implicit);(x,Q_Explicit);(y,Q_Explicit)] ->
+      if name = "Prims.eq3" || name = "Prims.op_Equals_Equals_Equals" then
+        Some ((Eq_Hetero a b), x, y)
+      else None
+    | _ -> None
     end
-    
-  match inspect t with
-  | Tv_App hd1 (a1, Q_Explicit) ->
-    begin match inspect hd1 with
-    | Tv_App hd2 (a2, Q_Explicit) ->
-      begin match inspect hd2 with
-      | Tv_App_
-        if fv 
+  | _ -> None
 
-[@(postprocess_with (pp_analyze_effectful_term true))]
+(*[@(postprocess_with (pp_analyze_effectful_term true))]
 let f () : unit =
   assert((1 <: nat) == (1 <: int));
   assert(1 = 1)
 
-Prims.eq1
+//Prims.eq1
 Prims.eq2
 Prims.eq3
 op_Equals_Equals_Equals *)
 
+let formula_construct (f : formula) : Tac string =
+  match f with
+  | True_       -> "True_"
+  | False_      -> "False_"
+  | Comp _ _ _  -> "Comp"
+  | And _ _     -> "And"
+  | Or _ _      -> "Or"
+  | Not _       -> "Not"
+  | Implies _ _ -> "Implies"
+  | Iff _ _     -> "Iff"
+  | Forall _ _  -> "Forall"
+  | Exists _ _  -> "Exists"
+  | App _ _     -> "Apply"
+  | Name _      -> "Name"
+  | FV _        -> "FV"
+  | IntLit _    -> "IntLit"
+  | F_Unknown   -> "F_Unknown"
+
+
 /// Check if a term is an equality of which one operand is the given bv, in
 /// which case return the other operand.
-val is_equality_for_bv : bv -> term -> Tac (option term)
-let is_equality_for_bv bv t =
+val is_equality_for_bv : bool -> bv -> term -> Tac (option term)
+let is_equality_for_bv dbg bv t =
+  print_dbg dbg ("[> is_equality_for_bv:" ^
+                 "\n- bv: " ^ abv_to_string bv ^
+                 "\n- term: " ^ term_to_string t);
   let is_bv (t:term) : Tac bool =
     match inspect t with
-    | Tv_Var bv' -> bv_eq bv bv'
-    | _ -> true
+    | Tv_Var bv' ->
+      print_dbg dbg (term_to_string t ^ ": Tv_Var " ^ abv_to_string bv');
+      bv_eq bv bv'
+    | _ ->
+      print_dbg dbg (term_to_string t ^ " Not Tv_Var ");
+      false
   in
-  match term_as_formula t with
-  | Comp (Eq _) l r
-  | Comp (BoolEq _) l r ->
-    if is_bv l then Some r
+  match is_eq dbg t with
+  | Some (ekind, l, r) ->
+    (* We ignore heterogeneous equality, because it risks to cause havoc at
+     * typing after substitution *)
+    print_dbg dbg ("Term is eq: " ^ term_to_string l ^ " = " ^ term_to_string r);
+    if Eq_Hetero? ekind then
+      begin
+      print_dbg dbg "Ignoring heterogeneous equality";
+      None
+      end
+    else if is_bv l then Some r
     else if is_bv r then Some l
     else None
-  | _ -> None
+  | _ ->
+    print_dbg dbg "Term is not eq";
+    None
 
 /// If a term is a conjunction of equalities, check if one of them has bv as an
 /// operand, and return the other operand if it is the case.
-val find_subequality_for_bv : bv -> term -> Tac (option term)
+val find_subequality_for_bv : bool -> bv -> term -> Tac (option term)
 
-let find_subequality_for_bv bv t =
-  tryPick (is_equality_for_bv bv) (split_conjunctions t)
+let find_subequality_for_bv dbg bv t =
+  print_dbg dbg ("[> find_subequality_for_bv:" ^ 
+                 "\n- bv: " ^ abv_to_string bv ^
+                 "\n- term: " ^ term_to_string t);
+  let conjuncts = split_conjunctions t in
+  print_dbg dbg ("Conjuncts:\n" ^ list_to_string term_to_string conjuncts);
+  tryPick (is_equality_for_bv dbg bv) conjuncts
+
+/// Look for an equality in the postcondition in a term, return the term
+/// which bv is equal to according to this equality.
+val find_equality_for_bv_from_post : bool -> genv -> bv -> term -> typ -> effect_info -> Tac (genv & option term)
+
+let find_equality_for_bv_from_post dbg ge0 bv ret_value ret_type einfo =
+  print_dbg dbg "[> find_equality_for_bv_from_post";
+  let tinfo = get_type_info_from_type ret_type in
+  (* Compute the post-condition *)
+  let ge1, _, post_prop =
+    pre_post_to_propositions dbg ge0 einfo.ei_type ret_value (Some (mk_binder bv))
+                             tinfo einfo.ei_pre einfo.ei_post
+  in
+  print_dbg dbg ("Computed post: " ^ option_to_string term_to_string post_prop);
+  (* Look for an equality in the post *)
+  let res =
+    match post_prop with
+    | None -> None
+    | Some p -> find_subequality_for_bv dbg bv p
+  in
+  (* If we found something, we return the updated environment,
+   * otherwise we can return the original one *)
+  match res with
+  | None -> ge0, None
+  | Some tm -> ge1, Some tm
 
 /// Given a list of parent terms (as generated by ``explore_term``), look for an
-/// equality given by a let-binding or an assertion/assumption which can be used
-/// for a given bv. Return a term by which to replace the bv.
+/// equality given by a let-binding or a postcondition.
 val find_context_equality_for_bv : bool -> genv -> bv -> list term_view -> Tac (genv & option term)
 let rec find_context_equality_for_bv dbg ge0 bv parents =
   match parents with
   | [] -> ge0, None
   | tv :: parents' ->
-    (* We are looking for a let binding bv, or for an assertion/assumption
-     * (which must actually be contained in a let binding) *)
-     match tv with
-     | Tv_Let _ _ bv' def _ ->
-       (* If bv' = bv: use the def *)
-       if bv_eq bv bv' then
-         let tm_info = compute_eterm_info ge0.env def in
-         let einfo = tm_info.einfo in
-         (* If the effect is pure, we can directly use def *)
-         if effect_type_is_pure einfo.ei_type then ge0, Some def
-         (* Otherwise, try to use the postcondition *)
-         else
-           begin
-           let ret_value = pack (Tv_Var bv) in
-           let tinfo = get_type_info_from_type (type_of_bv bv) in
-           let ge1, _, post_prop =
-             pre_post_to_propositions dbg ge0 einfo.ei_type ret_value (Some (mk_binder bv))
-                                      tinfo einfo.ei_pre einfo.ei_post
-           in
-           (* This let introduces the bv: we can't go further and have to
-            * satisfy ourselves with the result *)
-           let res =
-             match post_prop with
-             | None -> None
-             | Some p -> find_subequality_for_bv bv p
-           in
-           (* If we found something, we return the updated environment,
-            * otherwise we can return the original one *)
-           match res with
-           | None -> ge0, None
-           | Some tm -> ge1, Some tm
-           end
-       else
-         (* Otherwise, check if it is an assumption/assertion *)
-         begin match term_is_assert_or_assume def with
-         | None -> find_context_equality_for_bv dbg ge0 bv parents'
-         | Some atm ->
-           begin match find_subequality_for_bv bv atm with
-           | None -> find_context_equality_for_bv dbg ge0 bv parents'
-           | Some tm -> ge0, Some tm
-           end
-         end
-     | _ -> find_context_equality_for_bv dbg ge0 bv parents'
+    print_dbg dbg ("[> find_context_equality_for_bv:\n" ^
+                   "- bv: " ^ abv_to_string bv ^ "\n" ^
+                   "- term: " ^ term_to_string tv);
+    (* We only consider let-bindings *)
+    match tv with
+    | Tv_Let _ _ bv' def _ ->
+      print_dbg dbg "Is Tv_Let";
+      let tm_info = compute_eterm_info ge0.env def in
+      let einfo = tm_info.einfo in
+      let is_bv = bv_eq bv bv' in
+      (* If bv' = bv and the term is pure: use def *)
+      if is_bv && effect_type_is_pure einfo.ei_type then ge0, Some def
+      (* Otherwise, try to use the postcondition *)
+      else
+        let ret_value = pack (Tv_Var bv') in
+        let ret_typ = type_of_bv bv' in
+        begin match find_equality_for_bv_from_post dbg ge0 bv ret_value ret_typ einfo with
+        | ge1, Some p -> ge1, Some p
+        | _, None ->
+          (* If bv = bv': bv is introduced by this let-binding, we can't go further *)
+          if is_bv then ge0, None
+          (* Otherwise, recursion *)
+          else find_context_equality_for_bv dbg ge0 bv parents'
+        end
+   | _ -> find_context_equality_for_bv dbg ge0 bv parents'
 
 val unfold_in_assert_or_assume : bool -> exploration_result term -> Tac unit
 let unfold_in_assert_or_assume dbg ares =
+  print_dbg dbg ("[> unfold_in_assert_or_assume:\n" ^ term_to_string ares.res);
   (* Find the focused term inside the assert, and on which side of the
    * equality if the assert is an equality *)
   let find_focused_in_term t =
@@ -1971,6 +2066,7 @@ let unfold_in_assert_or_assume dbg ares =
       else find_in_whole_term ()
     | _ -> find_in_whole_term ()
   in
+  print_dbg dbg ("Found subterm in assertion/assumption:\n" ^ term_to_string subterm);
   (* Unfold the term *)
   let ge1, unf_tm =
     match inspect unf_res.res with
@@ -1999,9 +2095,53 @@ let unfold_in_assert_or_assume dbg ares =
          end
        in
        (* Apply *)
-       admit()
+       let subterm' = apply_subst ge1.env subterm [(bv, eq_tm)] in
+       ge1, subterm'
     | _ -> mfail ("unfold_in_assert_or_assume: can't unfold the following term: "
            ^ term_to_string unf_res.res)
   in
+  (* Create the assertions to output *)
+  let final_assert = rebuild unf_tm in
+  let asserts =
+    if insert_before then mk_assertions [final_assert] [] else mk_assertions [] [final_assert]
+  in
+  (* Introduce fresh variables for the shadowed ones and substitute *)
+  let ge2, asserts = subst_shadowed_with_abs_in_assertions dbg ge1 None asserts in
   (* Output *)
-  admit()
+  printout_assertions ge2 "ainfo" asserts
+
+val pp_unfold_in_assert_or_assume : bool -> unit -> Tac unit
+let pp_unfold_in_assert_or_assume dbg () =
+  match find_focused_assert_in_current_goal dbg with
+  | Some res -> unfold_in_assert_or_assume dbg res; trefl()
+  | _ ->
+    let gstr = term_to_string (cur_goal ()) in
+    mfail ("Could not find a focused assert in the current goal: " ^ gstr)
+
+(*** Tests *)
+// TODO: remove
+
+let test_fun1 (x : nat) : nat = x + 2
+let test_fun2 (x : nat) : Pure nat (requires True) (ensures (fun y -> y = 2 * x)) =
+  2 * x
+
+assume val test_fun3 : unit -> Tot nat
+assume val test_fun4 (x : nat) : Lemma (requires x == test_fun3 ()) (ensures x = 7)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume true))]
+let test1 () : Tot unit =
+  let x = 3 in
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in x) >= 1)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume true))]
+let test2 () : Tot unit =
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in test_fun1) 3 >= 1)
+
+[@(postprocess_with (pp_unfold_in_assert_or_assume true))]
+let test3 () : Tot unit =
+  let x = test_fun3 () in
+  test_fun4 x;
+  let _ = focus_on_term in
+  assert((let _ = focus_on_term in x) >= 1)
