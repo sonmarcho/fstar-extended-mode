@@ -1243,8 +1243,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
 
 
 (defun insert-assert-pre-post ()
-  "Inserts assertions with the instanciated pre and post-conditions around a
-function call.
+  "Insert assertions with proof obligations and postconditions around a term.
 TODO: take into account if/match branches
 TODO: add assertions for the parameters' refinements
 TODO: don't restrict the region because moves the view"
@@ -1259,70 +1258,46 @@ TODO: don't restrict the region because moves the view"
     (setq $p (point))
     (setq $beg (fstar-subp--untracked-beginning-position))
     (setq $p (- $p $beg))
-    (save-restriction
-      (narrow-to-region $beg (point-max))
-      ;; Find in which region the term to process is
-      (setq $delimiters (find-region-delimiters t t nil nil))
-      (setq $p1 (pair-fst $delimiters) $p2 (pair-snd $delimiters))
-      ;; Expand the region: ignore comments, and try to reach a beginning/end of
-      ;; line for the beginning/end of the region
-      ;; - beginning:
-      ;; -- if we are inside a comment, get out of it
+    ;; Find in which region the term to process is
+    (setq $delimiters (find-region-delimiters t t nil nil))
+    (setq $p1 (pair-fst $delimiters) $p2 (pair-snd $delimiters))
+    ;; Expand the region: ignore comments, and try to reach a beginning/end of
+    ;; line for the beginning/end of the region
+    ;; - beginning:
+    ;; -- if we are inside a comment, get out of it
+    (goto-char $p1)
+    (skip-comment nil)
+    (setq $p1 (point))
+    ;; -- then try to reach the beginning of the line
+    (let ($limit)
+      (beginning-of-line)
+      (setq $limit (point))
       (goto-char $p1)
-      (skip-comment nil)
-      (setq $p1 (point))
-      ;; -- then try to reach the beginning of the line
-      (let ($limit)
-        (beginning-of-line)
-        (setq $limit (point))
-        (goto-char $p1)
-        (skip-comments-and-spaces nil $limit)
-        (setq $p1 (point)))
-      ;; - end: same
-      ;; -- if we are inside a comment, get out of it
+      (skip-comments-and-spaces nil $limit)
+      (setq $p1 (point)))
+    ;; - end: same
+    ;; -- if we are inside a comment, get out of it
+    (goto-char $p2)
+    (skip-comment t)
+    (setq $p2 (point))
+    ;; -- then try to reach the beginning of the line
+    (let ($limit)
+      (end-of-line)
+      (setq $limit (point))
       (goto-char $p2)
-      (skip-comment t)
-      (setq $p2 (point))
-      ;; -- then try to reach the beginning of the line
-      (let ($limit)
-        (end-of-line)
-        (setq $limit (point))
-        (goto-char $p2)
-        (skip-comments-and-spaces t $limit)
-        (setq $p2 (point)))
-      ;; Parse the term
-      (setq $parse-result (parse-subexpr $p1 $p2))
-      (setq $cp1 (subexpr-beg $parse-result)
-            $cp2 (subexpr-end $parse-result)
-            $is-let-in (subexpr-is-let-in $parse-result)
-            $has-semicol (subexpr-has-semicol $parse-result))
-      ;; Debug information
-      (when $is-let-in (log-dbg "Parsed expression: 'let _ = _ in'"))
-      (when $has-semicol (log-dbg "Parsed expression: '_;'"))
-      (when (and (not $is-let-in) (not $has-semicol)) (log-dbg "Parsed expression: '_'"))
-      ;; Compute the indentation: if the area between the beginning of the focused
-      ;; term and the beginning of the line is made of spaces and comments, we copy
-      ;; it (allows to have a formatting consistent with ghosted code: "(**)",
-      ;; for example), otherwise we introduce spaces equal to the length of that area
-;;      (let (($ip1 (progn (beginning-of-line) (point))) ($ip2 $cp1))
-;;        (setq $indent (- $ip2 $ip1))
-;;        (if (region-is-comments-and-spaces $ip1 $ip2)
-;;            (setq $indent-str (buffer-substring-no-properties $ip1 $ip2))
-;;          (setq $indent-str (make-string $indent ? ))))
-      (setq $indent-str (compute-local-indent-p $cp1))
-      ;; Process the term
-      (insert-assert-pre-post--process $indent-str $p1 $p2 $parse-result))))
-
-;; Actually already C-M-o
-(defun split-line-indent-is-cursor ()
-  (interactive)
-  (let ($p $c)
-    (setq $p (point))
-    (setq $c (- $p (line-beginning-position)))
-    (newline)
-    (dotimes (i $c) (insert " "))
-    (goto-char $p)
-    $c))
+      (skip-comments-and-spaces t $limit)
+      (setq $p2 (point)))
+    ;; Parse the term
+    (setq $parse-result (parse-subexpr $p1 $p2))
+    (setq $cp1 (subexpr-beg $parse-result))
+    ;; Debug information
+    (cond ((subexpr-is-let-in $parse-result) (log-dbg "Parsed expression: 'let _ = _ in'"))
+          ((subexpr-has-semicol $parse-result) (log-dbg "Parsed expression: '_;'"))
+          (t (log-dbg "Parsed expression: '_'")))
+    ;; Compute the indentation
+    (setq $indent-str (compute-local-indent-p $cp1))
+    ;; Process the term
+    (insert-assert-pre-post--process $indent-str $p1 $p2 $parse-result)))
 
 (defun newline-keep-indent ()
   (interactive)
