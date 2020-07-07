@@ -596,13 +596,14 @@ value) in the region delimited by BEG and END. Returns a subexpr."
   "Same as (forward-sexp ARG) but returns nil instead of raising errors."
   (ignore-errors (forward-sexp ARG)))
 
-(defun sexp-at-p (&optional POS)
+(defun sexp-at-p (&optional POS ACCEPT_COMMENTS)
   "Find the sexp at POS.
 Returns a pair of positions if succeeds, nil otherwise."
   (save-excursion
     (let (($not-ok nil) $beg $end)
-      ;; Must not be in a comment or surrounded by spaces
-      (setq $not-ok (or (fstar-in-general-comment-p) (is-in-spaces-p)))
+      ;; Must not be in a comment (unless the user wants it) or surrounded by spaces
+      (setq $not-ok (or (and (fstar-in-general-comment-p) (not ACCEPT_COMMENTS))
+                        (is-in-spaces-p)))
       ;; Find the beginning and end positions
       (if $not-ok nil
         ;; End: if looking at space, this is the end position. Otherwise,
@@ -1140,7 +1141,7 @@ Return the updated subexpr."
   "Copy code for meta-processing and update the parsed result positions.
 Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
 PP_INSTR is the post-processing instruction to insert just before the definition."
-  (let ($beg $attr-beg $original-length $new-length $shift)
+  (let ($beg $attr-beg $original-length $new-length $shift $res)
     (goto-char (fstar-subp--untracked-beginning-position))
     (setq $beg (point))
     ;; - copy to the destination buffer
@@ -1169,7 +1170,10 @@ PP_INSTR is the post-processing instruction to insert just before the definition
     (setq $shift (- $new-length $original-length))
     (setq $shift (- $shift $beg))
     ;; Shift and return the parsing information
-    (shift-subexpr-pos $shift SUBEXPR)))
+    (setq $res (copy-subexpr SUBEXPR))
+    (when (subexpr-bterm SUBEXPR)
+      (setf (subexpr-bterm $res) (copy-letb-term (subexpr-bterm SUBEXPR))))
+    (shift-subexpr-pos $shift $res)))
 
 (defun query-fstar-on-buffer-content (OVERLAY_END PAYLOAD CONTINUATION)
   "Send PAYLOAD to F* and call CONTINUATION on the result.
@@ -1255,8 +1259,8 @@ Otherwise, the string is made of a number of spaces equal to the column position
           (buffer-substring-no-properties $ip1 $ip2)
         (make-string $indent ? )))))
 
-(defun split-assert-conjuncts ()
-  "Split the conjunctions in an assert."
+(defun split-assert-assume-conjuncts ()
+  "Split the conjunctions in an assertion/assumption."
   (interactive)
   (let ($tbeg $passert $a-beg $a-end $p-beg $p-end $subexpr $subexpr1 $indent-str $beg $end
         $cbuffer $prefix $prefix-length $payload)
@@ -1271,7 +1275,6 @@ Otherwise, the string is made of a number of spaces equal to the column position
   (when (or (is-in-spaces-p) (fstar-in-comment-p)) (skip-comments-and-spaces t))
   (setq $passert (find-assert-assume-p (point) $tbeg))
   (when (not $passert) (error "Pointer not over an assert/assert_norm/assume"))
-  ;; TODO: the pointer might exactly on the assert rather than inside the assertion
   ;; Parse the encompassing let (if there is)
   (setq $a-beg (pair-fst (pair-fst $passert))
         $a-end (pair-snd (pair-fst $passert))
@@ -1317,6 +1320,74 @@ Otherwise, the string is made of a number of spaces equal to the column position
                                  (apply-partially #'insert-assert-pre-post--continuation
                                                   $indent-str $beg $end $subexpr1))))
 
+(defun unfold-in-assert-assume ()
+  "Unfold an identifier in an assertion/assumption."
+  (interactive)
+  (let ($id $tbeg $passert $a-beg $a-end $p-beg $p-end $subexpr $subexpr1 $shift
+        $indent-str $beg $end $cbuffer $payload $insert-shift $insert-and-shift)
+  (log-dbg "unfold-in-assert-assume")
+  ;; Sanity check
+  (generate-fstar-check-conditions)
+  ;; Find the identifier
+  (setq $id (sexp-at-p))
+  (when (not $id) (error "Pointer not over a term"))
+  ;; Parse the assertion/assumption.
+  (setq $tbeg (fstar-subp--untracked-beginning-position))
+  (setq $passert (find-assert-assume-p (point) $tbeg))
+  (when (not $passert) (error "Pointer not over an assert/assert_norm/assume"))
+  ;; Parse the encompassing let (if there is)
+  (setq $a-beg (pair-fst (pair-fst $passert))
+        $a-end (pair-snd (pair-fst $passert))
+        $p-beg (pair-fst (pair-snd $passert))
+        $p-end (pair-snd (pair-snd $passert)))
+  (setq $subexpr (find-encompassing-let-in $a-beg $p-end))
+  (when (not $subexpr) (error "Could not parse the enclosing expression"))
+  ;; Compute the indentation
+  (setq $indent-str (compute-local-indent-p (subexpr-beg $subexpr)))
+  ;; Expand the region to ignore comments
+  (goto-char (subexpr-beg $subexpr))
+  (skip-comments-and-spaces nil (point-at-bol))
+  (setq $beg (point))
+  (goto-char (subexpr-end $subexpr))
+  (skip-comments-and-spaces t (point-at-eol))
+  (setq $end (point))
+  ;; Remember which is the original buffer
+  (setq $cbuffer (current-buffer))
+  ;; Copy and start processing the content
+  (setq $subexpr1 (copy-def-for-meta-process $end $subexpr fstar-temp-buffer1
+                                            "PrintTactics.pp_unfold_in_assert_or_assume false"))
+  ;; We are now in the destination buffer
+  ;; Insert the ``focus_on_term`` indicators at the proper places, together
+  ;; with an admit after the focused term.
+  ;; Prefixes:
+  (setq $insert-shift 0)
+  (defun $insert-and-shift (STR)
+    (setq $insert-shift (+ $insert-shift (length STR)))
+    (insert STR))
+  ;; - for the identifier - note that we need to compute the shift between the
+  ;;   buffers
+  (setq $shift (+ (- (subexpr-beg $subexpr1) (subexpr-beg $subexpr)) 1))
+  (goto-char (+ (pair-snd $id) $shift))
+  ($insert-and-shift "))")
+  (goto-char (+ (pair-fst $id) $shift))
+  ($insert-and-shift "(let _ = PrintTactics.focus_on_term in (")
+  ;; - for the admit - note that the above insertion should have been made
+  ;;   below the point where we now insert
+  (goto-char (subexpr-beg $subexpr1))
+  ($insert-and-shift "let _ = PrintTactics.focus_on_term in\n")
+  ;; Suffix
+  (goto-char (+ (subexpr-end $subexpr1) $insert-shift))
+  ;; Insert an admit if it is a 'let' or a ';' expression
+  (when (or (subexpr-is-let-in $subexpr1) (subexpr-has-semicol $subexpr1))
+    (end-of-line) (newline) (indent-according-to-mode) (insert "admit()"))
+  ;; Copy the buffer content
+  (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
+  ;; We need to switch back to the original buffer to query the F* process
+  (switch-to-buffer $cbuffer)
+  ;; Query F*
+  (query-fstar-on-buffer-content $end $payload
+                                 (apply-partially #'insert-assert-pre-post--continuation
+                                                  $indent-str $beg $end $subexpr1))))
 
 (defun insert-assert-pre-post ()
   "Insert assertions with proof obligations and postconditions around a term.
@@ -1405,6 +1476,7 @@ TODO: don't restrict the region because moves the view"
 (global-set-key (kbd "C-S-a") 'switch-assert-assume-in-current-line)
 
 (global-set-key (kbd "C-c C-e") 'insert-assert-pre-post)
-(global-set-key (kbd "C-c C-s C-u") 'split-assert-conjuncts)
+(global-set-key (kbd "C-c C-s C-u") 'split-assert-assume-conjuncts)
+(global-set-key (kbd "C-c C-s C-f") 'unfold-in-assert-assume)
 
 
