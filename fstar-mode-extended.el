@@ -623,7 +623,8 @@ Returns a pair of positions if succeeds, nil otherwise."
 (defun find-encompassing-assert-assume-p (&optional POS BEG END)
   "Find the encompassing F* assert(_norm)/assume.
 Takes an optional pointer position POS and region delimiters BEG and END.
-Returns a pair of pairs of positions if found, nil otherwise."
+Returns a pair of pairs of positions if found (for the assert identifier and
+the content of the assert), nil otherwise."
   (save-excursion
     (save-restriction
       ;; The strategy is very simple: look for the closest previous asset/assume
@@ -756,7 +757,8 @@ controls whether to leave the pointer where it is or backtrack to put it just
 before the delimiter. If the delimiter could not be found, raises an error if
 no-error is nil, returns nil otherwise."
   (let ((beg (or BEG (point-min)))
-        (end (or END (point-max))))
+        (end (or END (point-max)))
+        p)
     (if backward
         (setq p (search-backward delimiter beg t))
       (setq p (search-forward delimiter end t)))
@@ -886,7 +888,8 @@ extracts those assertions."
 - prefix: %s\n- id: %s" prefix id)
   ;; Extract the number of assertions
   (let ((id-num (concat id ":num"))
-        (id-prop (concat id ":prop")))
+        (id-prop (concat id ":prop"))
+        num num-data)
     (setq num-data (extract-string-from-buffer prefix id-num no-error LIMIT))
     (setq num (string-to-number (meta-info-data num-data)))
     (log-dbg "> extracting %s terms" num)
@@ -972,7 +975,7 @@ buffer."
         ;; - remove the introduced '\n' (note that the pointer will be left at
         ;; its original position
         (goto-char (point-min))
-        (delete-forward-char 1)
+        (delete-char 1)
         ;; Save the new region end
         (goto-char (point-max))
         (setq new-end (point))
@@ -1044,70 +1047,6 @@ after the focused term, nil otherwise. comment is an optional comment"
     ;; If we are before the studied term: insert a newline
     (when (not after-term) (insert "\n"))))
 
-(defun generate-has-type-assert (indent-str after-term term type-term)
-  "Generates an assertion of the form 'has_type term type'. type-term must
-be a term (meta-info), not a type-info."
-  (when (and term type-term)
-    (let ((several-lines
-           (or (> (meta-info-pp-res term) 1)
-               (> (meta-info-pp-res type-term) 1))))
-      (when after-term (insert "\n"))
-      (insert indent-str)
-      (insert "assert(has_type")
-      ;; Insert the term
-      (if several-lines
-          ;; Several lines
-          (progn
-            (insert "\n")
-            (insert indent-str)
-            (insert "  (")
-            (insert-with-indent (concat indent-str "   ") (meta-info-data term))
-            (insert ")"))
-        ;; One line
-        (insert " (")
-        (insert (meta-info-data term))
-        (insert ") "))
-      ;; Insert the type
-      (if several-lines
-          ;; Several lines
-          (progn
-            (insert "\n")
-            (insert indent-str)
-            (insert "  (")
-            (insert-with-indent (concat indent-str "   ") (meta-info-data type-term))
-            (insert ")"))
-        ;; One line
-        (insert "(")
-        (insert (meta-info-data type-term))
-        (insert ")"))
-      ;; Finish
-      (when several-lines (insert "\n") (insert indent-str))
-      (insert ");")
-      (when (not after-term) (insert "\n")))))
-
-(defun generate-has-rawest-type-assert (indent-str after-term term type)
-  "Generates an assertion of the form 'has_type term type'. type-term must
-be a type-info, and the type used in the assertion is the type without
-refinement."
-  (when (and term type)
-    (let ((rawest-ty (type-info-rawest-type type)))
-      (generate-has-type-assert indent-str after-term term rawest-ty))))
-
-(defun generate-param-asserts (indent-str param)
-  "Generates the appropriate assertions for a parameter (type cast and type
-refinement), if necessary."
-  (let* ((term (param-info-term param))
-         (p-ty (param-info-p-ty param))
-         (e-ty (param-info-e-ty param)))
-    (when (and term p-ty e-ty)
-      ;; Insert an assertion for the type cast
-      (when (param-info-requires-cast param)
-        (generate-has-rawest-type-assert indent-str nil term e-ty))
-      ;; Insert an assertion for the refinement
-      (when (param-info-requires-refinement param)
-        (generate-assert-from-term indent-str nil (type-info-rty-refin e-ty))
-        ))))
-
 (defun insert-assert-pre-post--continuation (indent-str p1 p2 PARSE_RESULT overlay
                                              status response)
   "The continuation function called once F* returns. If F* succeeded, extracts
@@ -1142,77 +1081,166 @@ refinement), if necessary."
         (generate-assert-from-term indent-str t a))
       )))
 
-(defun insert-assert-pre-post--process
-    (INDENT_STR P1 P2 PARSE_RESULT)
-  (let (($cp1 (subexpr-beg PARSE_RESULT))
-        ($cp2 (subexpr-end PARSE_RESULT))
-        ($is-let-in (subexpr-is-let-in PARSE_RESULT))
-        ($has-semicol (subexpr-has-semicol PARSE_RESULT))
-        $beg $cbuffer $shift $lbeg $lp1 $lp2 $lcp1 $lcp2)
-    ;; Copy the relevant content of the buffer for modification
-    ;; Ignore the comments, the push/pop/set/reset options instructions,
-    ;; and the potential attributes. Note that we need to do that in the F*
-    ;; buffer because we need to use the F* parser.
+(defun shift-letb-term-pos (SHIFT TERM)
+  "Shift hy SHIFT the positions in the letb-term TERM.
+Return the new letb-term."
+  (setf (letb-term-beg TERM) (+ SHIFT (letb-term-beg TERM)))
+  (setf (letb-term-end TERM) (+ SHIFT (letb-term-end TERM)))
+  (setf (letb-term-e-beg TERM) (+ SHIFT (letb-term-e-beg TERM)))
+  (setf (letb-term-e-end TERM) (+ SHIFT (letb-term-e-end TERM)))
+  TERM)
+
+(defun shift-subexpr-pos (SHIFT SUBEXPR)
+  "Shift by SHIFT the positions in the subexpr SUBEXPR.
+Return the new subexpr."
+  (setf (subexpr-beg SUBEXPR) (+ SHIFT (subexpr-beg SUBEXPR)))
+  (setf (subexpr-end SUBEXPR) (+ SHIFT (subexpr-end SUBEXPR)))
+  (when (subexpr-bterm SUBEXPR) (shift-letb-term-pos SHIFT (subexpr-bterm SUBEXPR)))
+  SUBEXPR)
+
+(defun copy-def-for-meta-process (END SUBEXPR DEST_BUFFER)
+  "Copy code for meta-processing and update the parsed result positions.
+Leaves the pointer at the end of the DEST_BUFFER where the code has been copied."
+  (let ($beg $attr-beg $original-length $new-length $shift)
     (goto-char (fstar-subp--untracked-beginning-position))
-    (skip-forward-comments-pragmas-spaces P2)
-    (skip-forward-square-brackets P2) ;; the attribute
-    (skip-forward-comments-pragmas-spaces P2)
     (setq $beg (point))
-    ;; - copy and switch buffer
-    (setq $cbuffer (current-buffer))
-    (kill-ring-save $beg P2)
-    (switch-to-buffer fstar-temp-buffer1)
+    ;; - copy to the destination buffer
+    (kill-ring-save $beg END)
+    (switch-to-buffer DEST_BUFFER)
     (erase-buffer)
-    ;; - change the reference position
-    (goto-char (point-max))
-    (save-restriction
-      (narrow-to-region (point) (point))
-      ;; TODO: cleanup the mess with the different position pointers
-      (setq $lbeg (point-max) $shift (- (point-max) $beg))
-      (setq $lp1 (+ P1 $shift) $lp2 (+ P2 $shift) $lcp1 (+ $cp1 $shift) $lcp2 (+ $cp2 $shift))
-      ;; - yank
-      (yank)
-      ;; Modify the copied content and leave the pointer at the end of the region
-      ;; to send to F*
-      ;;
-      ;; Insert the ``focus_on_term`` indicator at the proper place, together
-      ;; with an admit after the focused term.
-      ;; Note that we don't need to keep track of the positions modifications:
-      ;; we will send the whole buffer to F*.
-      (let ($prefix $prefix-length)
-        ;; Prefix
-        (goto-char $lcp1)
-        (setq $prefix "let _ = PrintTactics.focus_on_term in ")
-        (setq $prefix-length (length $prefix))
-        (insert $prefix)
-        ;; Suffix
-        (goto-char (+ $lcp2 $prefix-length))
-        ;; Insert an admit if it is a 'let' or a ';' expression
-        (when (or $is-let-in $has-semicol)
-          (end-of-line) (newline) (indent-according-to-mode) (insert "admit()")))
-      ;; Insert an option to deactivate the proof obligations
-      (goto-char (point-min))
-      (insert "#push-options \"--admit_smt_queries true\"\n")
-      ;; Insert the post-processing instruction
-      (insert "[@(FStar.Tactics.postprocess_with (PrintTactics.pp_analyze_effectful_term false))]\n")
-      ;; Query F*
-      (let* ((overlay (make-overlay $beg P2 $cbuffer nil nil))
-             ($payload (buffer-substring-no-properties (point-min) (point-max))))
-        ;; We need to swithch back to the original buffer to query the F* process
-        (switch-to-buffer $cbuffer)
-        ;; Overlay management
-        (fstar-subp-remove-orphaned-issue-overlays (point-min) (point-max))
-        (overlay-put overlay 'fstar-subp--lax nil)
-        (fstar-subp-set-status overlay 'busy)
-        ;; Query F*
-        (log-dbg "sending query to F*:[\n%s\n]" $payload)
-        (fstar-subp--query (fstar-subp--push-query $beg `full $payload)
-                           (apply-partially #'insert-assert-pre-post--continuation
-                                            INDENT_STR P1 P2 PARSE_RESULT overlay))
-        )
-      ) ;; end of restriction
-    ) ;; end of outermost let
-  ) ;; end of function
+    (yank)
+    ;; Remove the attributes before the definition (we will replace them)
+    (goto-char (point-min))
+    (skip-forward-comments-pragmas-spaces)
+    (setq $attr-beg (point)) ;; if there is an attribute, it should be here
+    (skip-forward-square-brackets) ;; (optionally) go over the attribute
+    (delete-region $attr-beg (point)) ;; delete the attribute
+    (skip-forward-comments-pragmas-spaces)
+    ;; Insert an option to deactivate the proof obligations
+    (insert "#push-options \"--admit_smt_queries true\"\n")
+    ;; Insert the post-processing instruction
+    (insert "[@(FStar.Tactics.postprocess_with (PrintTactics.pp_analyze_effectful_term false))]\n")
+    ;; Compute the shift: the shift is just the difference of length between the
+    ;; content in the destination buffer and the original content, because all
+    ;; the deletion/insertion should have happened before the points of interest
+    (setq $original-length (- END $beg)
+          $new-length (- (point-max) (point-min)))
+    (setq $shift (- $new-length $original-length))
+    ;; Shift and return the parsing information
+    (shift-subexpr-pos $shift SUBEXPR)))
+
+(defun query-fstar-on-buffer-content (OVERLAY_END PAYLOAD CONTINUATION)
+  "Send PAYLOAD to F* and call CONTINUATION on the result.
+CONTINUATION must an overlay, a status and a response as arguments.
+OVERLAY_END gives the position at which to stop the overlay."
+  (let* (($beg (fstar-subp--untracked-beginning-position))
+         $overlay)
+  ;; Create the overlay
+  (setq $overlay (make-overlay (fstar-subp--untracked-beginning-position)
+                               OVERLAY_END (current-buffer) nil nil))
+  (fstar-subp-remove-orphaned-issue-overlays (point-min) (point-max))
+  (overlay-put $overlay 'fstar-subp--lax nil)
+  (fstar-subp-set-status $overlay 'busy)
+  ;; Query F*
+  (log-dbg "sending query to F*:[\n%s\n]" PAYLOAD)
+  (fstar-subp--query (fstar-subp--push-query $beg `full PAYLOAD)
+                     (apply-partially CONTINUATION $overlay))))
+
+(defun insert-assert-pre-post--process (INDENT_STR P1 P2 SUBEXPR)
+  (let ($cbuffer $subexpr $p1 $p2 $prefix $prefix-length $payload)
+    ;; Remember which is the original buffer
+    (setq $cbuffer (current-buffer))
+    ;; Copy and start processing the content
+    (setq $subexpr (copy-def-for-meta-process P2 SUBEXPR fstar-temp-buffer1))
+    ;; We are now in the destination buffer
+    ;; Modify the copied content and leave the pointer at the end of the region
+    ;; to send to F*
+    ;;
+    ;; Insert the ``focus_on_term`` indicator at the proper place, together
+    ;; with an admit after the focused term.
+    ;; Note that we don't need to keep track of the positions modifications:
+    ;; we will send the whole buffer to F*.
+    (setq $p1 (subexpr-beg $subexpr) $p2 (subexpr-end $subexpr))
+    ;; Prefix
+    (goto-char $p1)
+    (setq $prefix "let _ = PrintTactics.focus_on_term in ")
+    (setq $prefix-length (length $prefix))
+    (insert $prefix)
+    ;; Suffix
+    (goto-char (+ $p2 $prefix-length))
+    ;; Insert an admit if it is a 'let' or a ';' expression
+    (when (or (subexpr-is-let-in $subexpr) (subexpr-has-semicol $subexpr))
+      (end-of-line) (newline) (indent-according-to-mode) (insert "admit()"))
+    ;; Copy the buffer content
+    (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
+    ;; We need to swithch back to the original buffer to query the F* process
+    (switch-to-buffer $cbuffer)    
+    ;; Query F*
+    (query-fstar-on-buffer-content P2 $payload
+                                   (apply-partially #'insert-assert-pre-post--continuation
+                                                    INDENT_STR P1 P2 SUBEXPR))))
+
+(defun generate-fstar-check-conditions ()
+  "Check that it is safe to run some F* meta-processing"
+  (save-excursion
+    (let (($p (point)) $next-point)
+      ;; F* mustn't be busy as we won't push a query to the queue but will directly
+      ;; query the F* sub-process: if some processes are queued, we will mess up
+      ;; with the internal proof state
+      (when (fstar-subp--busy-p) (user-error "The F* process must be live and idle"))
+      ;; Retract so that the current point is not in a processed region
+      (fstar-subp-retract-until $p)
+      ;; Check if the point is in the next block to process: if not, abort.
+      ;; If we can't compute the next block it is (quite) likely that there are
+      ;; no previous blocks to process.
+      (setq $next-point (fstar-subp--find-point-to-process 1))
+      (when (and $next-point (< $next-point $p))
+        (user-error (concat "There may be unprocessed definitions above the "
+                            "current position: they must be processed"))))))
+
+(defun compute-local-indent-p (&optional POS)
+  "Return a string corresponding to the indentation up to POS.
+If the characters between the beginning of the line and the current position
+are comments and spaces, the returned string is equal to those - the reason
+is that it allows formatting of ghosted code (which uses (**)).
+Otherwise, the string is made of a number of spaces equal to the column position"
+  (save-restriction
+    (let* (($ip2 (if POS POS (point)))
+           ($ip1 (progn (beginning-of-line) (point)))
+           ($indent (- $ip2 $ip1)))
+      (if (region-is-comments-and-spaces $ip1 $ip2)
+          (buffer-substring-no-properties $ip1 $ip2)
+        (make-string $indent ? )))))
+
+;; (defun split-assert-conjuncts ()
+;;   "Split the conjunctions in an assert."
+;;   (interactive)
+;;   (log-dbg "split-assert-conjuncts")
+;;   ;; Sanity check
+;;   (generate-fstar-check-conditions)
+;;   ;; Parse the assert
+;;   (setq $tbeg (fstar-subp--untracked-beginning-position))
+;;   (setq $passert (find-encompassing-assert-assume-p (point) tbeg))
+;;   (when (not $passert) (error "Pointer not inside an assert/assert_norm/assume"))
+;;   ;; Parse the encompassing let (if there is)
+;;   (setq $a-beg (pair-fst (pair-fst $passert))
+;;         $a-end (pair-snd (pair-fst $passert))
+;;         $p-beg (pair-fst (pair-snd $passert))
+;;         $p-end (pair-snd (pair-snd $passert)))
+;;   (setq $bexpr (find-encompassing-let-in $a-beg $p-end))
+;;   (when (not $bexpr) (error "Could not parse the enclosing expression"))
+;;   ;; Compute the indentation
+;;   (setq $indent-str (compute-local-indent-p (subexpr-beg $bexpr)))
+;;   ;; 
+
+;; (cl-defstruct subexpr
+;;   "An expression of the form 'let _ = _ in', '_;' or '_' (return value)"
+;;   beg end ;; point delimiters
+;;   is-let-in ;; is of the form: 'let _ = _ in'
+;;   has-semicol ;; is of the form: '_;'
+;;   bterm ;; the term binded by the 'let' if of the form 'let _ = _ in'
+;;   )
+
 
 (defun insert-assert-pre-post ()
   "Inserts assertions with the instanciated pre and post-conditions around a
@@ -1222,26 +1250,13 @@ TODO: add assertions for the parameters' refinements
 TODO: don't restrict the region because moves the view"
   (interactive)
   (log-dbg "insert-assert-pre-post")
+  ;; Sanity check
+  (generate-fstar-check-conditions)
   (let ($next-point $beg $p $delimiters $indent $indent-str
         $p1 $p2 $parse-result $cp1 $cp2
         $is-let-in $has-semicol $current-buffer)
-    (setq $p (point))
-    ;; F* mustn't be busy as we won't push a query to the queue but will directly
-    ;; query the F* sub-process: if some processes are queued, we will mess up
-    ;; with the internal proof state
-    (when (fstar-subp--busy-p) (user-error "The F* process must be live and idle"))
-    ;; Retract so that the current point is not in a processed region
-    (fstar-subp-retract-until (point))
-    ;; Check if the point is in the next block to process: if not, ask the user
-    ;; if he really wants to execute the command because we will need to parse
-    ;; all the definitions up to before the point, which may take time. Don't
-    ;; ask if we can't compute the next block (in which case it is indeed very
-    ;; likely that we are in the next block)
-    (setq $next-point (fstar-subp--find-point-to-process 1))
-    (when (and $next-point (< $next-point $p))
-      (user-error (concat "There may be unprocessed definitions above the "
-                          "current position: they must be processed")))
     ;; Restrict the region
+    (setq $p (point))
     (setq $beg (fstar-subp--untracked-beginning-position))
     (setq $p (- $p $beg))
     (save-restriction
@@ -1289,11 +1304,12 @@ TODO: don't restrict the region because moves the view"
       ;; term and the beginning of the line is made of spaces and comments, we copy
       ;; it (allows to have a formatting consistent with ghosted code: "(**)",
       ;; for example), otherwise we introduce spaces equal to the length of that area
-      (let (($ip1 (progn (beginning-of-line) (point))) ($ip2 $cp1))
-        (setq $indent (- $ip2 $ip1))
-        (if (region-is-comments-and-spaces $ip1 $ip2)
-            (setq $indent-str (buffer-substring-no-properties $ip1 $ip2))
-          (setq $indent-str (make-string $indent ? ))))
+;;      (let (($ip1 (progn (beginning-of-line) (point))) ($ip2 $cp1))
+;;        (setq $indent (- $ip2 $ip1))
+;;        (if (region-is-comments-and-spaces $ip1 $ip2)
+;;            (setq $indent-str (buffer-substring-no-properties $ip1 $ip2))
+;;          (setq $indent-str (make-string $indent ? ))))
+      (setq $indent-str (compute-local-indent-p $cp1))
       ;; Process the term
       (insert-assert-pre-post--process $indent-str $p1 $p2 $parse-result))))
 
