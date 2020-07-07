@@ -8,6 +8,7 @@
 ;; TODO: make the naming conventions coherent:
 ;; - capital letters for function parameters
 ;; - use $ for local variables
+;; - 'fem-' prefix for all functions
 
 ;; I encountered some problems with undo (for instance, insert-assert-pre-post
 ;; works properly when executed as a command, but undo performs weird things
@@ -35,7 +36,9 @@ TODO: for now just calls message"
   "Replace FROM with TO in string STR."
   (replace-regexp-in-string (regexp-quote FROM) TO STR nil 'literal))
 
-(defun back-to-indentation-or-beginning () (interactive)
+(defun back-to-indentation-or-beginning ()
+  "Switch between beginning of line or end of indentation."
+  (interactive)
    (if (= (point) (progn (back-to-indentation) (point)))
        (beginning-of-line)))
 
@@ -52,6 +55,18 @@ TODO: for now just calls message"
    (if (current-line-is-whitespaces-p) () (progn (end-of-line) (newline)))
    (indent-according-to-mode)
    (insert TERM)))
+
+(defun newline-keep-indent ()
+  "Insert a newline where the indentation is equal to the current column."
+  (interactive)
+  (let ($p $i)
+    (setq $p (point))
+    (back-to-indentation)
+    (setq $i (- (point) (line-beginning-position)))
+    (goto-char $p)
+    (newline)
+    (dotimes (i $i) (insert " "))
+    $i))
 
 (defun empty-line ()
   "Delete all the characters on the current line.
@@ -1193,6 +1208,7 @@ OVERLAY_END gives the position at which to stop the overlay."
                      (apply-partially CONTINUATION $overlay))))
 
 (defun insert-assert-pre-post--process (INDENT_STR P1 P2 SUBEXPR)
+  "Generate the F* query for insert-assert-pre-post and query F*."
   (let ($cbuffer $subexpr $p1 $p2 $prefix $prefix-length $payload)
     ;; Remember which is the original buffer
     (setq $cbuffer (current-buffer))
@@ -1228,7 +1244,7 @@ OVERLAY_END gives the position at which to stop the overlay."
                                                     INDENT_STR P1 P2 SUBEXPR))))
 
 (defun generate-fstar-check-conditions ()
-  "Check that it is safe to run some F* meta-processing"
+  "Check that it is safe to run some F* meta-processing."
   (save-excursion
     (let (($p (point)) $next-point)
       ;; F* mustn't be busy as we won't push a query to the queue but will directly
@@ -1391,9 +1407,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
 
 (defun insert-assert-pre-post ()
   "Insert assertions with proof obligations and postconditions around a term.
-TODO: take into account if/match branches
-TODO: add assertions for the parameters' refinements
-TODO: don't restrict the region because moves the view"
+TODO: take into account if/match branches"
   (interactive)
   (log-dbg "insert-assert-pre-post")
   ;; Sanity check
@@ -1445,17 +1459,6 @@ TODO: don't restrict the region because moves the view"
     (setq $indent-str (compute-local-indent-p $cp1))
     ;; Process the term
     (insert-assert-pre-post--process $indent-str $p1 $p2 $parse-result)))
-
-(defun newline-keep-indent ()
-  (interactive)
-  (let ($p $i)
-    (setq $p (point))
-    (back-to-indentation)
-    (setq $i (- (point) (line-beginning-position)))
-    (goto-char $p)
-    (newline)
-    (dotimes (i $i) (insert " "))
-    $i))
 
 ;; Key bindings
 (global-set-key (kbd "C-c C-s C-r") 'replace-string) ;; "C-c C-r" is already bound in F* mode
