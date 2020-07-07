@@ -1609,8 +1609,8 @@ let pp_explore (dbg : bool)
   | _ -> mfail "pp_explore: not a squashed equality"
   end
 
-/// This function goes through the goal and prints all the subterms of its left
-/// operand. Very useful for debugging.
+/// This function goes through the goal, which is presumed to be a squashed equality,
+/// and prints all the subterms of its left operand. Very useful for debugging.
 val pp_explore_print_goal : unit -> Tac unit
 let pp_explore_print_goal () =
   let f : explorer unit =
@@ -1723,13 +1723,16 @@ let find_focused_assert_in_current_goal dbg =
   | Some res ->
     print_dbg dbg ("[> Found focused term:\n" ^ term_to_string res.res);
     (* Check that it is an assert or an assume, retrieve the assertion *)
-    begin match inspect res.res with
-    | Tv_Let _ _ bv0 fterm _ ->
-      if Some? (term_is_assert_or_assume fterm)
-      then Some ({ res with res = fterm }) else None
-    | _ ->
-      if Some? (term_is_assert_or_assume res.res)
-      then Some res else None
+    let res' = 
+      match inspect res.res with
+      | Tv_Let _ _ bv0 fterm _ ->
+        let ge' = genv_push_bv res.ge bv0 false None in
+        ({ res with res = fterm; ge = ge' })
+      | _ -> res
+    in
+    begin match term_is_assert_or_assume res'.res with
+    | None -> None
+    | Some tm ->  Some ({ res' with res = tm })
     end
   | None -> None
 
@@ -1795,7 +1798,6 @@ let analyze_effectful_term dbg res =
   printout_assertions ge3 "ainfo" asserts
 
 val pp_analyze_effectful_term : bool -> unit -> Tac unit
-
 let pp_analyze_effectful_term dbg () =
   match find_focused_term_in_current_goal dbg with
   | Some res -> analyze_effectful_term dbg res; trefl()
@@ -1818,8 +1820,7 @@ let remove_b2t (t:term) : Tac term =
   | _ -> t
 
 // TODO: gather all the functions like split_conjunctions, is_eq...
-// TODO: b2t? use term_as_formula?
-// TODO: take into account &&
+/// Try to destruct a term of the form '_ && _' or '_ /\ _'
 val is_conjunction : term -> Tac (option (term & term))
 let is_conjunction t =
   let t = remove_b2t t in
@@ -1925,7 +1926,6 @@ let formula_construct (f : formula) : Tac string =
   | FV _        -> "FV"
   | IntLit _    -> "IntLit"
   | F_Unknown   -> "F_Unknown"
-
 
 /// Check if a term is an equality of which one operand is the given bv, in
 /// which case return the other operand.
