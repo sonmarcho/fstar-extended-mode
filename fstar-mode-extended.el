@@ -640,29 +640,65 @@ the content of the assert), nil otherwise."
         (narrow-to-region $rbeg $rend)
         ;; The predicate function for the search
         (defun $pred ()
-          (let ($ar $str $pr)
-            ;; Check that we are looking at an assert(_norm)/assume
-            (setq $ar (sexp-at-p))
-            (setq $abeg (pair-fst $ar) $aend (pair-snd $ar))
-            (setq $str (buffer-substring-no-properties $abeg $aend))
-            (if (not (or (string-equal $str "assert")
-                         (string-equal $str "assert_norm")
-                         (string-equal $str "assume")))
-                ;; Not ok
-                nil
-              ;; Ok: check if the pointer is inside the argument
-              (goto-char $aend)
-              (skip-comments-and-spaces t)
-              (setq $pbeg (point))
-              (safe-forward-sexp)
-              (setq $pend (point))
-              (and (<= $pbeg $pos) (>= $pend $pos)))))
+          (save-match-data
+            (save-excursion
+              (let ($ar $str $pr)
+                ;; Check that we are looking at an assert(_norm)/assume
+                (setq $ar (sexp-at-p))
+                (setq $abeg (pair-fst $ar) $aend (pair-snd $ar))
+                (setq $str (buffer-substring-no-properties $abeg $aend))
+                (if (not (or (string-equal $str "assert")
+                             (string-equal $str "assert_norm")
+                             (string-equal $str "assume")))
+                    ;; Not ok
+                    nil
+                  ;; Ok: check if the pointer is inside the argument
+                  (goto-char $aend)
+                  (skip-comments-and-spaces t)
+                  (setq $pbeg (point))
+                  (safe-forward-sexp)
+                  (setq $pend (point))
+                  (and (<= $pbeg $pos) (>= $pend $pos)))))))
         ;; Search and return
-        (when (fstar--re-search-predicated-backward '$pred "assert\\|assume" BEG)
+        (when (fstar--re-search-predicated-backward '$pred "assert\\|assume" $rbeg)
           ;; Return
           (make-pair :fst (make-pair :fst $abeg :snd $aend)
                      :snd (make-pair :fst $pbeg :snd $pend))
           )))))
+
+(defun find-assert-assume-p (&optional POS BEG END)
+  "Find the F* assert(_norm)/assume at the pointer position.
+Takes an optional pointer position POS and region delimiters BEG and END.
+Returns a pair of pairs of positions if found (for the assert identifier and
+the content of the assert), nil otherwise.
+At the difference of find-encompassing-assert-assume-p, the pointer doesn't
+have to be inside the assertion/assumption.  It can for instance be on an
+``assert`` identifier."
+  (save-excursion
+    (save-restriction
+      (let (($rbeg (if BEG BEG (point-min))) ;; region beginning
+            ($rend (if END END (point-max))) ;; region end
+            ($pos (if POS POS (point)))
+            $sexp $pbeg $pend $str)
+        ;; First check if we are not exactly on the identifier, otherwise
+        ;; call find-encompassing-assert-assume-p
+        (goto-char $pos)
+        (setq $sexp (sexp-at-p))
+        (setq $str (buffer-substring-no-properties (pair-fst $sexp) (pair-snd $sexp)))
+        (if (or (string-equal $str "assert")
+                (string-equal $str "assert_norm")
+                (string-equal $str "assume"))
+            ;; Ignore comments and parse the next sexp
+            (progn
+              (goto-char (pair-snd $sexp))
+              (skip-comments-and-spaces t)
+              (setq $pbeg (point))
+              (safe-forward-sexp)
+              (setq $pend (point))
+              (make-pair :fst $sexp :snd (make-pair :fst $pbeg :snd $pend)))
+          ;; Otherwise, call find-encompassing-assert-assume-p
+          (goto-char $pos)
+          (find-encompassing-assert-assume-p POS BEG END))))))
 
 (defun find-encompassing-let-in (TERM_BEG TERM_END &optional BEG END)
   "Look for the 'let _ = _ in' or '_;' expression around the term.
@@ -1227,10 +1263,14 @@ Otherwise, the string is made of a number of spaces equal to the column position
   (log-dbg "split-assert-conjuncts")
   ;; Sanity check
   (generate-fstar-check-conditions)
-  ;; Parse the assert
+  ;; Parse the assertion/assumption. Note that we may be at the beginning of a
+  ;; line with an assertion/assumption, so we first try to move. More
+  ;; specifically, it is safe to ignore comments and space if we are surrounded
+  ;; by spaces or inside a comment.
   (setq $tbeg (fstar-subp--untracked-beginning-position))
-  (setq $passert (find-encompassing-assert-assume-p (point) $tbeg))
-  (when (not $passert) (error "Pointer not inside an assert/assert_norm/assume"))
+  (when (or (is-in-spaces-p) (fstar-in-comment-p)) (skip-comments-and-spaces t))
+  (setq $passert (find-assert-assume-p (point) $tbeg))
+  (when (not $passert) (error "Pointer not over an assert/assert_norm/assume"))
   ;; TODO: the pointer might exactly on the assert rather than inside the assertion
   ;; Parse the encompassing let (if there is)
   (setq $a-beg (pair-fst (pair-fst $passert))
