@@ -19,18 +19,82 @@
 ;; Note that for now I don't want to use functions like to-switch-buffer because
 ;; I want to keep a trace of the data processing for debugging
 
-(cl-defstruct pair fst snd)
-(defvar fstar-extended-debug t)
+;;; Code:
+
+;;; Imports
+(use-package fstar-mode :demand)
+
+;;; Customization
+
+;;; Constants
 (defconst fstar-extended-log-buffer "*fstar-extended-debug*")
-(defun log-msg (format-string &rest format-params)
-  "Log a message in the log buffer. TODO: for now just calls message"
-  (apply #'message format-string format-params))
-(defun log-dbg (format-string &rest format-params)
-  "Log a message in the log buffer if fstar-extended-debug is t.
-TODO: for now just calls message"
-  (when fstar-extended-debug (apply #'message format-string format-params)))
+
+(defconst fstar-message-prefix "[F*] ")
+(defconst fstar-tactic-message-prefix "[F*] TAC>> ")
+
+(defconst messages-buffer "*Messages*")
+
+;; Small trick to solve the undo problems: we use temporary buffer names which
+;; start with a ' ' so that emacs deactivates undo by default in those buffers,
+;; preventing the insertion of problematic undo-boundary.
+;; Note that for now we switch buffers "by hand" rather than using the emacs
+;; macros like with-current-bufferbecause it leaves a trace which helps debugging.
+(defconst fstar-temp-buffer1 " *fstar-temp-buffer1*")
+(defconst fstar-temp-buffer2 " *fstar-temp-buffer2*")
+
+
+;;; Type definitions
+
+(cl-defstruct pair
+  fst snd)
+
+(cl-defstruct meta-info
+  "Meta information extracted from the *Messages* buffer. Contains text as well
+as the result returned by the post-processing function called on the data.
+For now, the post-processing information simply contains the number of lines."
+  data pp-res)
+
+(cl-defstruct letb-term
+  "A parsed let binded term of the form: 'let b = exp in'"
+  beg end ;; delimiters for the whole expression
+  bind ;; the binding (as a meta-info)
+  b-beg b-end ;; delimiters
+  exp ;; the expression (as a meta-info)
+  e-beg e-end ;; delimiters
+  is-var ;; nil if tuple
+  )
+
+(cl-defstruct subexpr
+  "A parsed expression of the form 'let _ = _ in', '_;' or '_' (return value)"
+  beg end ;; point delimiters
+  is-let-in ;; is of the form: 'let _ = _ in'
+  has-semicol ;; is of the form: '_;'
+  bterm ;; the term binded by the 'let' if of the form 'let _ = _ in'
+  )
+
+(cl-defstruct assertions
+  "Counterpart of the F* assertions record type."
+  pres posts)
+
+;;; Debugging and errors
 
 (define-error 'fstar-meta-parsing "Error while parsing F*")
+
+(defvar fstar-extended-debug
+  "Toggle debug mode"
+  t)
+
+(defun log-msg (format-string &rest format-params)
+  "Log a message in the log buffer.
+Format FORMAT-PARAMS according to FORMAT-STRING."
+  (apply #'message format-string format-params))
+
+(defun log-dbg (format-string &rest format-params)
+  "Log a message in the log buffer if fstar-extended-debug is t.
+Format FORMAT-PARAMS according to FORMAT-STRING."
+  (when fstar-extended-debug (apply #'message format-string format-params)))
+
+;;; Utilities
 
 (defun replace-in-string (FROM TO STR)
   "Replace FROM with TO in string STR."
@@ -47,6 +111,21 @@ TODO: for now just calls message"
   (save-excursion
     (beginning-of-line)
     (looking-at-p "[[:space:]]*$")))
+
+(defun count-lines-in-string (STR)
+  "Count the number of lines in a string"
+  (save-match-data
+    (let (($num-lines 1))
+      (while (string-match (regexp-quote "\n") STR)
+        (setq $num-lines (+ $num-lines 1)))
+      $num-lines)))
+
+(defun consume-string-forward (STR &optional NO_ERROR)
+  "If the pointer looks at string STR, moves the pointer after it. Otherwise,
+returns nil or raises an error depending on NO_ERROR."
+  (if (looking-at-p (regexp-quote STR))
+      (progn (forward-char (length STR)) t)
+    (if NO_ERROR nil (error (format "consume-string-forward %s failed" STR)))))      
 
 (defun insert-newline-term (TERM)
   "Insert a new line if the current one is not empty, then insert TERM."
@@ -173,6 +252,8 @@ Takes optional region delimiters as arguments."
     (apply-in-current-region $r ALLOW_SELECTION INCLUDE_CURRENT_LINE
                              ABOVE_PARAGRAPH BELOW_PARAGRAPH)))
 
+;;; General F* code management commands
+
 (defun switch-assert-assume-in-current-region (ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                                ABOVE_PARAGRAPH BELOW_PARAGRAPH)
   (interactive)
@@ -274,16 +355,7 @@ Takes optional region delimiters as arguments."
         (insert-newline-term "admit();")
         (insert-newline-term "admit()"))))
 
-;; From now onwards we use functions from the F* mode
-(use-package fstar-mode
-  :demand)
-
-(defun consume-string-forward (STR &optional NO_ERROR)
-  "If the pointer looks at string STR, moves the pointer after it. Otherwise,
-returns nil or raises an error depending on NO_ERROR."
-  (if (looking-at-p (regexp-quote STR))
-      (progn (forward-char (length STR)) t)
-    (if NO_ERROR nil (error (format "consume-string-forward %s failed" STR)))))      
+;;; Parsing commands
 
 (defun fstar-in-general-comment-p (&optional POS)
   (save-restriction
@@ -436,47 +508,69 @@ NO_NEWLINE controls whether newline characters are considered spaces or not."
       (goto-char BEG)
       (if NO_NEWLINE (not (search-forward "\n" END t)) t))))
 
-(defconst fstar-message-prefix "[F*] ")
-(defconst fstar-tactic-message-prefix "[F*] TAC>> ")
-
-(defconst messages-buffer "*Messages*")
-;; Small trick to solve the undo problems: we use temporary buffer names which
-;; start with a ' ' so that emacs deactivates undo by default in those buffers,
-;; preventing the insertion of problematic undo-boundary.
-;; Note that for now we switch buffers "by hand" rather than using the emacs
-;; macros like with-current-bufferbecause it leaves a trace which helps debugging.
-(defconst fstar-temp-buffer1 " *fstar-temp-buffer1*")
-(defconst fstar-temp-buffer2 " *fstar-temp-buffer2*")
-
-
-;; Meta information generated by tactics and output in the *Messages* buffer:
-(cl-defstruct meta-info
-  "Meta information extracted from the *Messages* buffer. Contains text as well
-as the result returned by the post-processing function called on the data."
-  data pp-res)
-
-(cl-defstruct letb-term
-  "A parsed let binded term of the form: 'let b = exp in'"
-  beg end ;; delimiters for the whole expression
-  bind ;; the binding (as a meta-info)
-  b-beg b-end ;; delimiters
-  exp ;; the expression (as a meta-info)
-  e-beg e-end ;; delimiters
-  is-var ;; nil if tuple
-  )
-
 (defun region-is-tuple (BEG END)
-  "Returns t if the text region delimited by BEG and END is a tuple (simply
-checks if there is a ',' inside"
+  "Return t if the text region delimited by BEG and END is a tuple.
+In practice, simply check if there is a ',' inside."
   (save-excursion
     (save-restriction
       (goto-char BEG)
       (search-forward-not-comment "," END))))
 
+(defun space-after-p (&optional POS)
+  "Return t if there is a space at POS.
+POS defaults to the pointer's position."
+  (seq-contains fstar--spaces (char-after POS)))
+
+(defun space-before-p (&optional POS)
+  "Return t if there is a space before POS.
+POS defaults to the pointer's position."
+  (seq-contains fstar--spaces (char-before POS)))
+
+(defun is-in-spaces-p (&optional POS)
+  "Return t if there are spaces before and after POS.
+POS defaults to the pointer's position."
+  (and (space-after-p POS) (space-before-p POS)))
+
+(defun safe-backward-sexp (&optional ARG)
+  "Call (backward-sexp ARG) and return nil instead of raising errors."
+  (ignore-errors (backward-sexp ARG)))
+
+(defun safe-forward-sexp (&optional ARG)
+  "Call (forward-sexp ARG) and return nil instead of raising errors."
+  (ignore-errors (forward-sexp ARG)))
+
+(defun sexp-at-p (&optional POS ACCEPT_COMMENTS)
+  "Find the sexp at POS.
+POS defaults to the pointer's position.
+Returns a pair of positions if succeeds, nil otherwise.
+If ACCEPT_COMMENTS is nil, return nil if we are inside a comment."
+  (save-excursion
+    (let (($not-ok nil) $beg $end)
+      ;; Must not be in a comment (unless the user wants it) or surrounded by spaces
+      (setq $not-ok (or (and (fstar-in-general-comment-p) (not ACCEPT_COMMENTS))
+                        (is-in-spaces-p)))
+      ;; Find the beginning and end positions
+      (if $not-ok nil
+        ;; End: if looking at space, this is the end position. Otherwise,
+        ;; go to the end of the sexp
+        (when (not (space-after-p)) (safe-forward-sexp))
+        (setq $end (point))
+        ;; Beginning: just go backward
+        (safe-backward-sexp)
+        (setq $beg (point))
+        (make-pair :fst $beg :snd $end)))))
+
+(defun sexp-at-p-as-string (&optional POS)
+  "Return the sexp at POS."
+  (let (($r (sexp-at-p)))
+    (if $r (buffer-substring-no-properties (pair-fst $r) (pair-snd $r))
+      nil)))
+
 (defun parse-letb-term (BEG END &optional NO_ERROR)
-  "Parses the let binded term in a 'let x = y in' expression. Note that the region
-delimited by BEG and END should start exactly with 'let' and end with 'in', put
-aside potential whitespaces and comments."
+  "Parse the let binded term in a 'let x = y in' expression.
+Note that the region delimited by BEG and END should start exactly with 'let'
+and end with 'in', put aside potential whitespaces and comments.
+Returns nil if fails and NO_ERROR is t, raises an error otherwise."
   ;; We do things simple: we just look forward for the next '=' (this character
   ;; shouldn't appear in the 'x' term).
   ;; Then, in order to check whether the term is a variable or not, we just
@@ -544,17 +638,19 @@ aside potential whitespaces and comments."
                           :is-var $is-var))
         ))))
 
-(cl-defstruct subexpr
-  "An expression of the form 'let _ = _ in', '_;' or '_' (return value)"
-  beg end ;; point delimiters
-  is-let-in ;; is of the form: 'let _ = _ in'
-  has-semicol ;; is of the form: '_;'
-  bterm ;; the term binded by the 'let' if of the form 'let _ = _ in'
-  )
+(defun shift-letb-term-pos (SHIFT TERM)
+  "Shift hy SHIFT the positions in the letb-term TERM.
+Return the updated letb-term"
+  (setf (letb-term-beg TERM) (+ SHIFT (letb-term-beg TERM)))
+  (setf (letb-term-end TERM) (+ SHIFT (letb-term-end TERM)))
+  (setf (letb-term-e-beg TERM) (+ SHIFT (letb-term-e-beg TERM)))
+  (setf (letb-term-e-end TERM) (+ SHIFT (letb-term-e-end TERM)))
+  TERM)
 
 (defun parse-subexpr (BEG END)
-  "Parses a sub-expression of the form 'let _ = _ in', '_;' or '_' (i.e.: a return
-value) in the region delimited by BEG and END. Returns a subexpr."
+  "Parse a sub-expression of the form 'let _ = _ in', '_;' or '_'.
+Parses in the region delimited by BEG and END.
+Returns a subexpr."
   (let ($delimiters $beg $end $is-let-in $has-semicol $bterm)
     ;; Parse: 3 cases:
     ;; - let _ = _ in
@@ -590,51 +686,14 @@ value) in the region delimited by BEG and END. Returns a subexpr."
     (make-subexpr :beg $beg :end $end :is-let-in $is-let-in :has-semicol $has-semicol
                   :bterm $bterm)))
 
+(defun shift-subexpr-pos (SHIFT SUBEXPR)
+  "Shift by SHIFT the positions in the subexpr SUBEXPR.
+Return the updated subexpr."
+  (setf (subexpr-beg SUBEXPR) (+ SHIFT (subexpr-beg SUBEXPR)))
+  (setf (subexpr-end SUBEXPR) (+ SHIFT (subexpr-end SUBEXPR)))
+  (when (subexpr-bterm SUBEXPR) (shift-letb-term-pos SHIFT (subexpr-bterm SUBEXPR)))
+  SUBEXPR)
 
-(defun space-after-p (&optional POS)
-  "Return t if there is a space at the pointer's position."
-  (seq-contains fstar--spaces (char-after POS)))
-
-(defun space-before-p (&optional POS)
-  "Return t if there is a space before the pointer's position."
-  (seq-contains fstar--spaces (char-before POS)))
-
-(defun is-in-spaces-p (&optional POS)
-  "Return t if there are spaces before and after the pointer."
-  (and (space-after-p POS) (space-before-p POS)))
-
-(defun safe-backward-sexp (&optional ARG)
-  "Same as (backward-sexp ARG) but returns nil instead of raising errors."
-  (ignore-errors (backward-sexp ARG)))
-
-(defun safe-forward-sexp (&optional ARG)
-  "Same as (forward-sexp ARG) but returns nil instead of raising errors."
-  (ignore-errors (forward-sexp ARG)))
-
-(defun sexp-at-p (&optional POS ACCEPT_COMMENTS)
-  "Find the sexp at POS.
-Returns a pair of positions if succeeds, nil otherwise."
-  (save-excursion
-    (let (($not-ok nil) $beg $end)
-      ;; Must not be in a comment (unless the user wants it) or surrounded by spaces
-      (setq $not-ok (or (and (fstar-in-general-comment-p) (not ACCEPT_COMMENTS))
-                        (is-in-spaces-p)))
-      ;; Find the beginning and end positions
-      (if $not-ok nil
-        ;; End: if looking at space, this is the end position. Otherwise,
-        ;; go to the end of the sexp
-        (when (not (space-after-p)) (safe-forward-sexp))
-        (setq $end (point))
-        ;; Beginning: just go backward
-        (safe-backward-sexp)
-        (setq $beg (point))
-        (make-pair :fst $beg :snd $end)))))
-
-(defun sexp-at-p-as-string (&optional POS)
-  "Return the sexp at POS."
-  (let (($r (sexp-at-p)))
-    (if $r (buffer-substring-no-properties (pair-fst $r) (pair-snd $r))
-      nil)))
 
 (defun find-encompassing-assert-assume-p (&optional POS BEG END)
   "Find the encompassing F* assert(_norm)/assume.
@@ -783,31 +842,18 @@ Returns an optional subexpr."
                                              :e-beg TERM_BEG :e-end TERM_END))
                 (make-subexpr :beg $beg :end $end :is-let-in t :has-semicol nil :bterm $bterm))
                 )))))))                                    
-          
 
-;; We duplicate the assertions structure from the F* side
-(cl-defstruct assertions pres posts)
-
-(defun type-info-rawest-type (ty)
-  "Returns the 'rawest' type from a type-info"
-  (or (type-info-rty-raw ty) (type-info-ty ty)))
-
-(defun param-info-requires-cast (param)
-  "Returns t if the types-comparison from param is 'Unknown'"
-  (string= (meta-info-data (param-info-types-comparison param)) "Unknown"))
-
-(defun param-info-requires-refinement (param)
-  "Returns t if the types-comparison from param is 'Same_raw_type' or 'Unknown'"
-  (or
-   (string= (meta-info-data (param-info-types-comparison param)) "Unknown")
-   (string= (meta-info-data (param-info-types-comparison param)) "Same_raw_type")))
+;;; Extraction of information for the *Messages* buffer
 
 (defun search-data-delimiter (delimiter backward consume-delimiter no-error
                               &optional BEG END)
-  "Searchs for delimiter in the direction given by backward. consume-delimiter
-controls whether to leave the pointer where it is or backtrack to put it just
-before the delimiter. If the delimiter could not be found, raises an error if
-no-error is nil, returns nil otherwise."
+  "Search for DELIMITER in the buffer.
+BEG and END are optional region delimiters.
+BACKWARD gives the search direction, CONSUME-DELIMITER controls whether to leave
+the pointer where it is or backtrack to put it just before (after) the delimiter
+ (depending on the search direction).
+If the delimiter could not be found, raises an error if NO-ERROR is nil, returns
+nil otherwise."
   (let ((beg (or BEG (point-min)))
         (end (or END (point-max)))
         p)
@@ -866,14 +912,6 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
                  prefix id res-str)))
     (if res (make-meta-info :data res :pp-res pp-res) nil))) ;; end of function
 
-(defun count-lines-in-string (STR)
-  "Count the number of lines in a string"
-  (save-match-data
-    (let (($num-lines 1))
-      (while (string-match (regexp-quote "\n") STR)
-        (setq $num-lines (+ $num-lines 1)))
-      $num-lines)))
-
 (defun meta-info-post-process ()
   "Data post-processing function: counts the number of lines.
 Also greedily replaces some identifiers (Prims.l_True -> True...).
@@ -888,17 +926,21 @@ Returns the number of lines."
     )) ;; end of post-process fun  
 
 (defun extract-string-from-buffer (prefix id &optional no-error LIMIT)
+  "Extract a string for the current buffer."
   (log-dbg "extract-string-from-buffer:\n- prefix: %s\n- id: %s" prefix id)
   (extract-info-from-buffer prefix id no-error nil LIMIT))
 
 (defun extract-term-from-buffer (prefix id &optional no-error LIMIT)
+  "Extract a term from the current buffer.
+Contrary to a string, a term is post-processed."
   (log-dbg "extract-term-from-buffer:\n- prefix: %s\n- id: %s" prefix id)
   (extract-info-from-buffer prefix id no-error
                             (apply-partially 'meta-info-post-process)
                             LIMIT))
 
 (defun extract-assertion-from-buffer (prefix id index &optional no-error LIMIT)
-  "Extracts an assertion from the current buffer. Returns a meta-info structure."
+  "Extract an assertion from the current buffer.
+Returns a meta-info structure."
   (log-dbg "extract-assertion-from-buffer:\n- prefix: %s\n- id: %s\n- index: %s"
            prefix id (number-to-string index))
   (let* ((full-id (concat id (number-to-string index))))
@@ -1063,6 +1105,8 @@ process-buffer is the buffer to use to copy and process the raw data
       ;; Return
       result)))
 
+;;; Commands to compute meta-data and insert F* code
+
 (defun insert-with-indent (indent-str txt &optional indent-first-line)
   (when indent-first-line (insert indent-str))
   (insert (replace-in-string "\n" (concat "\n" indent-str) txt)))
@@ -1123,23 +1167,6 @@ If F* succeeded, extracts the information and adds it to the proof"
       (dolist (a (assertions-posts assertions))
         (generate-assert-from-term indent-str t a))
       )))
-
-(defun shift-letb-term-pos (SHIFT TERM)
-  "Shift hy SHIFT the positions in the letb-term TERM.
-Return the updated letb-term"
-  (setf (letb-term-beg TERM) (+ SHIFT (letb-term-beg TERM)))
-  (setf (letb-term-end TERM) (+ SHIFT (letb-term-end TERM)))
-  (setf (letb-term-e-beg TERM) (+ SHIFT (letb-term-e-beg TERM)))
-  (setf (letb-term-e-end TERM) (+ SHIFT (letb-term-e-end TERM)))
-  TERM)
-
-(defun shift-subexpr-pos (SHIFT SUBEXPR)
-  "Shift by SHIFT the positions in the subexpr SUBEXPR.
-Return the updated subexpr."
-  (setf (subexpr-beg SUBEXPR) (+ SHIFT (subexpr-beg SUBEXPR)))
-  (setf (subexpr-end SUBEXPR) (+ SHIFT (subexpr-end SUBEXPR)))
-  (when (subexpr-bterm SUBEXPR) (shift-letb-term-pos SHIFT (subexpr-bterm SUBEXPR)))
-  SUBEXPR)
 
 (defun copy-def-for-meta-process (END SUBEXPR DEST_BUFFER PP_INSTR)
   "Copy code for meta-processing and update the parsed result positions.
@@ -1203,7 +1230,7 @@ OVERLAY_END gives the position at which to stop the overlay."
     (setq $cbuffer (current-buffer))
     ;; Copy and start processing the content
     (setq $subexpr (copy-def-for-meta-process P2 SUBEXPR fstar-temp-buffer1
-                                              "PrintTactics.pp_analyze_effectful_term false"))
+                                              "FEM.Process.pp_analyze_effectful_term false"))
     ;; We are now in the destination buffer
     ;; Modify the copied content and leave the pointer at the end of the region
     ;; to send to F*
@@ -1215,7 +1242,7 @@ OVERLAY_END gives the position at which to stop the overlay."
     (setq $p1 (subexpr-beg $subexpr) $p2 (subexpr-end $subexpr))
     ;; Prefix
     (goto-char $p1)
-    (setq $prefix "let _ = PrintTactics.focus_on_term in ")
+    (setq $prefix "let _ = FEM.Process.focus_on_term in ")
     (setq $prefix-length (length $prefix))
     (insert $prefix)
     ;; Suffix
@@ -1300,7 +1327,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
   (setq $cbuffer (current-buffer))
   ;; Copy and start processing the content
   (setq $subexpr1 (copy-def-for-meta-process $end $subexpr fstar-temp-buffer1
-                                            "PrintTactics.pp_split_assert_conjs false"))
+                                            "FEM.Process.pp_split_assert_conjs false"))
   ;; We are now in the destination buffer
   ;; Insert the ``focus_on_term`` indicator at the proper place, together
   ;; with an admit after the focused term.
@@ -1308,7 +1335,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; we will send the whole buffer to F*.
   ;; Prefix
   (goto-char (subexpr-beg $subexpr1))
-  (setq $prefix "let _ = PrintTactics.focus_on_term in ")
+  (setq $prefix "let _ = FEM.Process.focus_on_term in ")
   (setq $prefix-length (length $prefix))
   (insert $prefix)
   ;; Suffix
@@ -1360,7 +1387,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
   (setq $cbuffer (current-buffer))
   ;; Copy and start processing the content
   (setq $subexpr1 (copy-def-for-meta-process $end $subexpr fstar-temp-buffer1
-                                            "PrintTactics.pp_unfold_in_assert_or_assume false"))
+                                            "FEM.Process.pp_unfold_in_assert_or_assume false"))
   ;; We are now in the destination buffer
   ;; Insert the ``focus_on_term`` indicators at the proper places, together
   ;; with an admit after the focused term.
@@ -1375,11 +1402,11 @@ Otherwise, the string is made of a number of spaces equal to the column position
   (goto-char (+ (pair-snd $id) $shift))
   ($insert-and-shift "))")
   (goto-char (+ (pair-fst $id) $shift))
-  ($insert-and-shift "(let _ = PrintTactics.focus_on_term in (")
+  ($insert-and-shift "(let _ = FEM.Process.focus_on_term in (")
   ;; - for the admit - note that the above insertion should have been made
   ;;   below the point where we now insert
   (goto-char (subexpr-beg $subexpr1))
-  ($insert-and-shift "let _ = PrintTactics.focus_on_term in\n")
+  ($insert-and-shift "let _ = FEM.Process.focus_on_term in\n")
   ;; Suffix
   (goto-char (+ (subexpr-end $subexpr1) $insert-shift))
   ;; Insert an admit if it is a 'let' or a ';' expression
@@ -1450,19 +1477,6 @@ TODO: take into account if/match branches"
     (insert-assert-pre-post--process $indent-str $p1 $p2 $parse-result)))
 
 ;; Key bindings
-(global-set-key (kbd "C-c C-s C-r") 'replace-string) ;; "C-c C-r" is already bound in F* mode
-(global-set-key (kbd "C-c C-q") 'query-replace)
-
-(global-set-key (kbd "M-n") 'forward-paragraph)
-(global-set-key (kbd "M-p") 'backward-paragraph)
-(global-set-key (kbd "M-k") 'delete-whole-line)
-(global-set-key (kbd "C-d") 'delete-forward-char)
-(global-set-key (kbd "C-,") 'delete-backward-char)
-(global-set-key (kbd "M-,") 'backward-kill-word)
-(global-set-key (kbd "M-m") 'back-to-indentation-or-beginning)
-
-(global-set-key (kbd "C-M-j") 'newline-keep-indent)
-
 (global-set-key (kbd "C-x C-a") 'roll-admit)
 (global-set-key (kbd "C-c C-s C-a") 'switch-assert-assume-in-above-paragraph)
 (global-set-key (kbd "C-S-a") 'switch-assert-assume-in-current-line)
@@ -1471,4 +1485,5 @@ TODO: take into account if/match branches"
 (global-set-key (kbd "C-c C-s C-u") 'split-assert-assume-conjuncts)
 (global-set-key (kbd "C-c C-s C-f") 'unfold-in-assert-assume)
 
-
+(provide 'fstar-extended-mode)
+;;; fstar-extended-mode.el ends here
