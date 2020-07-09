@@ -866,17 +866,6 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
                  prefix id res-str)))
     (if res (make-meta-info :data res :pp-res pp-res) nil))) ;; end of function
 
-(defun count-lines (&optional POS LIMIT)
-  "Returns the number of lines in the buffer, starting at POS"
-  (save-excursion
-    (save-match-data
-      (when POS (goto-char POS))
-      (let (($num-lines 1))
-        ;; Count the lines
-        (while (search-forward "\n" (or LIMIT (point-max)) t)
-          (setq $num-lines (+ $num-lines 1)))
-        $num-lines))))
-
 (defun count-lines-in-string (STR)
   "Count the number of lines in a string"
   (save-match-data
@@ -890,7 +879,7 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
 Also greedily replaces some identifiers (Prims.l_True -> True...).
 Returns the number of lines."
   ;; Count the lines
-  (let ((num-lines (count-lines (point-min))))
+  (let ((num-lines (count-lines (point-min) (point-max))))
     ;; Greedy replacements
     (replace-all-in "Prims.l_True" "True")
     (replace-all-in "Prims.l_False" "False")
