@@ -32,16 +32,20 @@
 (defconst fem-message-prefix "[F*] ")
 (defconst fem-tactic-message-prefix "[F*] TAC>> ")
 
-(defconst messages-buffer "*Messages*")
+(defconst fem-messages-buffer "*Messages*")
 
 ;; Small trick to solve the undo problems: we use temporary buffer names which
 ;; start with a ' ' so that emacs deactivates undo by default in those buffers,
 ;; preventing the insertion of problematic undo-boundary.
 ;; Note that for now we switch buffers "by hand" rather than using the emacs
-;; macros like with-current-bufferbecause it leaves a trace which helps debugging.
+;; macros like with-current-buffer because it leaves a trace which helps debugging.
 (defconst fem-process-buffer1 " *fstar-temp-buffer1*")
 (defconst fem-process-buffer2 " *fstar-temp-buffer2*")
 
+(defconst fem-pos-marker "(*[_#%s#_]*) ")
+(defvar fem-pos-marker-overlay nil)
+(defvar fem-saved-pos nil)
+;;  (make-fem-pair :fst nil :snd nil))
 
 ;;; Type definitions
 
@@ -1011,7 +1015,7 @@ include-delimiters controls whether to copy the delimiters or not"
           (backward t)
           (beg nil) (end nil) (p1 nil) (p2 nil))
       ;; Switch to the *Messages* buffer
-      (switch-to-buffer messages-buffer)
+      (switch-to-buffer fem-messages-buffer)
       ;; Find the delimiters
       (goto-char (point-max))
       (setq beg (fem-search-data-delimiter beg-delimiter t include-delimiters no-error))
@@ -1168,7 +1172,6 @@ If F* succeeded, extracts the information and adds it to the proof"
         (fem-generate-assert-from-term indent-str t a))
       )))
 
-;; TODO HERE
 (defun fem-copy-def-for-meta-process (END SUBEXPR DEST_BUFFER PP_INSTR)
   "Copy code for meta-processing and update the parsed result positions.
 Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
@@ -1229,7 +1232,6 @@ OVERLAY_END gives the position at which to stop the overlay."
   (fstar-subp--query (fstar-subp--push-query $beg `full PAYLOAD)
                      (apply-partially CONTINUATION $overlay))))
 
-;; TODO HERE
 (defun fem-insert-assert-pre-post--process (INDENT_STR P1 P2 SUBEXPR)
   "Generate the F* query for insert-assert-pre-post and query F*."
   (let ($cbuffer $subexpr $p1 $p2 $prefix $prefix-length $payload)
@@ -1428,6 +1430,65 @@ Otherwise, the string is made of a number of spaces equal to the column position
                                  (apply-partially #'fem-insert-assert-pre-post--continuation
                                                   $indent-str $beg $end $subexpr1))))
 
+(defun fem-same-opt-num (P1 P2)
+  "Return t if P1 and P2 are the same numbers or are both nil."
+  (if (and P1 P2)
+      (= P1 P2)
+    (and (not P1) (not P2))))
+
+;; TODO HERE
+(defun fem-get-pos-markers (&optional END)
+  "Return the saved pos markers above the pointer and remove them from the code.
+Returns a (potentially nil) fem-pair.
+END is the limit of the region to check"
+  (save-excursion
+    (save-match-data
+      (let ($p0 $p1 $mp0 $mp1)
+        (setq $p0 (fstar-subp--untracked-beginning-position))
+        (setq $p1 (or END (point)))
+        ;; First marker
+        (goto-char $p0)
+        (if (not (search-forward (format fem-pos-marker 0) $p1 t))
+            ;; No marker
+            nil
+          ;; There is a marker: save the position and remove it
+          (setq $mp0 (match-beginning 0))
+          (replace-match "")
+          ;; Look for the second one
+          (goto-char $p0)
+          (if (not (search-forward (format fem-pos-marker 1) $p1 t))
+              (setq $mp1 nil)
+            (setq $mp1 (match-beginning 0))
+            (replace-match ""))
+          ;;Return
+          (make-fem-pair :fst $mp0 :snd $mp1))))))
+
+(defun fem-insert-pos-markers ()
+  "Insert a marker in the code to indicate the pointer position.
+This is a way of saving the pointer's position for a later function call,
+while indicating where this position is to the user.
+TODO: use overlays."
+  (interactive)
+  (let ($p $p1 $p2 $op1 $op2 $overlay)
+    (setq $p (point))
+    ;; Retract so that the current point is not in a processed region
+    (fstar-subp-retract-until $p)
+    ;; Check if there are other markers. If there are, remove them.
+    ;; Otherwise, insert new ones.
+    (if (fem-get-pos-markers)
+        nil
+      ;; Save the active region (if there is) or the pointer position
+      (if (use-region-p)
+          (setq $p1 (region-beginning) $p2 (region-end))
+        ;; Pointer position: move the pointer if we are above a term
+        (when (not (or (fem-space-before-p) (fem-space-after-p)))
+          (fem-safe-backward-sexp))
+        (setq $p1 (point) $p2 nil))
+      ;; Insert the markers (starting with the second not to have to handle shifts)
+      (when $p2 (goto-char $p2) (insert (format fem-pos-marker 1)))
+      (goto-char $p1)
+      (insert (format fem-pos-marker 0)))))
+
 (defun fem-insert-assert-pre-post ()
   "Insert assertions with proof obligations and postconditions around a term.
 TODO: take into account if/match branches"
@@ -1488,6 +1549,7 @@ TODO: take into account if/match branches"
 (global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
 (global-set-key (kbd "C-S-a") 'fem-switch-assert-assume-in-current-line)
 
+(global-set-key (kbd "C-c C-s C-i") 'fem-insert-pos-markers)
 (global-set-key (kbd "C-c C-e") 'fem-insert-assert-pre-post)
 (global-set-key (kbd "C-c C-s C-u") 'fem-split-assert-assume-conjuncts)
 (global-set-key (kbd "C-c C-s C-f") 'fem-unfold-in-assert-assume)
