@@ -548,21 +548,21 @@ If ACCEPT_COMMENTS is nil, return nil if we are inside a comment."
     (let (($not-ok nil) $beg $end)
       ;; Must not be in a comment (unless the user wants it) or surrounded by spaces
       (setq $not-ok (or (and (fem-in-general-comment-p) (not ACCEPT_COMMENTS))
-                        (is-in-spaces-p)))
+                        (fem-is-in-spaces-p)))
       ;; Find the beginning and end positions
       (if $not-ok nil
         ;; End: if looking at space, this is the end position. Otherwise,
         ;; go to the end of the sexp
-        (when (not (space-after-p)) (safe-forward-sexp))
+        (when (not (fem-space-after-p)) (fem-safe-forward-sexp))
         (setq $end (point))
         ;; Beginning: just go backward
-        (safe-backward-sexp)
+        (fem-safe-backward-sexp)
         (setq $beg (point))
         (make-fem-pair :fst $beg :snd $end)))))
 
 (defun fem-sexp-at-p-as-string (&optional POS)
   "Return the sexp at POS."
-  (let (($r (sexp-at-p)))
+  (let (($r (fem-sexp-at-p)))
     (if $r (buffer-substring-no-properties (fem-pair-fst $r) (fem-pair-snd $r))
       nil)))
 
@@ -719,7 +719,7 @@ the content of the assert), nil otherwise."
             (save-excursion
               (let ($ar $str $pr)
                 ;; Check that we are looking at an assert(_norm)/assume
-                (setq $ar (sexp-at-p))
+                (setq $ar (fem-sexp-at-p))
                 (setq $abeg (fem-pair-fst $ar) $aend (fem-pair-snd $ar))
                 (setq $str (buffer-substring-no-properties $abeg $aend))
                 (if (not (or (string-equal $str "assert")
@@ -731,7 +731,7 @@ the content of the assert), nil otherwise."
                   (goto-char $aend)
                   (fem-skip-comments-and-spaces t)
                   (setq $pbeg (point))
-                  (safe-forward-sexp)
+                  (fem-safe-forward-sexp)
                   (setq $pend (point))
                   (and (<= $pbeg $pos) (>= $pend $pos)))))))
         ;; Search and return
@@ -758,7 +758,7 @@ have to be inside the assertion/assumption.  It can for instance be on an
         ;; First check if we are not exactly on the identifier, otherwise
         ;; call find-encompassing-assert-assume-p
         (goto-char $pos)
-        (setq $sexp (sexp-at-p))
+        (setq $sexp (fem-sexp-at-p))
         (setq $str (buffer-substring-no-properties (fem-pair-fst $sexp) (fem-pair-snd $sexp)))
         (if (or (string-equal $str "assert")
                 (string-equal $str "assert_norm")
@@ -768,7 +768,7 @@ have to be inside the assertion/assumption.  It can for instance be on an
               (goto-char (fem-pair-snd $sexp))
               (fem-skip-comments-and-spaces t)
               (setq $pbeg (point))
-              (safe-forward-sexp)
+              (fem-safe-forward-sexp)
               (setq $pend (point))
               (make-fem-pair :fst $sexp :snd (make-fem-pair :fst $pbeg :snd $pend)))
           ;; Otherwise, call find-encompassing-assert-assume-p
@@ -826,8 +826,8 @@ Returns an optional fem-subexpr."
               ;; Look for the 'in'
               (goto-char TERM_END)
               (fem-skip-comments-and-spaces t)
-              (setq $tmp (sexp-at-p))
-              (if (not (string-equal "in" (sexp-at-p-as-string)))
+              (setq $tmp (fem-sexp-at-p))
+              (if (not (string-equal "in" (fem-sexp-at-p-as-string)))
                   ;; Failed
                   (make-fem-subexpr :beg TERM_BEG :end TERM_END :is-let-in nil :has-semicol nil :bterm nil)
                 (forward-sexp)
@@ -1311,7 +1311,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; specifically, it is safe to ignore comments and space if we are surrounded
   ;; by spaces or inside a comment.
   (setq $tbeg (fstar-subp--untracked-beginning-position))
-  (when (or (is-in-spaces-p) (fstar-in-comment-p)) (fem-skip-comments-and-spaces t))
+  (when (or (fem-is-in-spaces-p) (fstar-in-comment-p)) (fem-skip-comments-and-spaces t))
   (setq $passert (fem-find-assert-assume-p (point) $tbeg))
   (when (not $passert) (error "Pointer not over an assert/assert_norm/assume"))
   ;; Parse the encompassing let (if there is)
@@ -1368,7 +1368,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; Sanity check
   (fem-generate-fstar-check-conditions)
   ;; Find the identifier
-  (setq $id (sexp-at-p))
+  (setq $id (fem-sexp-at-p))
   (when (not $id) (error "Pointer not over a term"))
   ;; Parse the assertion/assumption.
   (setq $tbeg (fstar-subp--untracked-beginning-position))
@@ -1400,7 +1400,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; with an admit after the focused term.
   ;; Prefixes:
   (setq $insert-shift 0)
-  (defun fem-$insert-and-shift (STR)
+  (defun $insert-and-shift (STR)
     (setq $insert-shift (+ $insert-shift (length STR)))
     (insert STR))
   ;; - for the identifier - note that we need to compute the shift between the
