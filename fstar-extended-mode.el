@@ -176,27 +176,29 @@ Return the number of deleted characters."
 	       (delete-backward-char 1) (+ $c 1)))))
 
 (defun fem-find-region-delimiters (ALLOW_SELECTION INCLUDE_CURRENT_LINE
-                               ABOVE_PARAGRAPH BELOW_PARAGRAPH)
+                                   ABOVE_PARAGRAPH BELOW_PARAGRAPH &optional POS)
   ""
- (let ($p $p1 $p2)
-   ;; Save the current point
-   (setq $p (point))
-   ;; Find the region delimiters (and move the pointer back to its original position):
-   ;; First check if we need to use the selected region
-   (if (and (use-region-p) ALLOW_SELECTION)
-       ;; Use the selected region
-       (setq $p1 (region-beginning) $p2 (region-end))
-       ;; Compute a new region
-       (progn
-         ;; - beginning of region
-         (progn (if ABOVE_PARAGRAPH (backward-paragraph)
-                  (if INCLUDE_CURRENT_LINE (move-beginning-of-line ()) (move-end-of-line ())))
-                (setq $p1 (point)) (goto-char $p))
-         ;; - end of region
-         (progn (if BELOW_PARAGRAPH (forward-paragraph)
-                  (if INCLUDE_CURRENT_LINE (move-end-of-line ()) (move-beginning-of-line ())))
-                (setq $p2 (point)) (goto-char $p))))
-   (make-fem-pair :fst $p1 :snd $p2)))
+  (save-excursion
+    (let ($p $p1 $p2)
+      ;; Save the current point
+      (when POS (goto-char POS))
+      (setq $p (point))
+      ;; Find the region delimiters (and move the pointer back to its original position):
+      ;; First check if we need to use the selected region
+      (if (and (use-region-p) ALLOW_SELECTION)
+          ;; Use the selected region
+          (setq $p1 (region-beginning) $p2 (region-end))
+        ;; Compute a new region
+        (progn
+          ;; - beginning of region
+          (progn (if ABOVE_PARAGRAPH (backward-paragraph)
+                   (if INCLUDE_CURRENT_LINE (move-beginning-of-line ()) (move-end-of-line ())))
+                 (setq $p1 (point)) (goto-char $p))
+          ;; - end of region
+          (progn (if BELOW_PARAGRAPH (forward-paragraph)
+                   (if INCLUDE_CURRENT_LINE (move-end-of-line ()) (move-beginning-of-line ())))
+                 (setq $p2 (point)) (goto-char $p))))
+      (make-fem-pair :fst $p1 :snd $p2))))
 
 (defun fem-apply-in-current-region (ACTION ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                 ABOVE_PARAGRAPH BELOW_PARAGRAPH)
@@ -1172,7 +1174,7 @@ If F* succeeded, extracts the information and adds it to the proof"
         (fem-generate-assert-from-term indent-str t a))
       )))
 
-(defun fem-copy-def-for-meta-process (END SUBEXPR DEST_BUFFER PP_INSTR)
+(defun fem-copy-def-for-meta-process (END INSERT_ADMIT SUBEXPR DEST_BUFFER PP_INSTR)
   "Copy code for meta-processing and update the parsed result positions.
 Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
 PP_INSTR is the post-processing instruction to insert just before the definition."
@@ -1208,7 +1210,7 @@ PP_INSTR is the post-processing instruction to insert just before the definition
     (setq $original-length (- END $beg)
           $new-length (- (point-max) (point-min)))
     (setq $shift (- $new-length $original-length))
-    (setq $shift (- $shift $beg))
+    (setq $shift (+ (- $shift $beg) 1))
     ;; Shift and return the parsing information
     (setq $res (copy-fem-subexpr SUBEXPR))
     (when (fem-subexpr-bterm SUBEXPR)
@@ -1223,7 +1225,7 @@ OVERLAY_END gives the position at which to stop the overlay."
          $overlay)
   ;; Create the overlay
   (setq $overlay (make-overlay (fstar-subp--untracked-beginning-position)
-                               OVERLAY_END (current-buffer) nil nil))
+                                OVERLAY_END (current-buffer) nil nil))
   (fstar-subp-remove-orphaned-issue-overlays (point-min) (point-max))
   (overlay-put $overlay 'fstar-subp--lax nil)
   (fstar-subp-set-status $overlay 'busy)
@@ -1232,13 +1234,13 @@ OVERLAY_END gives the position at which to stop the overlay."
   (fstar-subp--query (fstar-subp--push-query $beg `full PAYLOAD)
                      (apply-partially CONTINUATION $overlay))))
 
-(defun fem-insert-assert-pre-post--process (INDENT_STR P1 P2 SUBEXPR)
+(defun fem-insert-assert-pre-post--process (INDENT_STR P1 P2 P3 INSERT_ADMIT SUBEXPR)
   "Generate the F* query for insert-assert-pre-post and query F*."
   (let ($cbuffer $subexpr $p1 $p2 $prefix $prefix-length $payload)
     ;; Remember which is the original buffer
     (setq $cbuffer (current-buffer))
     ;; Copy and start processing the content
-    (setq $subexpr (fem-copy-def-for-meta-process P2 SUBEXPR fem-process-buffer1
+    (setq $subexpr (fem-copy-def-for-meta-process P3 INSERT_ADMIT SUBEXPR fem-process-buffer1
                                                   "FEM.Process.pp_analyze_effectful_term false"))
     ;; We are now in the destination buffer
     ;; Modify the copied content and leave the pointer at the end of the region
@@ -1249,22 +1251,25 @@ OVERLAY_END gives the position at which to stop the overlay."
     ;; Note that we don't need to keep track of the positions modifications:
     ;; we will send the whole buffer to F*.
     (setq $p1 (fem-subexpr-beg $subexpr) $p2 (fem-subexpr-end $subexpr))
-    ;; Prefix
     (goto-char $p1)
     (setq $prefix "let _ = FEM.Process.focus_on_term in ")
     (setq $prefix-length (length $prefix))
     (insert $prefix)
-    ;; Suffix
-    (goto-char (+ $p2 $prefix-length))
-    ;; Insert an admit if it is a 'let' or a ';' expression
-    (when (or (fem-subexpr-is-let-in $subexpr) (fem-subexpr-has-semicol $subexpr))
-      (end-of-line) (newline) (indent-according-to-mode) (insert "admit()"))
+    ;; Insert an admit if it is a 'let' or a ';' expression and INSERT_ADMIT is t
+    (when (and INSERT_ADMIT
+               (or (fem-subexpr-is-let-in $subexpr)
+                   (fem-subexpr-has-semicol $subexpr)))
+      (goto-char (+ $p2 $prefix-length))
+      (end-of-line)
+      (newline)
+      (indent-according-to-mode)
+      (insert "admit()"))
     ;; Copy the buffer content
     (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
     ;; We need to switch back to the original buffer to query the F* process
-    (switch-to-buffer $cbuffer)    
+    (switch-to-buffer $cbuffer)
     ;; Query F*
-    (fem-query-fstar-on-buffer-content P2 $payload
+    (fem-query-fstar-on-buffer-content P3 $payload
                                    (apply-partially #'fem-insert-assert-pre-post--continuation
                                                     INDENT_STR P1 P2 SUBEXPR))))
 
@@ -1436,32 +1441,36 @@ Otherwise, the string is made of a number of spaces equal to the column position
       (= P1 P2)
     (and (not P1) (not P2))))
 
-;; TODO HERE
 (defun fem-get-pos-markers (&optional END)
   "Return the saved pos markers above the pointer and remove them from the code.
 Returns a (potentially nil) fem-pair.
 END is the limit of the region to check"
-  (save-excursion
-    (save-match-data
-      (let ($p0 $p1 $mp0 $mp1)
-        (setq $p0 (fstar-subp--untracked-beginning-position))
-        (setq $p1 (or END (point)))
-        ;; First marker
+  (save-match-data
+    (let ($original-pos $p0 $p1 $mp0 $mp1)
+      (setq $original-pos (point))
+      (setq $p0 (fstar-subp--untracked-beginning-position))
+      (setq $p1 (or END (point)))
+      ;; First marker
+      (goto-char $p0)
+      (if (not (search-forward (format fem-pos-marker 0) $p1 t))
+          ;; No marker
+          (progn (goto-char $original-pos) nil)
+        ;; There is a marker: save the position and remove it
+        (when (>= $original-pos (match-end 0))
+          (setq $original-pos (- $original-pos (- (match-end 0) (match-beginning 0)))))
+        (setq $mp0 (match-beginning 0))
+        (replace-match "")
+        ;; Look for the second one
         (goto-char $p0)
-        (if (not (search-forward (format fem-pos-marker 0) $p1 t))
-            ;; No marker
-            nil
-          ;; There is a marker: save the position and remove it
-          (setq $mp0 (match-beginning 0))
-          (replace-match "")
-          ;; Look for the second one
-          (goto-char $p0)
-          (if (not (search-forward (format fem-pos-marker 1) $p1 t))
-              (setq $mp1 nil)
-            (setq $mp1 (match-beginning 0))
-            (replace-match ""))
-          ;;Return
-          (make-fem-pair :fst $mp0 :snd $mp1))))))
+        (if (not (search-forward (format fem-pos-marker 1) $p1 t))
+            (setq $mp1 nil)
+          (setq $mp1 (match-beginning 0))
+          (when (>= $original-pos (match-end 0))
+            (setq $original-pos (- $original-pos (- (match-end 0) (match-beginning 0)))))
+          (replace-match ""))
+        ;;Return
+        (goto-char $original-pos)
+        (make-fem-pair :fst $mp0 :snd $mp1)))))
 
 (defun fem-insert-pos-markers ()
   "Insert a marker in the code to indicate the pointer position.
@@ -1496,42 +1505,31 @@ TODO: take into account if/match branches"
   (fem-log-dbg "insert-assert-pre-post")
   ;; Sanity check
   (fem-generate-fstar-check-conditions)
-  (let ($next-point $beg $p $delimiters $indent $indent-str
-        $p1 $p2 $parse-result $cp1 $cp2
-        $is-let-in $has-semicol $current-buffer)
-    ;; Restrict the region
-    (setq $p (point))
+  (let ($next-point $beg $markers $p0 $p $allow-selection $delimiters $indent $indent-str
+        $p1 $p2 $p3 $parse-result $cp1 $cp2
+        $is-let-in $has-semicol $current-buffer $insert-admit)
     (setq $beg (fstar-subp--untracked-beginning-position))
-    (setq $p (- $p $beg))
+    ;; Check for saved markers
+    (setq $markers (fem-get-pos-markers))
+    (setq $p0 (point)) ;; save the original position
     ;; Find in which region the term to process is
-    (setq $delimiters (fem-find-region-delimiters t t nil nil))
-    (setq $p1 (fem-pair-fst $delimiters) $p2 (fem-pair-snd $delimiters))
-    ;; Expand the region: ignore comments, and try to reach a beginning/end of
-    ;; line for the beginning/end of the region
+    (if (and $markers
+             (fem-pair-fst $markers)
+             (fem-pair-snd $markers))
+        (setq $p1 (fem-pair-fst $markers) $p2 (fem-pair-snd $markers))
+      (setq $p (if $markers (fem-pair-fst $markers) (point)))
+      (setq $allow-selection (not $markers))
+      (setq $delimiters (fem-find-region-delimiters $allow-selection t nil nil $p))
+      (setq $p1 (fem-pair-fst $delimiters) $p2 (fem-pair-snd $delimiters)))
+    ;; Ignore the region to ignore comments/spaces and try to reach line extrema
     ;; - beginning:
-    ;; -- if we are inside a comment, get out of it
     (goto-char $p1)
-    (fem-skip-comment nil)
+    (fem-skip-comments-and-spaces nil (point-at-bol))
     (setq $p1 (point))
-    ;; -- then try to reach the beginning of the line
-    (let ($limit)
-      (beginning-of-line)
-      (setq $limit (point))
-      (goto-char $p1)
-      (fem-skip-comments-and-spaces nil $limit)
-      (setq $p1 (point)))
     ;; - end: same
-    ;; -- if we are inside a comment, get out of it
     (goto-char $p2)
-    (fem-skip-comment t)
+    (fem-skip-comments-and-spaces t (point-at-eol))
     (setq $p2 (point))
-    ;; -- then try to reach the beginning of the line
-    (let ($limit)
-      (end-of-line)
-      (setq $limit (point))
-      (goto-char $p2)
-      (fem-skip-comments-and-spaces t $limit)
-      (setq $p2 (point)))
     ;; Parse the term
     (setq $parse-result (fem-parse-subexpr $p1 $p2))
     (setq $cp1 (fem-subexpr-beg $parse-result))
@@ -1541,8 +1539,11 @@ TODO: take into account if/match branches"
           (t (fem-log-dbg "Parsed expression: '_'")))
     ;; Compute the indentation
     (setq $indent-str (fem-compute-local-indent-p $cp1))
+    ;; Compute where is the end of the region to send to F*
+    (setq $p3 (if $markers $p0 $p2))
+    (setq $insert-admit (not $markers))
     ;; Process the term
-    (fem-insert-assert-pre-post--process $indent-str $p1 $p2 $parse-result)))
+    (fem-insert-assert-pre-post--process $indent-str $p1 $p2 $p3 $insert-admit $parse-result)))
 
 ;; Key bindings
 (global-set-key (kbd "C-x C-a") 'fem-roll-admit)
