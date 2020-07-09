@@ -491,7 +491,7 @@ Stop at LIMIT."
           ($p (point)))
       (while $continue
         (fem-skip-comments-and-spaces t)
-        (skip-forward-pragma)
+        (fem-skip-forward-pragma)
         (when (or (= (point) $p) (= (point) (point-max)))
           (setq $continue nil))
         (setq $p (point))))))
@@ -1097,7 +1097,7 @@ process-buffer is the buffer to use to copy and process the raw data
       (save-restriction
         (narrow-to-region (fem-pair-fst region) (fem-pair-snd region))
         ;; Clean
-        (clean-data-from-messages)
+        (fem-clean-data-from-messages)
         ;; Extract the eterm-info
         (setq result (fem-extract-assertions-from-buffer prefix id no-error)))
       ;; Switch back to the original buffer
@@ -1133,7 +1133,7 @@ after the focused term, nil otherwise. comment is an optional comment"
     (when (not after-term) (insert "\n"))))
 
 (defun fem-insert-assert-pre-post--continuation (indent-str p1 p2 PARSE_RESULT overlay
-                                             status response)
+                                                 status response)
   "Process the information output by F* to add it to the user code.
 If F* succeeded, extracts the information and adds it to the proof"
   (unless (eq status 'interrupted)
@@ -1168,31 +1168,37 @@ If F* succeeded, extracts the information and adds it to the proof"
         (fem-generate-assert-from-term indent-str t a))
       )))
 
+;; TODO HERE
 (defun fem-copy-def-for-meta-process (END SUBEXPR DEST_BUFFER PP_INSTR)
   "Copy code for meta-processing and update the parsed result positions.
 Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
 PP_INSTR is the post-processing instruction to insert just before the definition."
-  (let ($beg $attr-beg $original-length $new-length $shift $res)
+  (let ($beg $p0 $str1 $str2 $str3 $attr-beg $original-length $new-length $shift $res)
     (goto-char (fstar-subp--untracked-beginning-position))
     (setq $beg (point))
-    ;; - copy to the destination buffer
-    (kill-ring-save $beg END)
+    ;; - copy to the destination buffer. We do the parsing to remove the current
+    ;;   attributes inside the F* buffer, which is why we copy the content
+    ;;   in several steps. TODO: I don't manage to confifure the parsing for the
+    ;;   destination buffer correctly.
+    (fem-skip-forward-comments-pragmas-spaces)
+    (setq $str1 (buffer-substring $beg (point)))
+    (fem-skip-forward-square-brackets) ;; (optionally) go over the attribute
+    (setq $p0 (point))
+    (fem-skip-forward-comments-pragmas-spaces)
+    (setq $str2 (buffer-substring $p0 (point)))
+    (setq $str3 (buffer-substring (point) END))
     (switch-to-buffer DEST_BUFFER)
     (erase-buffer)
-    (yank)
-    ;; Remove the attributes before the definition (we will replace them)
-    (goto-char (point-min))
-    (skip-forward-comments-pragmas-spaces)
-    (setq $attr-beg (point)) ;; if there is an attribute, it should be here
-    (skip-forward-square-brackets) ;; (optionally) go over the attribute
-    (delete-region $attr-beg (point)) ;; delete the attribute
-    (skip-forward-comments-pragmas-spaces)
+    (insert $str1)
+    (insert $str2)
     ;; Insert an option to deactivate the proof obligations
     (insert "#push-options \"--admit_smt_queries true\"\n")
     ;; Insert the post-processing instruction
     (insert "[@(FStar.Tactics.postprocess_with (")
     (insert PP_INSTR)
     (insert "))]\n")
+    ;; Insert the function code
+    (insert $str3)
     ;; Compute the shift: the shift is just the difference of length between the
     ;; content in the destination buffer and the original content, because all
     ;; the deletion/insertion should have happened before the points of interest
@@ -1223,6 +1229,7 @@ OVERLAY_END gives the position at which to stop the overlay."
   (fstar-subp--query (fstar-subp--push-query $beg `full PAYLOAD)
                      (apply-partially CONTINUATION $overlay))))
 
+;; TODO HERE
 (defun fem-insert-assert-pre-post--process (INDENT_STR P1 P2 SUBEXPR)
   "Generate the F* query for insert-assert-pre-post and query F*."
   (let ($cbuffer $subexpr $p1 $p2 $prefix $prefix-length $payload)
@@ -1230,7 +1237,7 @@ OVERLAY_END gives the position at which to stop the overlay."
     (setq $cbuffer (current-buffer))
     ;; Copy and start processing the content
     (setq $subexpr (fem-copy-def-for-meta-process P2 SUBEXPR fem-process-buffer1
-                                              "FEM.Process.pp_analyze_effectful_term false"))
+                                                  "FEM.Process.pp_analyze_effectful_term false"))
     ;; We are now in the destination buffer
     ;; Modify the copied content and leave the pointer at the end of the region
     ;; to send to F*
@@ -1256,7 +1263,7 @@ OVERLAY_END gives the position at which to stop the overlay."
     (switch-to-buffer $cbuffer)    
     ;; Query F*
     (fem-query-fstar-on-buffer-content P2 $payload
-                                   (apply-partially #'insert-assert-pre-post--continuation
+                                   (apply-partially #'fem-insert-assert-pre-post--continuation
                                                     INDENT_STR P1 P2 SUBEXPR))))
 
 (defun fem-generate-fstar-check-conditions ()
@@ -1298,7 +1305,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
         $cbuffer $prefix $prefix-length $payload)
   (fem-log-dbg "split-assert-conjuncts")
   ;; Sanity check
-  (generate-fstar-check-conditions)
+  (fem-generate-fstar-check-conditions)
   ;; Parse the assertion/assumption. Note that we may be at the beginning of a
   ;; line with an assertion/assumption, so we first try to move. More
   ;; specifically, it is safe to ignore comments and space if we are surrounded
@@ -1359,7 +1366,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
         $indent-str $beg $end $cbuffer $payload $insert-shift $insert-and-shift)
   (fem-log-dbg "unfold-in-assert-assume")
   ;; Sanity check
-  (generate-fstar-check-conditions)
+  (fem-generate-fstar-check-conditions)
   ;; Find the identifier
   (setq $id (sexp-at-p))
   (when (not $id) (error "Pointer not over a term"))
@@ -1427,7 +1434,7 @@ TODO: take into account if/match branches"
   (interactive)
   (fem-log-dbg "insert-assert-pre-post")
   ;; Sanity check
-  (generate-fstar-check-conditions)
+  (fem-generate-fstar-check-conditions)
   (let ($next-point $beg $p $delimiters $indent $indent-str
         $p1 $p2 $parse-result $cp1 $cp2
         $is-let-in $has-semicol $current-buffer)
