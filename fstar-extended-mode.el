@@ -1261,7 +1261,6 @@ TODO: use overlays."
     (goto-char $p0)
     $delimiters))
 
-;; TODO: use INSERT_ADMIT
 (defun fem-copy-def-for-meta-process (END INSERT_ADMIT SUBEXPR DEST_BUFFER PP_INSTR)
   "Copy code for meta-processing and update the parsed result positions.
 Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
@@ -1294,11 +1293,16 @@ PP_INSTR is the post-processing instruction to insert just before the definition
     (insert $str3)
     ;; Compute the shift: the shift is just the difference of length between the
     ;; content in the destination buffer and the original content, because all
-    ;; the deletion/insertion should have happened before the points of interest
+    ;; the deletion/insertion so far should have happened before the points of interest
     (setq $original-length (- END $beg)
           $new-length (- (point-max) (point-min)))
     (setq $shift (- $new-length $original-length))
     (setq $shift (+ (- $shift $beg) 1))
+    ;; Introduce the admit (note that the admit is at the very end of the query)
+    (when INSERT_ADMIT
+      (newline)
+      (indent-according-to-mode) ;; buffer's mode is not F*, but don't care
+      (insert "admit()"))
     ;; Shift and return the parsing information
     (setq $res (copy-fem-subexpr SUBEXPR))
     (when (fem-subexpr-bterm SUBEXPR)
@@ -1343,15 +1347,6 @@ OVERLAY_END gives the position at which to stop the overlay."
     (setq $prefix "let _ = FEM.Process.focus_on_term in ")
     (setq $prefix-length (length $prefix))
     (insert $prefix)
-    ;; Insert an admit if it is a 'let' or a ';' expression and INSERT_ADMIT is t
-    (when (and INSERT_ADMIT
-               (or (fem-subexpr-is-let-in $subexpr)
-                   (fem-subexpr-has-semicol $subexpr)))
-      (goto-char (+ $p2 $prefix-length))
-      (end-of-line)
-      (newline)
-      (indent-according-to-mode)
-      (insert "admit()"))
     ;; Copy the buffer content
     (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
     ;; We need to switch back to the original buffer to query the F* process
@@ -1434,7 +1429,10 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; Remember which is the original buffer
   (setq $cbuffer (current-buffer))
   ;; Copy and start processing the content
-  (setq $query-end (if $markers $p0 $end) $insert-admit (not $markers))
+  (setq $query-end (if $markers $p0 $end))
+  (setq $insert-admit (and (not $markers)
+                           (or (fem-subexpr-is-let-in $subexpr)
+                               (fem-subexpr-has-semicol $subexpr))))
   (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit $subexpr
                                                  fem-process-buffer1
                                                  "FEM.Process.pp_split_assert_conjs false"))
@@ -1450,10 +1448,6 @@ Otherwise, the string is made of a number of spaces equal to the column position
   (insert $prefix)
   ;; Suffix
   (goto-char (+ (fem-subexpr-end $subexpr1) $prefix-length))
-  ;; Insert an admit if it is a 'let' or a ';' expression
-  (when (and $insert-admit
-             (or (fem-subexpr-is-let-in $subexpr1) (fem-subexpr-has-semicol $subexpr1)))
-    (end-of-line) (newline) (indent-according-to-mode) (insert "admit()"))
   ;; Copy the buffer content
   (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
   ;; We need to switch back to the original buffer to query the F* process
@@ -1502,7 +1496,10 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; Remember which is the original buffer
   (setq $cbuffer (current-buffer))
   ;; Copy and start processing the content
-  (setq $query-end (if $markers $p0 $end) $insert-admit (not $markers))
+  (setq $query-end (if $markers $p0 $end))
+  (setq $insert-admit (and (not $markers)
+                           (or (fem-subexpr-is-let-in $subexpr)
+                               (fem-subexpr-has-semicol $subexpr))))
   (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit
                                                  $subexpr fem-process-buffer1
                                                  "FEM.Process.pp_unfold_in_assert_or_assume false"))
@@ -1521,17 +1518,10 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ($insert-and-shift "))")
   (goto-char (+ (fem-pair-fst $id) $shift))
   ($insert-and-shift "(let _ = FEM.Process.focus_on_term in (")
-  ;; - for the admit - note that the above insertion should have been made
+  ;; - for the assert/assume - note that the above insertion should have been made
   ;;   below the point where we now insert
   (goto-char (fem-subexpr-beg $subexpr1))
   ($insert-and-shift "let _ = FEM.Process.focus_on_term in\n")
-  ;; Suffix
-  (goto-char (+ (fem-subexpr-end $subexpr1) $insert-shift))
-  ;; Insert an admit if it is a 'let' or a ';' expression
-  (when (and $insert-admit
-             (or (fem-subexpr-is-let-in $subexpr1)
-                 (fem-subexpr-has-semicol $subexpr1)))
-    (end-of-line) (newline) (indent-according-to-mode) (insert "admit()"))
   ;; Copy the buffer content
   (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
   ;; We need to switch back to the original buffer to query the F* process
@@ -1576,7 +1566,9 @@ TODO: take into account if/match branches"
     (setq $indent-str (fem-compute-local-indent-p $cp1))
     ;; Compute where is the end of the region to send to F*
     (setq $p3 (if $markers $p0 $p2))
-    (setq $insert-admit (not $markers))
+    (setq $insert-admit (and (not $markers)
+                             (or (fem-subexpr-is-let-in $parse-result)
+                                 (fem-subexpr-has-semicol $parse-result))))
     ;; Process the term
     (fem-insert-assert-pre-post--process $indent-str $p1 $p2 $p3 $insert-admit $parse-result)))
 
