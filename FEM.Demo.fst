@@ -37,12 +37,6 @@ let f2 (x y : nat) :
 let f3 (x : nat) : nat =
   2 * x
 
-let f4 (x : nat) : nat =
-  x + 8
-
-let f5 (x y : nat) : nat =
-  2 * (x + y) + 8
-
 assume val sf1 (r : B.buffer int) :
   ST.Stack int
   (requires (fun _ -> True))
@@ -61,16 +55,6 @@ let spred1 (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
 let spred2 (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
 let spred3 (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
 let spred4 (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
-let invariant1_s (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) =
-  spred1 x y z h r1 r2 r3 /\
-  spred2 x y z h r1 r2 r3 /\
-  spred3 x y z h r1 r2 r3 /\
-  spred4 x y z h r1 r2 r3    
-
-let invariant1 (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) =
-  invariant1_s x y z h r1 r2 r3 /\
-  B.live h r1 /\ B.live h r2 /\ B.live h r3 /\
-  B.disjoint r1 r2 /\ B.disjoint r2 r3 /\ B.disjoint r1 r3
 
 (*** Basic commands *)
 (**** Rolling admit *)
@@ -108,10 +92,11 @@ let sc_ex1 (x : nat) =
 /// People often write functions and proofs incrementally, by keeping an admit
 /// at the very end and adding function calls or assertions one at a time,
 /// type-checking with F* at every changement to make sure that it is legal.
-/// However, when such functions or proofs become long, it often takes time
-/// to recheck all the already known to succeed proof obligations, before getting
-/// to the new (interesting) ones. It is thus useful to be able to quickly switch
-/// between assertions and assumptions, to as to ease the proof burden.
+/// However, when such functions or proofs become long, whenever we query F*,
+/// it often takes time to recheck all the already known to succeed proof
+/// obligations, before getting to the new (interesting) ones. A common way of
+/// mitigating this problem is to convert the assertions to assumptions once we
+/// know they succeed.
 
 /// Try calling fem-switch-assert-assert-in-above-paragraph (C-c C-s C-a) or
 /// fem-switch-assert-assert-in-current-line (C-S-a) several times in the below
@@ -155,7 +140,12 @@ let ac_ex1 (x y : nat) : z:nat{z % 3 = 0} =
 
   (* Typing obligations:
    * Type C-c C-e below to insert:
-   * [> assert(Prims.has_type (3 <: Prims.int) Prims.nat); *)
+   * [> assert(Prims.has_type (3 <: Prims.int) Prims.nat);
+   * Note that the assertion gives indications about the parameter
+   * (it uses ``has_type`` rather than ``subtype_of``), the target
+   * type, but also the known type for the parameter through the
+   * type refinement.
+   *)
   let x3 = f1 4 3 in (* <- Put your pointer on the left and type C-c C-e *)
 
   (* Current goal:
@@ -253,17 +243,90 @@ let ac_ex5 (x y : nat) : unit =
 
   (* Note that if the assertion is an equality, the command will only
    * operate on one side of the equality at a time. *)
-  assert(z1 = z1) // TODO: fix that
+  assert(z1 = z1)
 
 /// We intend to update the command to allow arbitrary terms rewriting in the future
 
 (**** Combining commands *)
+/// Those commands prove really useful when you combine them. The below example
+/// is inspired by a personal experience with a proof in HACL*.
+
+/// Some invariants are sometimes divided in several pieces, for example a
+/// functional part, to which we later add information about aliasing.
+/// Moreover they are often made of big conjunctions.
+let invariant1_s (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) =
+  spred1 x y z h r1 r2 r3 /\
+  spred2 x y z h r1 r2 r3 /\
+  spred3 x y z h r1 r2 r3 /\
+  spred4 x y z h r1 r2 r3
+
+let invariant1 (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) =
+  invariant1_s x y z h r1 r2 r3 /\
+  B.live h r1 /\ B.live h r2 /\ B.live h r3 /\
+  B.disjoint r1 r2 /\ B.disjoint r2 r3 /\ B.disjoint r1 r3
+
+/// The following function has the invariant in its precondition. Now let's imagine
+/// that when calling it somewhere, F* fails on the precondition and you need to
+/// dig inside to see what's going on (see the next function). With the commands
+/// previously introduced, it is pretty easy!
+assume val sf2 (x y z : nat) (r1 r2 r3 : B.buffer int) :
+  ST.Stack int
+  (requires (fun h0 -> invariant1 x y z h0 r1 r2 r3))
+  (ensures (fun h0 _ h1 -> True))
+
+/// Have fun below!
+let ac_ex6 (x y z : nat) (r1 r2 r3 : B.buffer int) :
+  ST.Stack int
+  (requires (fun h0 ->
+    B.live h0 r1 /\ B.live h0 r2 /\ B.live h0 r3 /\
+    B.disjoint r1 r2 /\ B.disjoint r2 r3 /\ B.disjoint r1 r3))
+  (ensures (fun h0 _ h1 -> True)) =
+  (* In practice, there are often assertions in the code before the proof
+   * obligation we want to investigate: it is not a problem, we can get
+   * rid of them by converting them to assumptions *)
+  assert(pred1 x y z);
+  assert(pred2 x y z);
+  assert(pred3 x y z);
+  assert(pred4 x y z);
+  (**) let h0 = ST.get () in
+  let res = sf2 x y z r1 r2 r3 in (* <- Try studying the precondition here *)
+  res
 
 (**** Two-steps execution *)
+/// The commands implemented in the F* extended mode work by updating the function
+/// defined by the user, by inserting some annotations and instructions for F*
+/// (like post-processing instructions), query F* on the result and retrieve the
+/// data output by the meta-F* functions to insert appropriate assertions in the
+/// code.
+/// Updating the user code requires some parsing, but the parsing is pretty basic
+/// so far. It often happens that the commands can't fill the holes in a function
+/// the user is writing, and which thus has many missing parts. In this case, we
+/// need to provide a bit of help. This often happens when trying to call the
+/// commands on a subterm inside the branch of a match (or an 'if ... then .. else ...').
+/// With the fem-insert-pos-markers (C-c C-s C-i), the user can do a differed command
+/// execution, by first indicating the subterm which he wants to analyze, then by
+/// indicating to F* how to parse the whole function.
+
+/// Let's try on the below example
+
+let ac_ex7 (x : int) =
+  let y =
+    if x >= 0 then
+      begin
+      let z1 = x + 4 in
+      let z2 = f1 z1 x in (* <- You want to use C-c C-e here: first use C-c C-s C-i *)
+      assert(z2 = f1 (x + 4) x);
+      assert(z2 >= 0);
+      z2
+      end
+    else -x
+  in
+  let z = f2 y 3 in
+  z (* <- Then use C-c C-e here so that the command knows where the end of the function is *)
 
 /// In the future, we intend to instrument Merlin to parse partially written
-/// expressions, so that the user won't have to do two-steps execution to provide
-/// parsing information.
+/// expressions, so that the user won't have to do two-steps execution for
+/// examples like the above one.
 
 (**** Debugging *)
 /// You may have bumped into the issue while playing with the above functions:
