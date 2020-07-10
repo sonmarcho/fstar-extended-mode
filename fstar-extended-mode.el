@@ -129,10 +129,17 @@ returns nil or raises an error depending on NO_ERROR."
 (defun fem-insert-newline-term (TERM)
   "Insert a new line if the current one is not empty, then insert TERM."
   (interactive)
-  (progn
-   (if (fem-current-line-is-whitespaces-p) () (progn (end-of-line) (newline)))
-   (indent-according-to-mode)
-   (insert TERM)))
+  (let (($indent-str nil))
+    (if (fem-current-line-is-whitespaces-p) ()
+      ;; Compute the indent
+      (beginning-of-line)
+      (fem-skip-comments-and-spaces t (point-at-eol))
+      (setq $indent-str (make-string (- (point) (point-at-bol)) ? ))
+      ;; Create the new line
+      (end-of-line)
+      (newline))
+    (if $indent-str (insert $indent-str) (indent-according-to-mode))
+    (insert TERM)))
 
 (defun fem-newline-keep-indent ()
   "Insert a newline where the indentation is equal to the current column."
