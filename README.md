@@ -15,16 +15,16 @@ You first need to install the [F* emacs mode](https://github.com/FStarLang/fstar
                        ;; Compute the dependencies by using the local Makefile
                        (concat
                         (car (process-lines "make" "--quiet" target))
-                        ;; Put the path to the local copy of the F* extended mode here
+                        ;; TODO: Put the path to the local copy of the F* extended mode here
                         " --include " (getenv "HOME") "/fstar-extended-mode "
                         )
                      ;; If the above failed, use a default configuration
                      (error (concat
-                     	     ;; Put the relevant F* directories here
+                     	     ;; TODO: Put the relevant F* directories here
                              "--include " (getenv "HOME") "/hacl-star/lib "
-                             ;; Put the path to the local copy of the F* extended mode here
+                             ;; TODO: Put the path to the local copy of the F* extended mode here
                              "--include " (getenv "HOME") "/fstar-extended-mode "
-                             ;; Optional
+                             ;; TODO: Optional
                              "--debug yes --log_queries --use_hints --cache_checked_modules"
                              )))))
       (split-string argstr))))
