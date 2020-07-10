@@ -1174,6 +1174,87 @@ If F* succeeded, extracts the information and adds it to the proof"
         (fem-generate-assert-from-term indent-str t a))
       )))
 
+(defun fem-same-opt-num (P1 P2)
+  "Return t if P1 and P2 are the same numbers or are both nil."
+  (if (and P1 P2)
+      (= P1 P2)
+    (and (not P1) (not P2))))
+
+(defun fem-get-pos-markers (&optional END)
+  "Return the saved pos markers above the pointer and remove them from the code.
+Returns a (potentially nil) fem-pair.
+END is the limit of the region to check"
+  (save-match-data
+    (let ($original-pos $p0 $p1 $mp0 $mp1)
+      (setq $original-pos (point))
+      (setq $p0 (fstar-subp--untracked-beginning-position))
+      (setq $p1 (or END (point)))
+      ;; First marker
+      (goto-char $p0)
+      (if (not (search-forward (format fem-pos-marker 0) $p1 t))
+          ;; No marker
+          (progn (goto-char $original-pos) nil)
+        ;; There is a marker: save the position and remove it
+        (when (>= $original-pos (match-end 0))
+          (setq $original-pos (- $original-pos (- (match-end 0) (match-beginning 0)))))
+        (setq $mp0 (match-beginning 0))
+        (replace-match "")
+        ;; Look for the second one
+        (goto-char $p0)
+        (if (not (search-forward (format fem-pos-marker 1) $p1 t))
+            (setq $mp1 nil)
+          (setq $mp1 (match-beginning 0))
+          (when (>= $original-pos (match-end 0))
+            (setq $original-pos (- $original-pos (- (match-end 0) (match-beginning 0)))))
+          (replace-match ""))
+        ;;Return
+        (goto-char $original-pos)
+        (make-fem-pair :fst $mp0 :snd $mp1)))))
+
+(defun fem-insert-pos-markers ()
+  "Insert a marker in the code to indicate the pointer position.
+This is a way of saving the pointer's position for a later function call,
+while indicating where this position is to the user.
+TODO: use overlays."
+  (interactive)
+  (let ($p $p1 $p2 $op1 $op2 $overlay)
+    (setq $p (point))
+    ;; Retract so that the current point is not in a processed region
+    (fstar-subp-retract-until $p)
+    ;; Check if there are other markers. If there are, remove them.
+    ;; Otherwise, insert new ones.
+    (if (fem-get-pos-markers)
+        nil
+      ;; Save the active region (if there is) or the pointer position
+      (if (use-region-p)
+          (setq $p1 (region-beginning) $p2 (region-end))
+        ;; Pointer position: move the pointer if we are above a term
+        (when (not (or (fem-space-before-p) (fem-space-after-p)))
+          (fem-safe-backward-sexp))
+        (setq $p1 (point) $p2 nil))
+      ;; Insert the markers (starting with the second not to have to handle shifts)
+      (when $p2 (goto-char $p2) (insert (format fem-pos-marker 1)))
+      (goto-char $p1)
+      (insert (format fem-pos-marker 0)))))
+
+(defun fem-find-region-delimiters-or-markers ()
+  "Find the region to process."
+  (let ($p0 $markers $p1 $p2 $p $allow-selection $delimiters)
+    ;; Check for saved markers
+    (setq $markers (fem-get-pos-markers))
+    (setq $p0 (point)) ;; save the original position
+    ;; If we found two markers: they delimit the region
+    ;; If we found one: use it as the current pointer position
+    (if (and $markers
+             (fem-pair-fst $markers)
+             (fem-pair-snd $markers))
+        (setq $p1 (fem-pair-fst $markers) $p2 (fem-pair-snd $markers))
+      (setq $p (if $markers (fem-pair-fst $markers) (point)))
+      (setq $allow-selection (not $markers))
+      (setq $delimiters (fem-find-region-delimiters $allow-selection t nil nil $p)))
+    (goto-char $p0)
+    $delimiters))
+
 (defun fem-copy-def-for-meta-process (END INSERT_ADMIT SUBEXPR DEST_BUFFER PP_INSTR)
   "Copy code for meta-processing and update the parsed result positions.
 Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
@@ -1298,7 +1379,8 @@ are comments and spaces, the returned string is equal to those - the reason
 is that it allows formatting of ghosted code (which uses (**)).
 Otherwise, the string is made of a number of spaces equal to the column position"
   (save-restriction
-    (let* (($ip2 (if POS POS (point)))
+    (when POS (goto-char POS))
+    (let* (($ip2 (point))
            ($ip1 (progn (beginning-of-line) (point)))
            ($indent (- $ip2 $ip1)))
       (if (fem-region-is-comments-and-spaces $ip1 $ip2)
@@ -1308,11 +1390,16 @@ Otherwise, the string is made of a number of spaces equal to the column position
 (defun fem-split-assert-assume-conjuncts ()
   "Split the conjunctions in an assertion/assumption."
   (interactive)
-  (let ($tbeg $passert $a-beg $a-end $p-beg $p-end $subexpr $subexpr1 $indent-str $beg $end
+  (let ($markers $p0 $tbeg $passert $a-beg $a-end $p-beg $p-end
+        $subexpr $subexpr1 $indent-str $beg $end $query-end $insert-admit
         $cbuffer $prefix $prefix-length $payload)
   (fem-log-dbg "split-assert-conjuncts")
   ;; Sanity check
   (fem-generate-fstar-check-conditions)
+  ;; Look for position markers
+  (setq $markers (fem-get-pos-markers))
+  (setq $p0 (point))
+  (when $markers (goto-char (fem-pair-fst $markers)))
   ;; Parse the assertion/assumption. Note that we may be at the beginning of a
   ;; line with an assertion/assumption, so we first try to move. More
   ;; specifically, it is safe to ignore comments and space if we are surrounded
@@ -1340,8 +1427,10 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; Remember which is the original buffer
   (setq $cbuffer (current-buffer))
   ;; Copy and start processing the content
-  (setq $subexpr1 (fem-copy-def-for-meta-process $end $subexpr fem-process-buffer1
-                                            "FEM.Process.pp_split_assert_conjs false"))
+  (setq $query-end (if $markers $p0 $end) $insert-admit (not $markers))
+  (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit $subexpr
+                                                 fem-process-buffer1
+                                                 "FEM.Process.pp_split_assert_conjs false"))
   ;; We are now in the destination buffer
   ;; Insert the ``focus_on_term`` indicator at the proper place, together
   ;; with an admit after the focused term.
@@ -1363,8 +1452,8 @@ Otherwise, the string is made of a number of spaces equal to the column position
   (switch-to-buffer $cbuffer)
   ;; Query F*
   (fem-query-fstar-on-buffer-content $end $payload
-                                 (apply-partially #'fem-insert-assert-pre-post--continuation
-                                                  $indent-str $beg $end $subexpr1))))
+                                     (apply-partially #'fem-insert-assert-pre-post--continuation
+                                                      $indent-str $beg $end $subexpr))))
 
 (defun fem-unfold-in-assert-assume ()
   "Unfold an identifier in an assertion/assumption."
@@ -1433,70 +1522,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; Query F*
   (fem-query-fstar-on-buffer-content $end $payload
                                  (apply-partially #'fem-insert-assert-pre-post--continuation
-                                                  $indent-str $beg $end $subexpr1))))
-
-(defun fem-same-opt-num (P1 P2)
-  "Return t if P1 and P2 are the same numbers or are both nil."
-  (if (and P1 P2)
-      (= P1 P2)
-    (and (not P1) (not P2))))
-
-(defun fem-get-pos-markers (&optional END)
-  "Return the saved pos markers above the pointer and remove them from the code.
-Returns a (potentially nil) fem-pair.
-END is the limit of the region to check"
-  (save-match-data
-    (let ($original-pos $p0 $p1 $mp0 $mp1)
-      (setq $original-pos (point))
-      (setq $p0 (fstar-subp--untracked-beginning-position))
-      (setq $p1 (or END (point)))
-      ;; First marker
-      (goto-char $p0)
-      (if (not (search-forward (format fem-pos-marker 0) $p1 t))
-          ;; No marker
-          (progn (goto-char $original-pos) nil)
-        ;; There is a marker: save the position and remove it
-        (when (>= $original-pos (match-end 0))
-          (setq $original-pos (- $original-pos (- (match-end 0) (match-beginning 0)))))
-        (setq $mp0 (match-beginning 0))
-        (replace-match "")
-        ;; Look for the second one
-        (goto-char $p0)
-        (if (not (search-forward (format fem-pos-marker 1) $p1 t))
-            (setq $mp1 nil)
-          (setq $mp1 (match-beginning 0))
-          (when (>= $original-pos (match-end 0))
-            (setq $original-pos (- $original-pos (- (match-end 0) (match-beginning 0)))))
-          (replace-match ""))
-        ;;Return
-        (goto-char $original-pos)
-        (make-fem-pair :fst $mp0 :snd $mp1)))))
-
-(defun fem-insert-pos-markers ()
-  "Insert a marker in the code to indicate the pointer position.
-This is a way of saving the pointer's position for a later function call,
-while indicating where this position is to the user.
-TODO: use overlays."
-  (interactive)
-  (let ($p $p1 $p2 $op1 $op2 $overlay)
-    (setq $p (point))
-    ;; Retract so that the current point is not in a processed region
-    (fstar-subp-retract-until $p)
-    ;; Check if there are other markers. If there are, remove them.
-    ;; Otherwise, insert new ones.
-    (if (fem-get-pos-markers)
-        nil
-      ;; Save the active region (if there is) or the pointer position
-      (if (use-region-p)
-          (setq $p1 (region-beginning) $p2 (region-end))
-        ;; Pointer position: move the pointer if we are above a term
-        (when (not (or (fem-space-before-p) (fem-space-after-p)))
-          (fem-safe-backward-sexp))
-        (setq $p1 (point) $p2 nil))
-      ;; Insert the markers (starting with the second not to have to handle shifts)
-      (when $p2 (goto-char $p2) (insert (format fem-pos-marker 1)))
-      (goto-char $p1)
-      (insert (format fem-pos-marker 0)))))
+                                                  $indent-str $beg $end $subexpr))))
 
 (defun fem-insert-assert-pre-post ()
   "Insert assertions with proof obligations and postconditions around a term.
@@ -1505,22 +1531,14 @@ TODO: take into account if/match branches"
   (fem-log-dbg "insert-assert-pre-post")
   ;; Sanity check
   (fem-generate-fstar-check-conditions)
-  (let ($next-point $beg $markers $p0 $p $allow-selection $delimiters $indent $indent-str
+  (let ($next-point $beg $markers $p0 $allow-selection $delimiters $indent $indent-str
         $p1 $p2 $p3 $parse-result $cp1 $cp2
         $is-let-in $has-semicol $current-buffer $insert-admit)
     (setq $beg (fstar-subp--untracked-beginning-position))
-    ;; Check for saved markers
-    (setq $markers (fem-get-pos-markers))
-    (setq $p0 (point)) ;; save the original position
     ;; Find in which region the term to process is
-    (if (and $markers
-             (fem-pair-fst $markers)
-             (fem-pair-snd $markers))
-        (setq $p1 (fem-pair-fst $markers) $p2 (fem-pair-snd $markers))
-      (setq $p (if $markers (fem-pair-fst $markers) (point)))
-      (setq $allow-selection (not $markers))
-      (setq $delimiters (fem-find-region-delimiters $allow-selection t nil nil $p))
-      (setq $p1 (fem-pair-fst $delimiters) $p2 (fem-pair-snd $delimiters)))
+    (setq $delimiters (fem-find-region-delimiters-or-markers))
+    (setq $p1 (fem-pair-fst $delimiters) $p2 (fem-pair-snd $delimiters))
+    (setq $p0 (point))
     ;; Ignore the region to ignore comments/spaces and try to reach line extrema
     ;; - beginning:
     (goto-char $p1)
