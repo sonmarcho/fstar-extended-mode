@@ -325,7 +325,7 @@ let ac_ex7 (x : int) =
     if x >= 0 then
       begin
       let z1 = x + 4 in
-      let z2 : int = f1 z1 x in (* <- You want to use C-c C-e here: first use C-c C-s C-i *)
+      let z2 : int = f1 z1 x in (* <- Say you want to use C-c C-e here: first use C-c C-s C-i *)
       assert(z2 = f1 (x + 4) x);
       assert(z2 >= 0);
       z2
@@ -334,6 +334,10 @@ let ac_ex7 (x : int) =
   in
   let z = f2 y 3 in
   z (* <- Then use C-c C-e here to indicate where the end of the function is *)
+
+/// You probably noticed that C-c C-s C-i introduces a marker in the code. You
+/// can remove by calling C-c C-s C-i again (this will look for markers before
+/// the pointer and remove them).
 
 /// In the future, we intend to instrument Merlin to parse partially written
 /// expressions, so that the user won't have to do two-steps execution for
