@@ -72,7 +72,7 @@ let spred4 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
 /// insert an admit inside the "if ... then ... else ...", you may have to
 /// add a ";" to ensure that F* can parse the function. fem-roll-admit tries
 /// to take that into account when you move the admit inside the if.
-let sc_ex1 (x : nat) =
+let simpl_ex1 (x : nat) =
   let y = 4 in
   let z = 3 in
   let w : w:nat{w >= 10} =
@@ -106,7 +106,7 @@ let sc_ex1 (x : nat) =
 /// function.
 /// Note that the first command operates either on the region above the pointer,
 /// or on the active selection.
-let sc_ex2 (x : nat) =
+let simpl_ex2 (x : nat) =
   let x1 = x + 1 in
   assert(x1 = x + 1);
   let x2 = 3 * (x1 + 1) in
@@ -241,7 +241,7 @@ let ci_ex4 (x : int{x % 2 = 0}) :
 /// Move the pointer anywhere inside the below assert and use C-c C-s C-u.
 /// Note that you don't need to select the assert: the command expects to be inside
 /// an assert and can find its boundaries on its own.
-let sc_ex1 (x y z : nat) : unit =
+let split_ex1 (x y z : nat) : unit =
   assert( (* <- Try C-c C-s C-u anywhere inside the assert *)
     pred1 x y z /\
     pred2 x y z /\
