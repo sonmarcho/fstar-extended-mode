@@ -52,18 +52,12 @@
 (cl-defstruct fem-pair
   fst snd)
 
-(cl-defstruct fem-meta-info
-  "Meta information extracted from the *Messages* buffer. Contains text as well
-as the result returned by the post-processing function called on the data.
-For now, the post-processing information simply contains the number of lines."
-  data pp-res)
-
 (cl-defstruct fem-letb-term
   "A parsed let binded term of the form: 'let b = exp in'"
   beg end ;; delimiters for the whole expression
-  bind ;; the binding (as a fem-meta-info)
+  bind ;; the binding
   b-beg b-end ;; delimiters
-  exp ;; the expression (as a fem-meta-info)
+  exp ;; the expression
   e-beg e-end ;; delimiters
   is-var ;; nil if tuple
   )
@@ -634,15 +628,11 @@ Returns nil if fails and NO_ERROR is t, raises an error otherwise."
                            $error-msg)))
         ;; Success
         (let* ((bind (buffer-substring-no-properties $b-beg $b-end))
-               (bind-mi (make-fem-meta-info :data bind
-                                        :pp-res (fem-count-lines-in-string bind)))
-               (exp (buffer-substring-no-properties $e-beg $e-end))
-               (exp-mi (make-fem-meta-info :data exp
-                                       :pp-res (fem-count-lines-in-string exp))))
+               (exp (buffer-substring-no-properties $e-beg $e-end)))
           (make-fem-letb-term :beg $beg :end $end
-                          :bind bind-mi
+                          :bind bind
                           :b-beg $b-beg :b-end $b-end
-                          :exp exp-mi
+                          :exp exp
                           :e-beg $e-beg :e-end $e-end
                           :is-var $is-var))
         ))))
@@ -845,12 +835,10 @@ Returns an optional fem-subexpr."
                 (forward-sexp)
                 (setq $end (point))                
                 (setq $bterm (make-fem-letb-term :beg $beg :end $end :bind
-                                             (make-fem-meta-info :data (buffer-substring-no-properties $b-beg $b-end)
-                                                             :pp-res nil)
+                                             (buffer-substring-no-properties $b-beg $b-end)
                                              :b-beg $b-beg :b-end $b-end
                                              :exp
-                                             (make-fem-meta-info :data (buffer-substring-no-properties TERM_BEG TERM_END)
-                                                             :pp-res nil)
+                                             (buffer-substring-no-properties TERM_BEG TERM_END)
                                              :e-beg TERM_BEG :e-end TERM_END))
                 (make-fem-subexpr :beg $beg :end $end :is-let-in t :has-semicol nil :bterm $bterm))
                 )))))))                                    
@@ -881,7 +869,7 @@ nil otherwise."
 
 (defun fem-extract-info-from-buffer (prefix id &optional no-error post-process LIMIT)
   "Extracts meta data from the current buffer and optionally post-processes it.
-Returns a fem-meta-info structure (or nil if we we couldn't find the information)
+Returns a string (or nil if we we couldn't find the information)
 Leaves the pointer at the end of the parsed data (just before the next data)."
   ;; Find where the data is
   (let* ((beg (point))
@@ -922,20 +910,15 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
       (let ((res-str (if res (concat "[" res "]") "nil")))
         (fem-log-dbg "extract-info-from-messages:\n- prefix: %s\n- id: %s\n- res: %s "
                  prefix id res-str)))
-    (if res (make-fem-meta-info :data res :pp-res pp-res) nil))) ;; end of function
+    res)) ;; end of function
 
 (defun fem-meta-info-post-process ()
-  "Data post-processing function: counts the number of lines.
-Also greedily replaces some identifiers (Prims.l_True -> True...).
-Returns the number of lines."
-  ;; Count the lines
-  (let ((num-lines (count-lines (point-min) (point-max))))
-    ;; Greedy replacements
-    (fem-replace-all-in "Prims.l_True" "True")
-    (fem-replace-all-in "Prims.l_False" "False")
-    ;; Return the number of lines
-    num-lines
-    )) ;; end of post-process fun  
+  "Post-process parsed data.
+Replaces some identifiers (Prims.l_True -> True...)."
+  ;; Greedy replacements
+  (fem-replace-all-in "Prims.l_True" "True")
+  (fem-replace-all-in "Prims.l_False" "False")
+  nil)
 
 (defun fem-extract-string-from-buffer (prefix id &optional no-error LIMIT)
   "Extract a string for the current buffer."
@@ -960,7 +943,7 @@ Returns a fem-meta-info structure."
 
 (defun fem-extract-assertion-list-from-buffer (prefix id index num
                                            &optional no-error LIMIT)
-  "Extract a given number of assertions as a list of fem-meta-info."
+  "Extract a given number of assertions as a list of strings."
   (fem-log-dbg "extract-assertion-list-from-buffer:\n\
 - prefix: %s\n- id: %s\n- index: %s\n- num: "
            prefix id (number-to-string index) (number-to-string num))
@@ -986,7 +969,7 @@ extracts those assertions."
         (id-prop (concat id ":prop"))
         num num-data)
     (setq num-data (fem-extract-string-from-buffer prefix id-num no-error LIMIT))
-    (setq num (string-to-number (fem-meta-info-data num-data)))
+    (setq num (string-to-number num-data))
     (fem-log-dbg "> extracting %s terms" num)
     ;; Extract the proper number of parameters
     (fem-extract-assertion-list-from-buffer prefix id-prop 0 num no-error
@@ -1135,11 +1118,11 @@ after the focused term, nil otherwise. comment is an optional comment"
       (insert "\n"))
     (insert indent-str)
     (insert "assert(")
-    (when (> (fem-meta-info-pp-res data) 1)
+    (when (> (fem-count-lines-in-string data) 1)
       (insert "\n")
       (insert indent-str)
       (insert "  "))
-    (fem-insert-with-indent (concat indent-str "  ") (fem-meta-info-data data))
+    (fem-insert-with-indent (concat indent-str "  ") data)
     (insert ");")
     ;; If we are before the studied term: insert a newline
     (when (not after-term) (insert "\n"))))
