@@ -1842,8 +1842,8 @@ let rec _split_conjunctions (ls : list term) (t : term) : Tac (list term) =
   match is_conjunction t with
   | None -> t :: ls
   | Some (l, r) ->
-    let ls1 = _split_conjunctions ls l in
-    let ls2 = _split_conjunctions ls1 r in
+    let ls1 = _split_conjunctions ls r in
+    let ls2 = _split_conjunctions ls1 l in
     ls2
 
 let split_conjunctions t =
