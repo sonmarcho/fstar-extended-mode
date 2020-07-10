@@ -383,5 +383,5 @@ let dbg_ex1 () : Tot nat =
 let dbg_ex2 () : Tot nat =
   let x = 4 in
   let y = 2 in
-  let _ = focus_on_term in (* helps the post-processing tactic find the term to analyze *)
+  let _ = focus_on_term in (* indicates the term to analyze to the post-processing tactic *)
   f1 x y
