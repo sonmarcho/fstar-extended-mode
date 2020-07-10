@@ -1,5 +1,5 @@
 # F* extended mode
-The F* extended mode contains files which extend the [F* emacs mode](https://github.com/FStarLang/fstar-mode.el). It provides simple code editing commands to help switching between assertions and assumptions in the code, to save time when progressing on a proof, or to help with techniques like the "rolling-admit". It also provides more advanced commands which reveal or help to work with proof obligations or context information at specific points in the code by inserting appropriate assertions.
+The F* extended mode contains files which extend the [F* emacs mode](https://github.com/FStarLang/fstar-mode.el). It provides simple code editing commands to help switching between assertions and assumptions in the code, to save time when progressing on a proof, or to help with techniques like the "rolling-admit". It also provides more advanced commands which perform term unfoldings or insert context information at specific points in the code.
 
 # Setup
 You first need to install the [F* emacs mode](https://github.com/FStarLang/fstar-mode.el). The F* extended mode is not on Melpa for now, so you need to clone the repository. Next, you need to configure the emacs mode so that it knows where to look for the .fst files used by the extended mode. The simplest way is to insert the following code in your `.emacs` file. This command tries to use any local Makefile to compute the F* dependencies whenever you start the F* mode.
@@ -43,6 +43,16 @@ Finally, the F* extended mode needs the `use-package` package. You can install i
 
 # Commands and bindings
 The F* extended mode introduces the following commands:
+| Command       | Key binding           | Description  |
+| :------------- |:-------------:| :-----|
+| `fem-roll-admit` | (C-x C-a) | Helper for the "rolling admit" technique |
+| `fem-switch-assert-assume-in-above-paragraph` | (C-c C-s C-a) | Switch between assertions and assumptions in the paragraph above the pointer or in the selection |
+| `fem-switch-assert-assume-in-current-line` | (C-S-a) | Switch between assertions and assumptions in the current line |
+| `fem-insert-assert-pre-post` | (C-c C-e) | Insert context information for an effectful term (precondition, type obligations, postcondition) |
+| `fem-split-assert-assume-conjuncts` | (C-c C-s C-u) | Split the conjuncts in an assertion/assumption |
+| `fem-unfold-in-assert-assume` | (C-c C-s C-f) | Unfold/substitute a term in an assertion/assumption |
+| `fem-insert-pos-markers` | (C-c C-s C-i) | Insert a marker in the code for two-steps execution, in case of parsing issues |
+
 * Simple editing commands:
 	* `fem-roll-admit` (C-x C-a): helper for the "rolling admit" technique: introduces an admit at the next line. Before doing so, checks if there is another admit to move, and asks the user for removal.
 	* `fem-switch-assert-assume-in-above-paragraph` (C-c C-s C-a): switches between assertions (`assert`, `assert_norm`) and assumptions (`assume`) in a block of code. Performs it so that the block then only contains assertions or only contains assumptions - converts all the assertions to assumptions if it can find some assertions, otherwise converts all the assumptions to assertions. It works inside the active selection, or on the block of code above the pointer (including the current line) if there is no selection.
@@ -53,6 +63,6 @@ The F* extended mode introduces the following commands:
 	* `fem-unfold-in-assert-assume` (C-c C-s C-f): unfolds an identifier inside an assertion/assumption. The term identifier can be understood in quite a large sense: you can unfold a top-level identifier (i.e.: a definition), but the command will analyze previous pure let-bindings and equalities in postconditions to find a term by which to replace a local variable the user may wish to "unfold". In the future, it will allow to rewrite arbitrary terms.
 	* `fem-insert-pos-markers` (C-c C-s C-i): it can be difficult for the above commands to generate correct queries to send to F* for analysis, because the user may be working on a function only partly written and whose holes can be difficult to fill. It especially happens when working inside `if .. then ... else ...` expressions or branches of a match.  In such cases, it can be necessary for the user to help a bit, by indicating which term he wants to analyze, then where to stop the parsing for the query to send to F*. If the user calls `fem-insert-pos-markers` then one of the above commands, those commands will use the positition saved by `fem-insert-pos-markers` to find out the term to analyze, and will parse to the current position.
 
-# Testing the mode
-You can test the package by going through the [tutorial file](./FEM.Tutorial.fst).
+# Tutorial
+You can learn to use the package by going through the [tutorial file](./FEM.Tutorial.fst).
 Note that this file also contains useful tips and tricks, for example workarounds in case the commands fail because of parsing issues.
