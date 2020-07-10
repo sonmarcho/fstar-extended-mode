@@ -226,10 +226,11 @@ Return the number of deleted characters."
    (equivalent) original position."
   (fem-apply-in-current-region ACTION nil t nil nil))
 
-(defun fem-replace-all-in (FROM TO &optional BEG END)
+(defun fem-replace-all-in (FROM TO &optional IGNORE_COMMENTS BEG END)
   "Replace all the occurrences of FROM by TO and return the number of characters
 by which to shift the pointer, leaving the pointer at the shifted position.
-Takes optional region delimiters as arguments."
+Takes optional region delimiters BEG and END as arguments.
+Doesn't replace inside comments if IGNORE_COMMENTS is t."
   (let (($p0 (point)) ;; original position
         ($p (point)) ;; current position
         ($shift 0) ;; number of characters by which we shift the original position
@@ -241,21 +242,26 @@ Takes optional region delimiters as arguments."
     (goto-char $beg)
     (while (search-forward FROM $end t)
       (progn
-        ;; Compute the pointer shift: if the current position is smaller or equal
-        ;; than the original position with the current shift, add $length-dif
-        ;; to the shift
-        (setq $p (point))
-        (when (<= $p (+ $p0 $shift)) (setq $shift (+ $shift $length-dif)))
-        ;; Replace
-        (replace-match TO)))
+        ;; Check if we need to replace
+        (if (or (not IGNORE_COMMENTS) (not (fem-in-general-comment-p)))
+            (progn
+              ;; Compute the pointer shift: if the current position is smaller or equal
+              ;; than the original position with the current shift, add $length-dif
+              ;; to the shift
+              (setq $p (point))
+              (when (<= $p (+ $p0 $shift)) (setq $shift (+ $shift $length-dif)))
+              ;; Replace
+              (replace-match TO))
+          ;; Otherwise: just move
+          (goto-char (match-end 0)))))
     ;; Move to the shifted position and return the shift
     (goto-char (+ $p0 $shift))
     $shift))
 
-(defun fem-replace-in-current-region (FROM TO ALLOW_SELECTION INCLUDE_CURRENT_LINE
-                                  ABOVE_PARAGRAPH BELOW_PARAGRAPH)
+(defun fem-replace-in-current-region (FROM TO IGNORE_COMMENTS ALLOW_SELECTION INCLUDE_CURRENT_LINE
+                                      ABOVE_PARAGRAPH BELOW_PARAGRAPH)
   ""
-  (let (($r (apply-partially 'fem-replace-all-in FROM TO)))
+  (let (($r (apply-partially 'fem-replace-all-in FROM TO IGNORE_COMMENTS)))
     ;; Apply the replace function
     (fem-apply-in-current-region $r ALLOW_SELECTION INCLUDE_CURRENT_LINE
                              ABOVE_PARAGRAPH BELOW_PARAGRAPH)))
@@ -267,7 +273,7 @@ Takes optional region delimiters as arguments."
   (interactive)
   "Check if there are occurrences of 'assert' or 'assert_norm in the current region.
    If so, replace them with 'assume'. Ohterwise, replace all the 'assume' with 'assert'."
-  (let ($p $p1 $p2 $has-asserts $replace)
+  (let ($p $p1 $p2 $has-asserts $replace $delimiters $p)
     ;; Find the region delimiters and restrain the region
     (setq $delimiters (fem-find-region-delimiters ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                               ABOVE_PARAGRAPH BELOW_PARAGRAPH))
@@ -277,17 +283,17 @@ Takes optional region delimiters as arguments."
       (setq $p (point))
       ;; Check if there are assertions to know whether to replace assertions
       ;; by assumptions or the revert
-      (beginning-of-buffer)
-      (setq $has-asserts (search-forward "assert" nil t))
+      (goto-char (point-min))
+      (setq $has-asserts (fem-search-forward-not-comment "assert" nil))
       (goto-char $p)
       ;; Replace
       (if $has-asserts
           (progn
-             (fem-replace-all-in "assert_norm" "assume(*norm*)")
-             (fem-replace-all-in "assert" "assume"))
+             (fem-replace-all-in "assert_norm" "assume(*norm*)" t)
+             (fem-replace-all-in "assert" "assume" t))
            (progn
-             (fem-replace-all-in "assume(*norm*)" "assert_norm")
-             (fem-replace-all-in "assume" "assert"))))))
+             (fem-replace-all-in "assume(*norm*)" "assert_norm" t)
+             (fem-replace-all-in "assume" "assert" t))))))
 
 (defun fem-switch-assert-assume-in-above-paragraph ()
   (interactive)
