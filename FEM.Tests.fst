@@ -292,6 +292,24 @@ let uf_test7 () : Tot unit =
   let _ = focus_on_term in
   assert((let _ = focus_on_term in y) >= 1)
 
+/// Below examples: make sure only one side of the equality is unfolded,
+/// and that the symbol used for reconstructing the equality pretty prints
+/// well.
+
+/// Decidable equality
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let ac_ex8 (x y : nat) : unit =
+  let z1 = x + y in
+  let _ = FEM.Process.focus_on_term in
+  assert(z1 = (let _ = FEM.Process.focus_on_term in (z1)))
+
+/// Undecidable equality
+[@(postprocess_with (pp_unfold_in_assert_or_assume false))]
+let uf_test9 (x y : nat) : unit =
+  let z1 = x + y in
+  let _ = FEM.Process.focus_on_term in
+  assert(z1 == (let _ = FEM.Process.focus_on_term in (z1)))
+
 // TODO: remove below
 (**** Wrapping with tactics *)
 

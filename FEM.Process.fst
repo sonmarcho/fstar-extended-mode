@@ -1909,6 +1909,18 @@ let is_eq dbg t =
     end
   | _ -> None
 
+/// Reconstruct an equality
+val mk_eq : eq_kind -> term -> term -> Tot term
+let mk_eq k t1 t2 =
+  match k with
+  | Eq_Dec ty ->
+    mk_app (`Prims.op_Equality) [(ty, Q_Implicit); (t1, Q_Explicit); (t2, Q_Explicit)]
+  | Eq_Undec ty ->
+    mk_app (`Prims.eq2) [(ty, Q_Implicit); (t1, Q_Explicit); (t2, Q_Explicit)]
+  | Eq_Hetero ty1 ty2 ->
+    mk_app (`Prims.eq3) [(ty1, Q_Implicit); (ty2, Q_Implicit);
+                            (t1, Q_Explicit); (t2, Q_Explicit)]
+
 let formula_construct (f : formula) : Tac string =
   match f with
   | True_       -> "True_"
@@ -2053,25 +2065,26 @@ let unfold_in_assert_or_assume dbg ares =
    * - insert_before: whether to insert the new assertion before or after the
    *   current assertion in the user file *)
   let subterm, unf_res, rebuild, insert_before =
-    match term_as_formula ares.res with
-    | Comp comp_kind l r
-    | Comp comp_kind l r ->
-      if Eq? comp_kind || BoolEq? comp_kind then
-        begin match find_focused_in_term l with
+    let _ = print_dbg dbg ("Assertion: " ^ term_to_string ares.res) in
+    match is_eq dbg ares.res with
+    | Some (kd, l, r) ->
+      print_dbg dbg "The assertion is an equality";
+      begin match find_focused_in_term l with
+      | Some res ->
+        let rebuild t = mk_eq kd t r in
+        l, res, rebuild, true
+      | None ->
+        begin match find_focused_in_term r with
         | Some res ->
-          let rebuild t = formula_as_term (Comp comp_kind t r) in
-          l, res, rebuild, true
+          let rebuild t = mk_eq kd l t in
+          r, res, rebuild, false
         | None ->
-          begin match find_focused_in_term r with
-          | Some res ->
-            let rebuild t = formula_as_term (Comp comp_kind t r) in
-            r, res, rebuild, false
-          | None ->
-            mfail "unfold_in_assert_or_assume: could not find a focused term in the assert"
-          end
+          mfail "unfold_in_assert_or_assume: could not find a focused term in the assert"
         end
-      else find_in_whole_term ()
-    | _ -> find_in_whole_term ()
+      end
+    | None -> 
+      print_dbg dbg "The assertion is not an equality";
+      find_in_whole_term ()
   in
   print_dbg dbg ("Found subterm in assertion/assumption:\n" ^ term_to_string subterm);
   (* Unfold the term *)
