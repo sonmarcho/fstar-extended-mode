@@ -1,8 +1,8 @@
 # F* extended mode
-The F* extended mode contains files which extend the [F* emacs mode](https://github.com/FStarLang/fstar-mode.el). It defines commands which help writing and debugging F* proofs, by providing simple commands for the rolling admit technique or to switch between assertions/assumptions in the code, and more advanced commands which insert assertions in your code to provide information about the proof obligations at specific points (function preconditions or parameters' types conditions, postconditions, current goal...).
+The F* extended mode contains files which extend the [F* emacs mode](https://github.com/FStarLang/fstar-mode.el). It provides simple code editing commands to help switching between assertions and assumptions in the code, to save time when progressing on a proof, or to help with techniques like the "rolling-admit". It also provides more advanced commands which reveal or help to work with proof obligations or context information at specific points in the code by inserting appropriate assertions.
 
 # Setup
-You first need to install the [F* emacs mode](https://github.com/FStarLang/fstar-mode.el). The F* extended mode is not on Melpa for now, so you need to clone the repository. Next, you need to configure the emacs mode so that it knows where to look for the .fst files used by the extended mode. The easiest way is to insert the following code in your `.emacs` file. This command tries to use any local Makefile to compute the F* dependencies whenever you start the F* mode.
+You first need to install the [F* emacs mode](https://github.com/FStarLang/fstar-mode.el). The F* extended mode is not on Melpa for now, so you need to clone the repository. Next, you need to configure the emacs mode so that it knows where to look for the .fst files used by the extended mode. The simplest way is to insert the following code in your `.emacs` file. This command tries to use any local Makefile to compute the F* dependencies whenever you start the F* mode.
 
 ```
 (defun my-fstar-compute-prover-args-using-make ()
@@ -12,15 +12,20 @@ You first need to install the [F* emacs mode](https://github.com/FStarLang/fstar
     (let* ((fname (file-name-nondirectory buffer-file-name))
            (target (concat fname "-in"))
            (argstr (condition-case nil
+                       ;; Compute the dependencies by using the local Makefile
                        (concat
-                        (car (process-lines "make" "--quiet" target)) ;; Compute the dependencies by using the local Makefile
-                        " --include " (getenv "HOME") "/fstar-extended-mode " ;; Put the path to the local copy of the F* extended mode here
+                        (car (process-lines "make" "--quiet" target))
+                        ;; Put the path to the local copy of the F* extended mode here
+                        " --include " (getenv "HOME") "/fstar-extended-mode "
                         )
                      ;; If the above failed, use a default configuration
                      (error (concat
-                             "--include " (getenv "HOME") "/hacl-star/lib " ;; Put the relevant F* directories here
-                             "--include " (getenv "HOME") "/fstar-extended-mode " ;; Put the path to the local copy of the F* extended mode here
-                             "--debug yes --log_queries --use_hints --cache_checked_modules" ;; Optional
+                     	     ;; Put the relevant F* directories here
+                             "--include " (getenv "HOME") "/hacl-star/lib "
+                             ;; Put the path to the local copy of the F* extended mode here
+                             "--include " (getenv "HOME") "/fstar-extended-mode "
+                             ;; Optional
+                             "--debug yes --log_queries --use_hints --cache_checked_modules"
                              )))))
       (split-string argstr))))
 (setq fstar-subp-prover-args #'my-fstar-compute-prover-args-using-make)
