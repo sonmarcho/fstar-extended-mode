@@ -32,6 +32,15 @@ You first need to install the [F* emacs mode](https://github.com/FStarLang/fstar
 (setq fstar-subp-debug t)
 ```
 
+Then, you need to load the extended mode. You can do it simply by inserting the following command in your `.emacs` file:
+
+```
+;; Replace PATH-TO-REPO by the path to the cloned extended mode repository
+(load "~/PATH-TO-REPO/fstar-extended-mode")
+```
+
+Finally, the F* extended mode needs the `use-package` package. You can install it by using Melpa (`M-x list-packages`, then go to `use-package` and click on "Install").
+
 # Commands and bindings
 The F* extended mode introduces the following commands:
 * Simple editing commands:
@@ -44,4 +53,5 @@ The F* extended mode introduces the following commands:
 	* `fem-unfold-in-assert-assume` (C-c C-s C-f): unfolds an identifier inside an assertion/assumption. The term identifier can be understood in quite a large sense: you can unfold a top-level identifier (i.e.: a definition), but the command will analyze previous pure let-bindings and equalities in postconditions to find a term by which to replace a local variable the user may wish to "unfold". In the future, it will allow to rewrite arbitrary terms.
 	* `fem-insert-pos-markers` (C-c C-s C-i): it can be difficult for the above commands to generate correct queries to send to F* for analysis, because the user may be working on a function only partly written and whose holes can be difficult to fill. It especially happens when working inside `if .. then ... else ...` expressions or branches of a match.  In such cases, it can be necessary for the user to help a bit, by indicating which term he wants to analyze, then where to stop the parsing for the query to send to F*. If the user calls `fem-insert-pos-markers` then one of the above commands, those commands will use the positition saved by `fem-insert-pos-markers` to find out the term to analyze, and will parse to the current position.
 
-
+# Testing the mode
+You can test the package by going through the [F* demo file](./FEM.Demo.fst).
