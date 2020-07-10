@@ -1,4 +1,4 @@
-module PrintTactics.Tests
+module FEM.Tests
 
 module HS = FStar.HyperStack
 module ST = FStar.HyperStack.ST
@@ -7,7 +7,7 @@ module B = LowStar.Buffer
 open FStar.List
 open FStar.Tactics
 open FStar.Mul
-open PrintTactics
+open FEM.Process
 
 
 (*** Tests *)
@@ -210,6 +210,18 @@ let pp_test12 (n : nat) : Tot nat =
   let a, (b, c) = 4, (5, 6) in
   x + y + z + a + b + c
 
+(**** Split assert/assume *)
+let sa_pred1 (x y : nat) = True
+let sa_pred2 (x : nat) = True
+let sa_pred3 (x y : int) = True
+
+let sa_test1 (x y z : nat) : unit =
+  assert(
+    sa_pred1 x y /\
+    sa_pred2 x /\
+    sa_pred3 y z);
+  assert(x + y + z >= 0 /\ sa_pred1 z x)
+
 (**** Unfold in assert *)
 let uf_test_fun1 (x : nat) : nat = x + 2
 let uf_test_fun2 (x : nat) :
@@ -224,6 +236,10 @@ assume val uf_test_lem2 (x : nat) (y : nat) :
 assume val uf_test_lem3 (x : nat) (y : nat) :
   Lemma (ensures x == 7 /\ y = 3)
 
+let uf_test1_ () : Tot unit =
+  let x = 3 in
+  assert(x >= 1)
+
 [@(postprocess_with (pp_unfold_in_assert_or_assume false))]
 let uf_test1 () : Tot unit =
   let x = 3 in
@@ -232,6 +248,7 @@ let uf_test1 () : Tot unit =
 
 [@(postprocess_with (pp_unfold_in_assert_or_assume false))]
 let uf_test2 () : Tot unit =
+//  assert(uf_test_fun1 3 >= 1)
   let _ = focus_on_term in
   assert((let _ = focus_on_term in uf_test_fun1) 3 >= 1)
 
@@ -271,6 +288,7 @@ let uf_test7 () : Tot unit =
   let x = uf_test_fun3 () in
   let y = uf_test_fun4 0 in
   uf_test_lem3 x y;
+//  assert(y >= 1)
   let _ = focus_on_term in
   assert((let _ = focus_on_term in y) >= 1)
 
@@ -338,12 +356,12 @@ let test5_2 (x : nat{x >= 4}) :
   test_lemma1 x;
   run_tactic (
     fun () ->
-    let opt_sig = lookup_typ (top_env ()) ["PrintTactics"; "Unknown"] in
+    let opt_sig = lookup_typ (top_env ()) ["FEM"; "Process"; "Unknown"] in
     begin match opt_sig with
     | Some sig -> print "Found signature"
     | _ -> print "No signature"
     end;
-    iter (fun fv -> print (fv_to_string fv)) (defs_in_module (top_env()) ["PrintTactics"])
+    iter (fun fv -> print (fv_to_string fv)) (defs_in_module (top_env()) ["FEM"; "Process"])
     );
   3
 

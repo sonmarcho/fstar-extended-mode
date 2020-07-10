@@ -551,7 +551,7 @@ POS defaults to the pointer's position.
 Returns a fem-pair of positions if succeeds, nil otherwise.
 If ACCEPT_COMMENTS is nil, return nil if we are inside a comment."
   (save-excursion
-    (let (($not-ok nil) $beg $end)
+    (let (($p0 (or POS (point))) ($not-ok nil) $beg $end)
       ;; Must not be in a comment (unless the user wants it) or surrounded by spaces
       (setq $not-ok (or (and (fem-in-general-comment-p) (not ACCEPT_COMMENTS))
                         (fem-is-in-spaces-p)))
@@ -564,7 +564,10 @@ If ACCEPT_COMMENTS is nil, return nil if we are inside a comment."
         ;; Beginning: just go backward
         (fem-safe-backward-sexp)
         (setq $beg (point))
-        (make-fem-pair :fst $beg :snd $end)))))
+        ;; Sanity check
+        (if (and (<= $beg $p0) (>= $end $p0))
+            (make-fem-pair :fst $beg :snd $end)
+          nil)))))
 
 (defun fem-sexp-at-p-as-string (&optional POS)
   "Return the sexp at POS."
@@ -765,7 +768,10 @@ have to be inside the assertion/assumption.  It can for instance be on an
         ;; call find-encompassing-assert-assume-p
         (goto-char $pos)
         (setq $sexp (fem-sexp-at-p))
-        (setq $str (buffer-substring-no-properties (fem-pair-fst $sexp) (fem-pair-snd $sexp)))
+        (if $sexp
+            (setq $str (buffer-substring-no-properties (fem-pair-fst $sexp)
+                                                       (fem-pair-snd $sexp)))
+          (setq $str ""))
         (if (or (string-equal $str "assert")
                 (string-equal $str "assert_norm")
                 (string-equal $str "assume"))
@@ -1255,6 +1261,7 @@ TODO: use overlays."
     (goto-char $p0)
     $delimiters))
 
+;; TODO: use INSERT_ADMIT
 (defun fem-copy-def-for-meta-process (END INSERT_ADMIT SUBEXPR DEST_BUFFER PP_INSTR)
   "Copy code for meta-processing and update the parsed result positions.
 Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
@@ -1444,7 +1451,8 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; Suffix
   (goto-char (+ (fem-subexpr-end $subexpr1) $prefix-length))
   ;; Insert an admit if it is a 'let' or a ';' expression
-  (when (or (fem-subexpr-is-let-in $subexpr1) (fem-subexpr-has-semicol $subexpr1))
+  (when (and $insert-admit
+             (or (fem-subexpr-is-let-in $subexpr1) (fem-subexpr-has-semicol $subexpr1)))
     (end-of-line) (newline) (indent-according-to-mode) (insert "admit()"))
   ;; Copy the buffer content
   (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
@@ -1458,11 +1466,16 @@ Otherwise, the string is made of a number of spaces equal to the column position
 (defun fem-unfold-in-assert-assume ()
   "Unfold an identifier in an assertion/assumption."
   (interactive)
-  (let ($id $tbeg $passert $a-beg $a-end $p-beg $p-end $subexpr $subexpr1 $shift
-        $indent-str $beg $end $cbuffer $payload $insert-shift $insert-and-shift)
+  (let ($markers $p0 $id $tbeg $passert $a-beg $a-end $p-beg $p-end
+        $subexpr $subexpr1 $shift $indent-str $beg $end $cbuffer
+        $query-end $insert-admit $payload $insert-shift $insert-and-shift)
   (fem-log-dbg "unfold-in-assert-assume")
   ;; Sanity check
   (fem-generate-fstar-check-conditions)
+  ;; Look for position markers
+  (setq $markers (fem-get-pos-markers))
+  (setq $p0 (point))
+  (when $markers (goto-char (fem-pair-fst $markers)))
   ;; Find the identifier
   (setq $id (fem-sexp-at-p))
   (when (not $id) (error "Pointer not over a term"))
@@ -1489,8 +1502,10 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; Remember which is the original buffer
   (setq $cbuffer (current-buffer))
   ;; Copy and start processing the content
-  (setq $subexpr1 (fem-copy-def-for-meta-process $end $subexpr fem-process-buffer1
-                                            "FEM.Process.pp_unfold_in_assert_or_assume false"))
+  (setq $query-end (if $markers $p0 $end) $insert-admit (not $markers))
+  (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit
+                                                 $subexpr fem-process-buffer1
+                                                 "FEM.Process.pp_unfold_in_assert_or_assume false"))
   ;; We are now in the destination buffer
   ;; Insert the ``focus_on_term`` indicators at the proper places, together
   ;; with an admit after the focused term.
@@ -1501,7 +1516,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
     (insert STR))
   ;; - for the identifier - note that we need to compute the shift between the
   ;;   buffers
-  (setq $shift (+ (- (fem-subexpr-beg $subexpr1) (fem-subexpr-beg $subexpr)) 1))
+  (setq $shift (- (fem-subexpr-beg $subexpr1) (fem-subexpr-beg $subexpr)))
   (goto-char (+ (fem-pair-snd $id) $shift))
   ($insert-and-shift "))")
   (goto-char (+ (fem-pair-fst $id) $shift))
@@ -1513,7 +1528,9 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; Suffix
   (goto-char (+ (fem-subexpr-end $subexpr1) $insert-shift))
   ;; Insert an admit if it is a 'let' or a ';' expression
-  (when (or (fem-subexpr-is-let-in $subexpr1) (fem-subexpr-has-semicol $subexpr1))
+  (when (and $insert-admit
+             (or (fem-subexpr-is-let-in $subexpr1)
+                 (fem-subexpr-has-semicol $subexpr1)))
     (end-of-line) (newline) (indent-according-to-mode) (insert "admit()"))
   ;; Copy the buffer content
   (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
