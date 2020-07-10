@@ -37,6 +37,9 @@ let f2 (x y : nat) :
 let f3 (x : nat) : nat =
   2 * x
 
+let f4 (n : int{n % 2 = 0}) : Tot (n':int{n' % 2 = 0}) =
+  n + 2
+
 assume val sf1 (r : B.buffer int) :
   ST.Stack int
   (requires (fun _ -> True))
@@ -126,7 +129,7 @@ let sc_ex2 (x : nat) =
 /// The fem-insert-pre-post command (C-c C-e) addresses this issue.
 
 /// Try testing the fem-insert-pre-post command on the let-bindings and the return result
-let ac_ex1 (x y : nat) : z:nat{z % 3 = 0} =
+let ci_ex1 (x y : nat) : z:int{z % 3 = 0} =
   (* Preconditions:
    * Type C-c C-e below to insert:
    * [> assert(x + 4 > 3); *)
@@ -140,13 +143,17 @@ let ac_ex1 (x y : nat) : z:nat{z % 3 = 0} =
 
   (* Typing obligations:
    * Type C-c C-e below to insert:
-   * [> assert(Prims.has_type (3 <: Prims.int) Prims.nat);
+   * [> assert(Prims.has_type (x2 <: Prims.nat) Prims.int);
+   * [> assert(x2 % 2 = 0);
    * Note that the assertion gives indications about the parameter
    * (it uses ``has_type`` rather than ``subtype_of``), the target
-   * type, but also the known type for the parameter through the
-   * type refinement.
+   * type and the (potential) refinement, but also the known type
+   * for the parameter through the type refinement.
+   * Also note that the type obligations are not introduced when
+   * they are trivial (if the original type and the target type are
+   * exactly the same, syntactically).
    *)
-  let x3 = f1 4 3 in (* <- Put your pointer on the left and type C-c C-e *)
+  let x3 = f4 x2 in (* <- Put your pointer on the left and type C-c C-e *)
 
   (* Current goal:
    * Type C-c C-e below to insert:
@@ -160,7 +167,7 @@ let ac_ex1 (x y : nat) : z:nat{z % 3 = 0} =
 /// same implicits for the proof obligation and the proposition, a problem the user
 /// often doesn't see. Debugging such issues can be a nightmare.
 #push-options "--print_implicits"
-let ac_ex1_ (x : nat) : unit =
+let ci_ex1_ (x : nat) : unit =
   let y = x in
   assert(x == y); (* <- Use C-c C-e here *)
   ()  
@@ -168,7 +175,7 @@ let ac_ex1_ (x : nat) : unit =
 
 /// fem-insert-pre-post also handles the "global" precondition (execute the command
 /// while anywhere inside the below function).
-let ac_ex2 (x y : int) :
+let ci_ex2 (x y : int) :
   Pure int
   (requires (x + y >= 0))
   (ensures (fun z -> z >= 0)) =
@@ -192,7 +199,7 @@ let ac_ex2 (x y : int) :
 /// it will likely be written on several lines, the command will need some help for
 /// parsing.
 
-let ac_ex3 (r1 r2 : B.buffer int) :
+let ci_ex3 (r1 r2 : B.buffer int) :
   ST.Stack int (requires (fun _ -> True)) (ensures (fun _ _ _ -> True)) =
   (**) let h0 = ST.get () in
   let n1 = sf1 r1 in (* <- Try C-c C-e here *)
@@ -210,6 +217,19 @@ let ac_ex3 (r1 r2 : B.buffer int) :
   (**) let h2 = ST.get () in
   n1 + n2
 
+/// It may happen that the command needs to introduce assertions using variables
+/// which are shadowed at that point. In this case, it "abstracts" them, like what
+/// is done in the previous example. This way, the user still has an assertion
+/// he can investigate, and where the problematic variables are clearly indicated
+/// if he wants to work with it.
+let ci_ex4 (x : int{x % 2 = 0}) :
+  Pure int
+  (requires True)
+  (ensures (fun x' -> x' % 2 = 0 /\ x' >= x)) =
+  let x = x + 4 in (* We shadow the original ``x`` here *)
+  x (* <- Try C-c C-e here *)
+
+
 (**** Split conjunctions *)
 /// Proof obligations are often written in the form of big conjunctions, and
 /// figuring out which of those conjuncts fails can be painful, and often requires
@@ -221,7 +241,7 @@ let ac_ex3 (r1 r2 : B.buffer int) :
 /// Move the pointer anywhere inside the below assert and use C-c C-s C-u.
 /// Note that you don't need to select the assert: the command expects to be inside
 /// an assert and can find its boundaries on its own.
-let ac_ex4 (x y z : nat) : unit =
+let sc_ex1 (x y z : nat) : unit =
   assert( (* <- Try C-c C-s C-u anywhere inside the assert *)
     pred1 x y z /\
     pred2 x y z /\
@@ -240,7 +260,7 @@ let ac_ex4 (x y z : nat) : unit =
 /// in order to check why some equality is not satisfied.
 /// fem-unfold-in-assert-assume (C-c C-s C-f) addresses this issue.
 
-let ac_ex5 (x y : nat) : unit =
+let ut_ex1 (x y : nat) : unit =
   let z1 = f3 (x + y) in
 
   (* Unfold definitions: *)
@@ -282,7 +302,7 @@ let invariant1 (h : HS.mem) (r1 r2 r3 : B.buffer int) =
 /// is satisfied and, worse but you don't know it yet, the problem comes from
 /// one of the conjuncts inside ``invariant_s``. With the commands introduced
 /// so far, it is pretty easy to debug that thing!
-let ac_ex6 (r1 r2 r3 : B.buffer int) :
+let cc_ex1 (r1 r2 r3 : B.buffer int) :
   ST.Stack nat
   (requires (fun h0 -> invariant1 h0 r1 r2 r3))
   (ensures (fun h0 x h1 -> invariant1 h1 r1 r2 r3 /\ x >= 3)) =
@@ -290,7 +310,7 @@ let ac_ex6 (r1 r2 r3 : B.buffer int) :
   let x = 3 in
   (*
    * ...
-   * There could be some effectful code here
+   * In practice there would be some (a lot of) code here
    * ...
    *)
   (**) let h1 = ST.get () in
@@ -312,7 +332,7 @@ let ac_ex6 (r1 r2 r3 : B.buffer int) :
 /// indicating to F* how to parse the whole function.
 
 /// Let's try on the below example:
-let ac_ex7 (x : int) =
+let ts_ex1 (x : int) =
   let y : nat =
     if x >= 0 then
       begin
