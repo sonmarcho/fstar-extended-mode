@@ -1408,7 +1408,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; We need to switch back to the original buffer to query the F* process
   (switch-to-buffer $cbuffer)
   ;; Query F*
-  (fem-query-fstar-on-buffer-content $end $payload
+  (fem-query-fstar-on-buffer-content $query-end $payload
                                      (apply-partially #'fem-insert-assert-pre-post--continuation
                                                       $indent-str $beg $end $subexpr))))
 
@@ -1482,7 +1482,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; We need to switch back to the original buffer to query the F* process
   (switch-to-buffer $cbuffer)
   ;; Query F*
-  (fem-query-fstar-on-buffer-content $end $payload
+  (fem-query-fstar-on-buffer-content $query-end $payload
                                  (apply-partially #'fem-insert-assert-pre-post--continuation
                                                   $indent-str $beg $end $subexpr))))
 
