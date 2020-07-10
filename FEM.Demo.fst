@@ -154,6 +154,18 @@ let ac_ex1 (x y : nat) : z:nat{z % 3 = 0} =
    * [> assert(3 * (x1 + x2 + x3) % 3 = 0); *)
   3 * (x1 + x2 + x3) (* <- Put your pointer on the left and type C-c C-e *)
 
+/// Note that you can use the "--print_implicits" option to adjust the output.
+/// Some proof obligations indeed sometimes fail while the user is certain to
+/// have the appropriate hypothesis in his context, because F* did not infer the
+/// same implicits for the proof obligation and the proposition, a problem the user
+/// often doesn't see. Debugging such issues can be a nightmare.
+#push-options "--print_implicits"
+let ac_ex1_ (x : nat) : unit =
+  let y = x in
+  assert(x == y); (* <- Use C-c C-e here *)
+  ()  
+#pop-options
+
 /// fem-insert-pre-post also handles the "global" precondition (execute the command
 /// while anywhere inside the below function).
 let ac_ex2 (x y : int) :
@@ -322,7 +334,6 @@ let ac_ex7 (x : int) =
   in
   let z = f2 y 3 in
   z (* <- Then use C-c C-e here to indicate where the end of the function is *)
-
 
 /// In the future, we intend to instrument Merlin to parse partially written
 /// expressions, so that the user won't have to do two-steps execution for
