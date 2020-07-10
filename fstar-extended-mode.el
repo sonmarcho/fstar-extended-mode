@@ -1326,36 +1326,6 @@ OVERLAY_END gives the position at which to stop the overlay."
   (fstar-subp--query (fstar-subp--push-query $beg `full PAYLOAD)
                      (apply-partially CONTINUATION $overlay))))
 
-(defun fem-insert-assert-pre-post--process (INDENT_STR P1 P2 P3 INSERT_ADMIT SUBEXPR)
-  "Generate the F* query for insert-assert-pre-post and query F*."
-  (let ($cbuffer $subexpr $p1 $p2 $prefix $prefix-length $payload)
-    ;; Remember which is the original buffer
-    (setq $cbuffer (current-buffer))
-    ;; Copy and start processing the content
-    (setq $subexpr (fem-copy-def-for-meta-process P3 INSERT_ADMIT SUBEXPR fem-process-buffer1
-                                                  "FEM.Process.pp_analyze_effectful_term false"))
-    ;; We are now in the destination buffer
-    ;; Modify the copied content and leave the pointer at the end of the region
-    ;; to send to F*
-    ;;
-    ;; Insert the ``focus_on_term`` indicator at the proper place, together
-    ;; with an admit after the focused term.
-    ;; Note that we don't need to keep track of the positions modifications:
-    ;; we will send the whole buffer to F*.
-    (setq $p1 (fem-subexpr-beg $subexpr) $p2 (fem-subexpr-end $subexpr))
-    (goto-char $p1)
-    (setq $prefix "let _ = FEM.Process.focus_on_term in ")
-    (setq $prefix-length (length $prefix))
-    (insert $prefix)
-    ;; Copy the buffer content
-    (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
-    ;; We need to switch back to the original buffer to query the F* process
-    (switch-to-buffer $cbuffer)
-    ;; Query F*
-    (fem-query-fstar-on-buffer-content P3 $payload
-                                   (apply-partially #'fem-insert-assert-pre-post--continuation
-                                                    INDENT_STR P1 P2 SUBEXPR))))
-
 (defun fem-generate-fstar-check-conditions ()
   "Check that it is safe to run some F* meta-processing."
   (save-excursion
@@ -1539,8 +1509,9 @@ TODO: take into account if/match branches"
   ;; Sanity check
   (fem-generate-fstar-check-conditions)
   (let ($next-point $beg $markers $p0 $allow-selection $delimiters $indent $indent-str
-        $p1 $p2 $p3 $parse-result $cp1 $cp2
-        $is-let-in $has-semicol $current-buffer $insert-admit)
+        $p1 $p2 $p3 $subexpr $cp1 $cp2
+        $is-let-in $has-semicol $current-buffer $insert-admit
+        $cbuffer $subexpr1 $payload)
     (setq $beg (fstar-subp--untracked-beginning-position))
     ;; Find in which region the term to process is
     (setq $delimiters (fem-find-region-delimiters-or-markers))
@@ -1556,21 +1527,42 @@ TODO: take into account if/match branches"
     (fem-skip-comments-and-spaces t (point-at-eol))
     (setq $p2 (point))
     ;; Parse the term
-    (setq $parse-result (fem-parse-subexpr $p1 $p2))
-    (setq $cp1 (fem-subexpr-beg $parse-result))
+    (setq $subexpr (fem-parse-subexpr $p1 $p2))
+    (setq $cp1 (fem-subexpr-beg $subexpr))
     ;; Debug information
-    (cond ((fem-subexpr-is-let-in $parse-result) (fem-log-dbg "Parsed expression: 'let _ = _ in'"))
-          ((fem-subexpr-has-semicol $parse-result) (fem-log-dbg "Parsed expression: '_;'"))
+    (cond ((fem-subexpr-is-let-in $subexpr) (fem-log-dbg "Parsed expression: 'let _ = _ in'"))
+          ((fem-subexpr-has-semicol $subexpr) (fem-log-dbg "Parsed expression: '_;'"))
           (t (fem-log-dbg "Parsed expression: '_'")))
     ;; Compute the indentation
     (setq $indent-str (fem-compute-local-indent-p $cp1))
     ;; Compute where is the end of the region to send to F*
     (setq $p3 (if $markers $p0 $p2))
     (setq $insert-admit (and (not $markers)
-                             (or (fem-subexpr-is-let-in $parse-result)
-                                 (fem-subexpr-has-semicol $parse-result))))
-    ;; Process the term
-    (fem-insert-assert-pre-post--process $indent-str $p1 $p2 $p3 $insert-admit $parse-result)))
+                             (or (fem-subexpr-is-let-in $subexpr)
+                                 (fem-subexpr-has-semicol $subexpr))))
+    ;; Remember which is the original buffer
+    (setq $cbuffer (current-buffer))
+    ;; Copy and start processing the content
+    (setq $subexpr1 (fem-copy-def-for-meta-process $p3 $insert-admit $subexpr fem-process-buffer1
+                                                  "FEM.Process.pp_analyze_effectful_term false"))
+    ;; We are now in the destination buffer
+    ;; Modify the copied content and leave the pointer at the end of the region
+    ;; to send to F*
+    ;;
+    ;; Insert the ``focus_on_term`` indicator at the proper place, together
+    ;; with an admit after the focused term.
+    ;; Note that we don't need to keep track of the positions modifications:
+    ;; we will send the whole buffer to F*.
+    (goto-char (fem-subexpr-beg $subexpr1))
+    (insert "let _ = FEM.Process.focus_on_term in ")
+    ;; Copy the buffer content
+    (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
+    ;; We need to switch back to the original buffer to query the F* process
+    (switch-to-buffer $cbuffer)
+    ;; Query F*
+    (fem-query-fstar-on-buffer-content $p3 $payload
+                                   (apply-partially #'fem-insert-assert-pre-post--continuation
+                                                    $indent-str $p1 $p2 $subexpr))))
 
 ;; Key bindings
 (global-set-key (kbd "C-x C-a") 'fem-roll-admit)
