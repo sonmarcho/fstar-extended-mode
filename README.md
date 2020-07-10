@@ -64,5 +64,5 @@ The F* extended mode introduces the following commands:
 	* `fem-insert-pos-markers` (C-c C-s C-i): it can be difficult for the above commands to generate correct queries to send to F* for analysis, because the user may be working on a function only partly written and whose holes can be difficult to fill. It especially happens when working inside `if .. then ... else ...` expressions or branches of a match.  In such cases, it can be necessary for the user to help a bit, by indicating which term he wants to analyze, then where to stop the parsing for the query to send to F*. If the user calls `fem-insert-pos-markers` then one of the above commands, those commands will use the positition saved by `fem-insert-pos-markers` to find out the term to analyze, and will parse to the current position.
 
 # Tutorial
-You can learn to use the package by going through the [tutorial file](./FEM.Tutorial.fst).
+You can learn how to use the package by going through the [tutorial file](./FEM.Tutorial.fst).
 Note that this file also contains useful tips and tricks, for example workarounds in case the commands fail because of parsing issues.

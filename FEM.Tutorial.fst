@@ -51,10 +51,10 @@ let pred4 (x y z : nat) = True
 let pred5 (x y z : nat) = True
 let pred6 (x y z : nat) = True
 
-let spred1 (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
-let spred2 (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
-let spred3 (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
-let spred4 (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
+let spred1 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
+let spred2 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
+let spred3 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
+let spred4 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
 
 (*** Basic commands *)
 (**** Rolling admit *)
@@ -261,48 +261,40 @@ let ac_ex5 (x y : nat) : unit =
 
 (**** Combining commands *)
 /// Those commands prove really useful when you combine them. The below example
-/// is inspired by a personal experience with a proof in HACL*.
+/// is inspired by a function found in HACL*.
 
-/// Some invariants are sometimes divided in several pieces, for example a
+/// Invariants are sometimes divided in several pieces, for example a
 /// functional part, to which we later add information about aliasing.
-/// Moreover they are often made of big conjunctions.
-let invariant1_s (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) =
-  spred1 x y z h r1 r2 r3 /\
-  spred2 x y z h r1 r2 r3 /\
-  spred3 x y z h r1 r2 r3 /\
-  spred4 x y z h r1 r2 r3
+/// Moreover they are often written in the form of big conjunctions.
+let invariant1_s (h : HS.mem) (r1 r2 r3 : B.buffer int) =
+  spred1 h r1 r2 r3 /\
+  spred2 h r1 r2 r3 /\
+  spred3 h r1 r2 r3 /\
+  spred4 h r1 r2 r3
 
-let invariant1 (x y z : nat) (h : HS.mem) (r1 r2 r3 : B.buffer int) =
-  invariant1_s x y z h r1 r2 r3 /\
+let invariant1 (h : HS.mem) (r1 r2 r3 : B.buffer int) =
+  invariant1_s h r1 r2 r3 /\
   B.live h r1 /\ B.live h r2 /\ B.live h r3 /\
   B.disjoint r1 r2 /\ B.disjoint r2 r3 /\ B.disjoint r1 r3
 
-/// The following function has the invariant in its precondition. Now let's imagine
-/// that when calling it somewhere, F* fails on the precondition and you need to
-/// dig inside to see what's going on (see the next function). With the commands
-/// previously introduced, it is pretty easy!
-assume val sf2 (x y z : nat) (r1 r2 r3 : B.buffer int) :
-  ST.Stack int
-  (requires (fun h0 -> invariant1 x y z h0 r1 r2 r3))
-  (ensures (fun h0 _ h1 -> True))
-
-/// Have fun below!
-let ac_ex6 (x y z : nat) (r1 r2 r3 : B.buffer int) :
-  ST.Stack int
-  (requires (fun h0 ->
-    B.live h0 r1 /\ B.live h0 r2 /\ B.live h0 r3 /\
-    B.disjoint r1 r2 /\ B.disjoint r2 r3 /\ B.disjoint r1 r3))
-  (ensures (fun h0 _ h1 -> True)) =
-  (* In practice, there are often assertions in the code before the proof
-   * obligation we want to investigate: it is not a problem, we can get
-   * rid of them by converting them to assumptions *)
-  assert(pred1 x y z);
-  assert(pred2 x y z);
-  assert(pred3 x y z);
-  assert(pred4 x y z);
+/// The following function has to maintain the invariant. Now let's imagine
+/// that once the function is written, you fail to prove that the postcondition
+/// is satisfied and, worse but you don't know it yet, the problem comes from
+/// one of the conjuncts inside ``invariant_s``. With the commands introduced
+/// so far, it is pretty easy to debug that thing!
+let ac_ex6 (r1 r2 r3 : B.buffer int) :
+  ST.Stack nat
+  (requires (fun h0 -> invariant1 h0 r1 r2 r3))
+  (ensures (fun h0 x h1 -> invariant1 h1 r1 r2 r3 /\ x >= 3)) =
   (**) let h0 = ST.get () in
-  let res = sf2 x y z r1 r2 r3 in (* <- Try studying the precondition here *)
-  res
+  let x = 3 in
+  (*
+   * ...
+   * There could be some effectful code here
+   * ...
+   *)
+  (**) let h1 = ST.get () in
+  x (* <- Try studying the proof obligations here *)
 
 (**** Two-steps execution *)
 /// The commands implemented in the F* extended mode work by updating the function
