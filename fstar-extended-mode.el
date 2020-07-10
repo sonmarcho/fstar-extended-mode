@@ -113,8 +113,9 @@ Format FORMAT-PARAMS according to FORMAT-STRING."
 (defun fem-count-lines-in-string (STR)
   "Count the number of lines in a string"
   (save-match-data
-    (let (($num-lines 1))
-      (while (string-match (regexp-quote "\n") STR)
+    (let (($num-lines 1) (pos 0))
+      (while (string-match (regexp-quote "\n") STR pos)
+        (setq pos (match-end 0))
         (setq $num-lines (+ $num-lines 1)))
       $num-lines)))
 
