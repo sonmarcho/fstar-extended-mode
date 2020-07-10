@@ -1229,21 +1229,22 @@ TODO: use overlays."
 
 (defun fem-find-region-delimiters-or-markers ()
   "Find the region to process."
-  (let ($p0 $markers $p1 $p2 $p $allow-selection $delimiters)
-    ;; Check for saved markers
-    (setq $markers (fem-get-pos-markers))
-    (setq $p0 (point)) ;; save the original position
-    ;; If we found two markers: they delimit the region
-    ;; If we found one: use it as the current pointer position
-    (if (and $markers
-             (fem-pair-fst $markers)
-             (fem-pair-snd $markers))
-        (setq $p1 (fem-pair-fst $markers) $p2 (fem-pair-snd $markers))
-      (setq $p (if $markers (fem-pair-fst $markers) (point)))
-      (setq $allow-selection (not $markers))
-      (setq $delimiters (fem-find-region-delimiters $allow-selection t nil nil $p)))
-    (goto-char $p0)
-    $delimiters))
+  (save-excursion
+    (let ($p0 $markers $p1 $p2 $p $allow-selection $delimiters)
+      ;; Check for saved markers
+      (setq $markers (fem-get-pos-markers))
+      (setq $p0 (point)) ;; save the original position
+      ;; If we found two markers: they delimit the region
+      ;; If we found one: use it as the current pointer position
+      (if (and $markers
+               (fem-pair-fst $markers)
+               (fem-pair-snd $markers))
+          (setq $p1 (fem-pair-fst $markers) $p2 (fem-pair-snd $markers))
+        (setq $p (if $markers (fem-pair-fst $markers) (point)))
+        (setq $allow-selection (not $markers))
+        (setq $delimiters (fem-find-region-delimiters $allow-selection t nil nil $p)))
+      (goto-char $p0)
+      $delimiters)))
 
 (defun fem-copy-def-for-meta-process (END INSERT_ADMIT SUBEXPR DEST_BUFFER PP_INSTR)
   "Copy code for meta-processing and update the parsed result positions.
@@ -1497,10 +1498,13 @@ TODO: take into account if/match branches"
         $is-let-in $has-semicol $current-buffer $insert-admit
         $cbuffer $subexpr1 $payload)
     (setq $beg (fstar-subp--untracked-beginning-position))
+    ;; Find markers
+    (setq $markers (fem-get-pos-markers))
+    (setq $p0 (point))
+    (when $markers (goto-char (fem-pair-fst $markers)))
     ;; Find in which region the term to process is
     (setq $delimiters (fem-find-region-delimiters-or-markers))
     (setq $p1 (fem-pair-fst $delimiters) $p2 (fem-pair-snd $delimiters))
-    (setq $p0 (point))
     ;; Ignore the region to ignore comments/spaces and try to reach line extrema
     ;; - beginning:
     (goto-char $p1)

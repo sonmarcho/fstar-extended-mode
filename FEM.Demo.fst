@@ -307,14 +307,13 @@ let ac_ex6 (x y z : nat) (r1 r2 r3 : B.buffer int) :
 /// execution, by first indicating the subterm which he wants to analyze, then by
 /// indicating to F* how to parse the whole function.
 
-/// Let's try on the below example
-
+/// Let's try on the below example:
 let ac_ex7 (x : int) =
-  let y =
+  let y : nat =
     if x >= 0 then
       begin
       let z1 = x + 4 in
-      let z2 = f1 z1 x in (* <- You want to use C-c C-e here: first use C-c C-s C-i *)
+      let z2 : int = f1 z1 x in (* <- You want to use C-c C-e here: first use C-c C-s C-i *)
       assert(z2 = f1 (x + 4) x);
       assert(z2 >= 0);
       z2
@@ -322,7 +321,8 @@ let ac_ex7 (x : int) =
     else -x
   in
   let z = f2 y 3 in
-  z (* <- Then use C-c C-e here so that the command knows where the end of the function is *)
+  z (* <- Then use C-c C-e here to indicate where the end of the function is *)
+
 
 /// In the future, we intend to instrument Merlin to parse partially written
 /// expressions, so that the user won't have to do two-steps execution for

@@ -579,8 +579,10 @@ let rec explore_term dbg #a f x ge0 pl0 c0 t0 =
     | Tv_Const _ -> x0, Continue
     | Tv_Uvar _ _ -> x0, Continue
     | Tv_Let recf attrs bv def body ->
-      (* Explore the binding definition *)
-      let def_c = safe_typ_or_comp ge0.env def in
+      (* Explore the binding definition - for the target computation: initially we
+       * used the type of the definition, however it is often unnecessarily complex.
+       * Now, we use the type of the binder used for the binding. *)
+      let def_c = Some (TC_Typ (type_of_bv bv) []) in
       let x1, flag1 = explore_term dbg f x0 ge0 pl1 def_c def in
       if flag1 = Continue then
         (* Explore the next subterm *)
@@ -1753,6 +1755,7 @@ let analyze_effectful_term dbg res =
        * and post-assertions (because for the pre-assertions the variable
        * will not be shadowed yet, while it will be the case for the post-
        * assertions) *)
+      print_dbg dbg ("Restraining to: " ^ term_to_string fterm);
       let shadowed_bv =
         match genv_get_from_name ge (name_of_bv bv0) with
         | None -> None
