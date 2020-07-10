@@ -13,7 +13,7 @@ open FStar.Mul
 /// to load from the very start and won't load additional modules on-demand (you
 /// will need to restart the F* mode), which means that if you intend to use the
 /// extended mode while working on a file, you have to make sure F* will load
-/// FEM.Process by using one of the following instructions:
+/// FEM.Process:
 open FEM.Process
 /// alternatively if you want to prevent shadowing:
 /// module FEMProcess = open FEM.Process
@@ -32,6 +32,15 @@ let f1 (n : int) (m : nat) : Pure nat (requires (n > 3)) (ensures (fun _ -> True
 
 let f2 (x y : nat) :
   Pure (z:nat{z >= 8}) (requires True) (ensures (fun z -> z % 2 = 0)) =
+  2 * (x + y) + 8
+
+let f3 (x : nat) : nat =
+  2 * x
+
+let f4 (x : nat) : nat =
+  x + 8
+
+let f5 (x y : nat) : nat =
   2 * (x + y) + 8
 
 assume val sf1 (r : B.buffer int) :
@@ -95,7 +104,7 @@ let sc_ex1 (x : nat) =
   let w' = 2 * w + z in
   w'
 
-(**** Switching between asserts/assumes *)
+(**** Switch between asserts/assumes *)
 /// People often write functions and proofs incrementally, by keeping an admit
 /// at the very end and adding function calls or assertions one at a time,
 /// type-checking with F* at every changement to make sure that it is legal.
@@ -122,7 +131,7 @@ let sc_ex2 (x : nat) =
   x3
 
 (*** Advanced commands *)
-(**** Proof obligations/context information *)
+(**** Insert context/proof obligations information *)
 /// If often happens that we want to know what exactly the precondition which
 /// fails at some specific place is, or if, once instantiated, the postcondition of
 /// some lemma is indeed what we believe it is, because it fails to prove some
@@ -184,13 +193,22 @@ let ac_ex2 (x y : int) :
 let ac_ex3 (r1 r2 : B.buffer int) :
   ST.Stack int (requires (fun _ -> True)) (ensures (fun _ _ _ -> True)) =
   (**) let h0 = ST.get () in
-  let n1 = sf1 r1 in (* <- try C-c C-e here *)
+  let n1 = sf1 r1 in (* <- Try C-c C-e here *)
+  (* [> assert(
+   * [> (fun __h0 __h1 ->
+   * [>  LowStar.Monotonic.Buffer.live __h0 r1 /\
+   * [>  LowStar.Monotonic.Buffer.as_seq __h0 r1 == LowStar.Monotonic.Buffer.as_seq __h1 r1 /\
+   * [>  n1 =
+   * [>  FStar.List.Tot.Base.fold_left (fun x y -> x + y)
+   * [>    0
+   * [>   (FStar.Seq.Properties.seq_to_list (LowStar.Monotonic.Buffer.as_seq __h0 r1))) __h0
+   * [> __h1); *)
   (**) let h1 = ST.get () in
   let n2 = sf1 r2 in
   (**) let h2 = ST.get () in
   n1 + n2
 
-(**** fem-split-assert-assume-conjuncts *)
+(**** Split conjunctions *)
 /// Proof obligations are often written in the form of big conjunctions, and
 /// figuring out which of those conjuncts fails can be painful, and often requires
 /// to copy-paste the proof obligation in an assertion, then split this assertion
@@ -198,16 +216,82 @@ let ac_ex3 (r1 r2 : B.buffer int) :
 /// can be easily achieved with the fem-split-assert-assume-conjuncts command
 /// (C-c C-s C-u):
 
-/// "insert-pre-post" also handles the "global" precondition
+/// Move the pointer anywhere inside the below assert and use C-c C-s C-u.
+/// Note that you don't need to select the assert: the command expects to be inside
+/// an assert and can find its boundaries on its own.
 let ac_ex4 (x y z : nat) : unit =
-  assert(
+  assert( (* <- Try C-c C-s C-u anywhere inside the assert *)
     pred1 x y z /\
     pred2 x y z /\
     pred3 x y z /\
     pred4 x y z /\
     pred5 x y z /\
     pred6 x y z)
+  
+/// Note that you can call the above command in any of the following terms:
+/// - ``assert``
+/// - ``assert_norm``
+/// - ``assume``
 
-///
+(**** Unfold terms *)
+/// It sometimes happens that we need to unfold a term in an assertion, for example
+/// in order to check why some equality is not satisfied.
+/// fem-unfold-in-assert-assume (C-c C-s C-f) addresses this issue.
 
-(**** fem-insert-pos-markers (two-steps parsing) *)
+let ac_ex5 (x y : nat) : unit =
+  let z1 = f3 (x + y) in
+
+  (* Unfold definitions: *)
+  assert(z1 = f3 (x + y)); (* <- Move the pointer EXACTLY over ``f3`` and use C-c C-s C-f *)
+
+  (* Unfold arbitrary identifiers:
+   * In case the term to unfold is not a top-level definition but a local
+   * variable, the command will look for a pure let-binding and will even
+   * explore post-conditions to look for an equality to find a term by
+   * which to replace the variable. *)
+  assert(z1 = 2 * (x + y)); (* <- Try the command on ``z1`` *)
+
+  (* Note that if the assertion is an equality, the command will only
+   * operate on one side of the equality at a time. *)
+  assert(z1 = z1) // TODO: fix that
+
+/// We intend to update the command to allow arbitrary terms rewriting in the future
+
+(**** Combining commands *)
+
+(**** Two-steps execution *)
+
+/// In the future, we intend to instrument Merlin to parse partially written
+/// expressions, so that the user won't have to do two-steps execution to provide
+/// parsing information.
+
+(**** Debugging *)
+/// You may have bumped into the issue while playing with the above functions:
+/// if F* fails on the queries it receives, the interactive commands ask the user
+/// if he wants to see the query which was sent, in which case emacs switches
+/// between buffers.
+/// By doing that, we provide a convenient way for debugging: you may have
+/// to modify a bit the functions on which you call the command, or move the
+/// pointers before executing it.
+/// In the worst case, you can copy paste the query to the current F* buffer, modify
+/// it and parse it yourself from there: the results of the analysis by the Meta-F*
+/// functions will be output in the *Messages* buffer, from where you can easily
+/// copy-paste them, which is still a lot faster than deriving such results by hand.
+
+/// For information: the commands mostly work by inserting appropriate annotations
+/// and terms inside the user code, before sending the command to F*. For instance,
+/// using C-c C-e in the first function below is equivalent to parsing the second
+/// one (modulo the fact that the generated assertions won't be inserted into the
+/// user code):
+
+let dbg_ex1 () : Tot nat =
+  let x = 4 in
+  let y = 2 in
+  f1 x y (* <- Use C-c C-e here *)
+
+[@(postprocess_with (pp_analyze_effectful_term false))]
+let dbg_ex2 () : Tot nat =
+  let x = 4 in
+  let y = 2 in
+  let _ = focus_on_term in (* helps the post-processing tactic find the term to analyze *)
+  f1 x y

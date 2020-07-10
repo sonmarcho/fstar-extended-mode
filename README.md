@@ -55,3 +55,4 @@ The F* extended mode introduces the following commands:
 
 # Testing the mode
 You can test the package by going through the [F* demo file](./FEM.Demo.fst).
+Note that this file contains useful tips and tricks, for example workarounds in case the commands fail because of parsing issues.
