@@ -1,4 +1,4 @@
-module FEM.Demo
+module FEM.Tutorial
 
 module HS = FStar.HyperStack
 module ST = FStar.HyperStack.ST
