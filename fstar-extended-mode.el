@@ -707,7 +707,6 @@ Return the updated fem-subexpr."
   (when (fem-subexpr-bterm SUBEXPR) (fem-shift-letb-term-pos SHIFT (fem-subexpr-bterm SUBEXPR)))
   SUBEXPR)
 
-
 (defun fem-find-encompassing-assert-assume-p (&optional POS BEG END)
   "Find the encompassing F* assert(_norm)/assume.
 Takes an optional pointer position POS and region delimiters BEG and END.
@@ -793,7 +792,7 @@ have to be inside the assertion/assumption.  It can for instance be on an
               ))
           ;; Otherwise, call find-encompassing-assert-assume-p
           (goto-char $pos)
-          (fem-find-encompassing-assert-assume-p $pos $rbeg $rend))))))
+          (fem-find-encompassing-assert-assume-p $pos $rbeg $rend)))))
 
 (defun fem-find-encompassing-let-in (TERM_BEG TERM_END &optional BEG END)
   "Look for the 'let _ = _ in' or '_;' expression around the term.
