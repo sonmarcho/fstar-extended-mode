@@ -48,10 +48,10 @@ The F* extended mode introduces the following commands:
 | `fem-roll-admit` | (C-x C-a) | Helper for the "rolling admit" technique |
 | `fem-switch-assert-assume-in-above-paragraph` | (C-c C-s C-a) | Switch between assertions and assumptions in the paragraph above the pointer or in the selection |
 | `fem-switch-assert-assume-in-current-line` | (C-S-a) | Switch between assertions and assumptions in the current line |
-| `fem-insert-assert-pre-post` | (C-c C-e) | Insert context information for an effectful term (precondition, type obligations, postcondition) |
-| `fem-split-assert-assume-conjuncts` | (C-c C-s C-u) | Split the conjuncts in an assertion/assumption |
-| `fem-unfold-in-assert-assume` | (C-c C-s C-f) | Unfold/substitute a term in an assertion/assumption |
-| `fem-insert-pos-markers` | (C-c C-s C-i) | Insert a marker in the code for two-steps execution, in case of parsing issues |
+| `fem-insert-assert-pre-post` | (C-c C-e C-e) | **E**xpand an effectful term to insert context information (precondition, type obligations, postcondition) |
+| `fem-split-assert-assume-conjuncts` | (C-c C-e C-s) | **S**plit the conjuncts in an assertion/assumption |
+| `fem-unfold-in-assert-assume` | (C-c C-e C-u) | **U**nfold/substitute a term in an assertion/assumption |
+| `fem-insert-pos-markers` | (C-c C-e C-i) | **I**nsert a marker in the code for two-steps execution, in case of parsing issues |
 
 * Simple editing commands:
 	* `fem-roll-admit` (C-x C-a): helper for the "rolling admit" technique: introduces an admit at the next line. Before doing so, checks if there is another admit to move, and asks the user for removal.
