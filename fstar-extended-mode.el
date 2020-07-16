@@ -733,23 +733,26 @@ the content of the assert), nil otherwise."
               (let ($ar $str $pr)
                 ;; Check that we are looking at an assert(_norm)/assume
                 (setq $ar (fem-sexp-at-p))
-                (setq $abeg (fem-pair-fst $ar) $aend (fem-pair-snd $ar))
-                (setq $str (buffer-substring-no-properties $abeg $aend))
-                (if (not (or (string-equal $str "assert")
-                             (string-equal $str "assert_norm")
-                             (string-equal $str "assume")))
-                    ;; Not ok
-                    nil
-                  ;; Ok: check if the pointer is inside the argument
-                  (goto-char $aend)
-                  (fem-skip-comments-and-spaces t)
-                  (setq $pbeg (point))
-                  (fem-safe-forward-sexp)
-                  (setq $pend (point))
-                  (and (<= $pbeg $pos) (>= $pend $pos)))))))
+                ;; $ar might be nil here
+                (if (not $ar) nil
+                  (setq $abeg (fem-pair-fst $ar) $aend (fem-pair-snd $ar))
+                  (setq $str (buffer-substring-no-properties $abeg $aend))
+                  (if (not (or (string-equal $str "assert")
+                               (string-equal $str "assert_norm")
+                               (string-equal $str "assume")))
+                      ;; Not ok
+                      nil
+                    ;; Ok: check if the pointer is inside the argument
+                    (goto-char $aend)
+                    (fem-skip-comments-and-spaces t)
+                    (setq $pbeg (point))
+                    (fem-safe-forward-sexp)
+                    (setq $pend (point))
+                    (and (<= $pbeg $pos) (>= $pend $pos))))))))
         ;; Search and return
         (when (fstar--re-search-predicated-backward '$pred "assert\\|assume" $rbeg)
           ;; Return
+          nil
           (make-fem-pair :fst (make-fem-pair :fst $abeg :snd $aend)
                      :snd (make-fem-pair :fst $pbeg :snd $pend))
           )))))
@@ -786,10 +789,11 @@ have to be inside the assertion/assumption.  It can for instance be on an
               (setq $pbeg (point))
               (fem-safe-forward-sexp)
               (setq $pend (point))
-              (make-fem-pair :fst $sexp :snd (make-fem-pair :fst $pbeg :snd $pend)))
+              (make-fem-pair :fst $sexp :snd (make-fem-pair :fst $pbeg :snd $pend))
+              ))
           ;; Otherwise, call find-encompassing-assert-assume-p
           (goto-char $pos)
-          (fem-find-encompassing-assert-assume-p POS BEG END))))))
+          (fem-find-encompassing-assert-assume-p $pos $rbeg $rend))))))
 
 (defun fem-find-encompassing-let-in (TERM_BEG TERM_END &optional BEG END)
   "Look for the 'let _ = _ in' or '_;' expression around the term.
@@ -1566,14 +1570,16 @@ TODO: take into account if/match branches"
                                                     $indent-str $p1 $p2 $subexpr))))
 
 ;; Key bindings
+;;(global-set-key (kbd "C-c C-e C-r") 'fem-roll-admit)
 (global-set-key (kbd "C-x C-a") 'fem-roll-admit)
 (global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
+;;(global-set-key (kbd "C-c C-e C-a") 'fem-switch-assert-assume-in-above-paragraph)
 (global-set-key (kbd "C-S-a") 'fem-switch-assert-assume-in-current-line)
 
-(global-set-key (kbd "C-c C-s C-i") 'fem-insert-pos-markers)
-(global-set-key (kbd "C-c C-e") 'fem-insert-assert-pre-post)
-(global-set-key (kbd "C-c C-s C-u") 'fem-split-assert-assume-conjuncts)
-(global-set-key (kbd "C-c C-s C-f") 'fem-unfold-in-assert-assume)
+(global-set-key (kbd "C-c C-e C-i") 'fem-insert-pos-markers)
+(global-set-key (kbd "C-c C-e C-e") 'fem-insert-assert-pre-post)
+(global-set-key (kbd "C-c C-e C-s") 'fem-split-assert-assume-conjuncts)
+(global-set-key (kbd "C-c C-e C-u") 'fem-unfold-in-assert-assume)
 
 (provide 'fstar-extended-mode)
 ;;; fstar-extended-mode.el ends here
