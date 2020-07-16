@@ -868,23 +868,43 @@ let type_comparison_to_string c =
   | Unknown -> "Unknown"
 #pop-options
 
-let compare_types (info1 info2 : type_info) :
-  Tot (c:type_comparison{c = Same_raw_type ==> has_refinement info2}) =
+// TODO: without debugging information generation, is Tot
+let compare_types (dbg : bool) (info1 info2 : type_info) :
+  Tac (c:type_comparison{c = Same_raw_type ==> has_refinement info2}) =
+  print_dbg dbg "[> compare_types";
   if term_eq info1.ty info2.ty then
+      let _ = print_dbg dbg "-> types are equal" in
       if has_refinement info2 then
-        if has_refinement info1 && term_eq (get_refinement info1) (get_refinement info2) then
-          Refines
-        else Same_raw_type // Same raw type but can't say anything about the expected refinement
-      else Refines // The first type is more precise than the second type
+        let _ = print_dbg dbg "-> 2nd type has refinement" in
+        // This doesn't work like in C: we need to check if info1 has a
+        // refinement, then we can compare the refinements inside ANOTHER if
+        if has_refinement info1 then
+          let _ = print_dbg dbg "-> 1st type has refinement" in
+          if term_eq (get_refinement info1) (get_refinement info2) then
+            let _ = print_dbg dbg "-> Refines" in
+            Refines
+          else
+          let _ = print_dbg dbg "-> Same_raw_type" in
+          Same_raw_type // Same raw type but can't say anything about the expected refinement
+        else
+          let _ = print_dbg dbg "-> 1st type has no refinement" in
+          let _ = print_dbg dbg "-> Same_raw_type" in
+          Same_raw_type // Same raw type but can't say anything about the expected refinement
+      else
+        let _ = print_dbg dbg "-> 2nd type has no refinement: Refines" in
+        Refines // The first type is more precise than the second type
     else
+      let _ = print_dbg dbg "types are not equal" in
       Unknown
 
-let compare_cast_types (p:cast_info) :
-  Tot (c:type_comparison{
+let compare_cast_types (dbg : bool) (p:cast_info) :
+  Tac (c:type_comparison{
     ((c = Refines \/ c = Same_raw_type) ==> (Some? p.p_ty /\ Some? p.exp_ty)) /\
     (c = Same_raw_type ==> has_refinement (Some?.v p.exp_ty))}) =
+  print_dbg dbg "[> compare_cast_types";
   match p.p_ty, p.exp_ty with
-  | Some info1, Some info2 -> compare_types info1 info2
+  | Some info1, Some info2 ->
+    compare_types dbg info1 info2
   | _ -> Unknown
 
 let opt_cons (#a : Type) (opt_x : option a) (ls : list a) : Tot (list a) =
@@ -1000,17 +1020,24 @@ noeq type assertions = {
 let mk_assertions pres posts : assertions =
   Mkassertions pres posts
 
+// TODO: I don't understand why I need ifuel 2 here
+#push-options "--ifuel 2"
 /// Generate the propositions equivalent to a correct type cast.
 /// Note that the type refinements need to be instantiated.
-val cast_info_to_propositions : genv -> cast_info -> Tac (list proposition)
-let cast_info_to_propositions ge ci =
-  match compare_cast_types ci with
-  | Refines -> []
+val cast_info_to_propositions : bool -> genv -> cast_info -> Tac (list proposition)
+let cast_info_to_propositions dbg ge ci =
+  print_dbg dbg ("[> cast_info_to_propositions:\n" ^ cast_info_to_string ci);
+  match compare_cast_types dbg ci with
+  | Refines -> 
+    print_dbg dbg ("-> Comparison result: Refines");
+    []
   | Same_raw_type ->
+    print_dbg dbg ("-> Comparison result: Same_raw_type");
     let refin = get_refinement (Some?.v ci.exp_ty) in
     let inst_refin = mk_app_norm ge refin [ci.term] in
     [inst_refin]
   | Unknown ->
+    print_dbg dbg ("-> Comparison result: Unknown");
     match ci.p_ty, ci.exp_ty with
     | Some p_ty, Some e_ty ->
       let p_rty = get_rawest_type p_ty in
@@ -1028,12 +1055,13 @@ let cast_info_to_propositions ge ci =
       let inst_opt_refin = opt_mk_app_norm ge e_ty.refin [ci.term] in
       opt_cons inst_opt_refin [type_cast]
     | _ -> []
+#pop-options
 
 /// Generates a list of propositions from a list of ``cast_info``. Note that
 /// the user should revert the list before printing the propositions.
-val cast_info_list_to_propositions : genv -> list cast_info -> Tac (list proposition)
-let cast_info_list_to_propositions ge ls =
-  let lsl = map (cast_info_to_propositions ge) ls in
+val cast_info_list_to_propositions : bool -> genv -> list cast_info -> Tac (list proposition)
+let cast_info_list_to_propositions dbg ge ls =
+  let lsl = map (cast_info_to_propositions dbg ge) ls in
   flatten lsl
 
 /// When dealing with unknown effects, we try to guess what the pre and post-conditions
@@ -1386,9 +1414,11 @@ let eterm_info_to_assertions dbg ge t is_let is_assert info bind_var opt_c =
              * we thus also need to check for the post inside ``pre_post_to_propositions`` *)
             try
               print_dbg dbg "> Generating propositions from the global type cast";
+              print_dbg dbg ("- known type: " ^ type_info_to_string einfo.ei_ret_type);
+              print_dbg dbg ("- exp. type : " ^ type_info_to_string ei.ei_ret_type);
               let gcast = mk_cast_info v (Some einfo.ei_ret_type) (Some ei.ei_ret_type) in
               print_dbg dbg (cast_info_to_string gcast);
-              let gcast_props = cast_info_to_propositions ge1 gcast in
+              let gcast_props = cast_info_to_propositions dbg ge1 gcast in
               print_dbg dbg "> Propositions for global type cast:";
               print_dbg dbg (list_to_string term_to_string gcast_props);
               ei.ei_post, List.Tot.rev gcast_props
@@ -1412,7 +1442,7 @@ let eterm_info_to_assertions dbg ge t is_let is_assert info bind_var opt_c =
     in
     (* Generate the propositions: *)
     (* - from the parameters' cast info *)
-    let params_props = cast_info_list_to_propositions ge2 info.parameters in
+    let params_props = cast_info_list_to_propositions dbg ge2 info.parameters in
     (* - from the return type *)
     let (ret_values : list term), (ret_binders : list binder) =
       if E_Lemma? einfo.ei_type then ([] <: list term), ([] <: list binder)
@@ -2140,3 +2170,5 @@ let pp_unfold_in_assert_or_assume dbg () =
   | _ ->
     let gstr = term_to_string (cur_goal ()) in
     mfail ("Could not find a focused assert in the current goal: " ^ gstr)
+
+
