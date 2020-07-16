@@ -54,6 +54,10 @@ let pred4 (x y z : nat) = True
 let pred5 (x y z : nat) = True
 let pred6 (x y z : nat) = True
 
+let lpred1 (l1 l2 : Seq.seq int) = True
+let lpred2 (l1 l2 : Seq.seq int) = True
+let lpred3 (l1 l2 : Seq.seq int) = True
+
 let spred1 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
 let spred2 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
 let spred3 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
@@ -110,8 +114,10 @@ let simpl_ex2 (x : nat) =
   let x1 = x + 1 in
   assert(x1 = x + 1);
   let x2 = 3 * (x1 + 1) in
+  assert_norm(237 * 486 = 115182);
   assert(x2 = 3 * (x + 2));
   assert(x2 % 3 = 0);
+  assert_norm(8 * 4 < 40);
   let x3 = 2 * x2 + 6 in
   assert(x3 = 6 * (x + 2) + 6);
   assert(x3 = 6 * (x + 3));
@@ -203,6 +209,7 @@ let ci_ex3 (r1 r2 : B.buffer int) :
   ST.Stack int (requires (fun _ -> True)) (ensures (fun _ _ _ -> True)) =
   (**) let h0 = ST.get () in
   let n1 = sf1 r1 in (* <- Try C-c C-e here *)
+  (**) let h1 = ST.get () in
   (* [> assert(
    * [> (fun __h0 __h1 ->
    * [>  LowStar.Monotonic.Buffer.live __h0 r1 /\
@@ -249,7 +256,7 @@ let split_ex1 (x y z : nat) : unit =
     pred4 x y z /\
     pred5 x y z /\
     pred6 x y z)
-  
+
 /// Note that you can call the above command in any of the following terms:
 /// - ``assert``
 /// - ``assert_norm``
@@ -286,16 +293,21 @@ let ut_ex1 (x y : nat) : unit =
 /// Invariants are sometimes divided in several pieces, for example a
 /// functional part, to which we later add information about aliasing.
 /// Moreover they are often written in the form of big conjunctions.
-let invariant1_s (h : HS.mem) (r1 r2 r3 : B.buffer int) =
-  spred1 h r1 r2 r3 /\
-  spred2 h r1 r2 r3 /\
-  spred3 h r1 r2 r3 /\
-  spred4 h r1 r2 r3
+// TODO: make this invariant functional
+let invariant1_s (l1 l2 l3 : Seq.seq int) =
+  lpred1 l1 l2 /\
+  lpred2 l2 l3 /\
+  lpred3 l3 l1
 
 let invariant1 (h : HS.mem) (r1 r2 r3 : B.buffer int) =
-  invariant1_s h r1 r2 r3 /\
+  let l1 = B.as_seq h r1 in
+  let l2 = B.as_seq h r2 in
+  let l3 = B.as_seq h r3 in
+  invariant1_s l1 l2 l3 /\
   B.live h r1 /\ B.live h r2 /\ B.live h r3 /\
   B.disjoint r1 r2 /\ B.disjoint r2 r3 /\ B.disjoint r1 r3
+
+// TODO: use a dependent type for the function type
 
 /// The following function has to maintain the invariant. Now let's imagine
 /// that once the function is written, you fail to prove that the postcondition
