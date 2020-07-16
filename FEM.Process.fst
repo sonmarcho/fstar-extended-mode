@@ -8,7 +8,9 @@ open FStar.List
 open FStar.Tactics
 open FStar.Mul
 
-/// TODO: precondition, postcondition, current goal, unfold
+/// TODO: when an F* meta function fails for a known reason, it is better to fail
+/// silently but output a message which will be displayed by the user, so that he
+/// knows what's going on (for example: "can't unfold (x + y)")
 
 #push-options "--z3rlimit 15 --fuel 0 --ifuel 1"
 
@@ -2092,7 +2094,7 @@ let unfold_in_assert_or_assume dbg ares =
   (* - subterm: the subterm of the assertion in which we found the focused term
    *   (if an equality, left or right operand, otherwise whole assertion)
    * - unf_res: the result of the exploration for the focused term inside the
-   *   assertion, which gives the term to unfold
+   *   assertion, which gives the term to UNFold
    * - rebuild: a Tot function which, given a term, rebuilds the equality by
    *   replacing the above subterm with the given term
    * - insert_before: whether to insert the new assertion before or after the
@@ -2104,11 +2106,19 @@ let unfold_in_assert_or_assume dbg ares =
       print_dbg dbg "The assertion is an equality";
       begin match find_focused_in_term l with
       | Some res ->
+        print_dbg dbg ("Found focused term in left operand:" ^
+                       "\n- left   : " ^ term_to_string l ^
+                       "\n- right  : " ^ term_to_string r ^
+                       "\n- focused: " ^ term_to_string res.res);
         let rebuild t = mk_eq kd t r in
         l, res, rebuild, true
       | None ->
         begin match find_focused_in_term r with
         | Some res ->
+          print_dbg dbg ("Found focused term in right operand:" ^
+                 "\n- left   : " ^ term_to_string l ^
+                 "\n- right  : " ^ term_to_string r ^
+                 "\n- focused: " ^ term_to_string res.res);
           let rebuild t = mk_eq kd l t in
           r, res, rebuild, false
         | None ->
@@ -2119,16 +2129,21 @@ let unfold_in_assert_or_assume dbg ares =
       print_dbg dbg "The assertion is not an equality";
       find_in_whole_term ()
   in
-  print_dbg dbg ("Found subterm in assertion/assumption:\n" ^ term_to_string subterm);
+  print_dbg dbg ("Found subterm in assertion/assumption:\n" ^
+                 "- subterm: " ^ term_to_string subterm ^ "\n" ^
+                 "- focused term: " ^ term_to_string unf_res.res);
   (* Unfold the term *)
   let ge1, unf_tm =
     match inspect unf_res.res with
     | Tv_FVar fv ->
       (* The easy case: just use the normalizer *)
+      print_dbg dbg ("The focused term is a top identifier: " ^ fv_to_string fv);
       let fname = flatten_name (inspect_fv fv) in
-      let unf_tm = norm_term_env ares.ge.env [delta_only [fname]] subterm in
-      ares.ge, rebuild unf_tm
-    | Tv_Var bv -> 
+      let subterm' = norm_term_env ares.ge.env [delta_only [fname]] subterm in
+      print_dbg dbg ("Normalized subterm: " ^ term_to_string subterm');
+      ares.ge, subterm'
+    | Tv_Var bv ->
+      print_dbg dbg ("The focused term is a bound variable: " ^ bv_to_string bv);
       (* We need to find out how to unfold this binder: look for an equality
        * given by an assertion/assumption or for a pure let-binding defining
        * this equality *)
@@ -2155,6 +2170,7 @@ let unfold_in_assert_or_assume dbg ares =
   in
   (* Create the assertions to output *)
   let final_assert = rebuild unf_tm in
+  print_dbg dbg ("-> Final assertion:\n" ^ term_to_string final_assert);
   let asserts =
     if insert_before then mk_assertions [final_assert] [] else mk_assertions [] [final_assert]
   in
@@ -2170,5 +2186,3 @@ let pp_unfold_in_assert_or_assume dbg () =
   | _ ->
     let gstr = term_to_string (cur_goal ()) in
     mfail ("Could not find a focused assert in the current goal: " ^ gstr)
-
-
