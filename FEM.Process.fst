@@ -128,7 +128,6 @@ let print_binder_info (full : bool) (b : binder) : Tac unit =
 let print_binders_info (full : bool) (e:env) : Tac unit =
   iter (print_binder_info full) (binders_of_env e)
 
-// TODO: remove
 let acomp_to_string (c:comp) : Tot string =
   match inspect_comp c with
   | C_Total ret decr ->
@@ -456,11 +455,20 @@ noeq type typ_or_comp =
 | TC_Comp : v:comp -> m:list (bv & bv) -> typ_or_comp
 
 /// Compute a ``typ_or_comp`` from the type of a term
-val safe_typ_or_comp : env -> term -> Tac (option typ_or_comp)
-let safe_typ_or_comp e t =
+val safe_typ_or_comp : bool -> env -> term ->
+                       Tac (opt:option typ_or_comp{Some? opt ==> TC_Comp? (Some?.v opt)})
+let safe_typ_or_comp dbg e t =
   match safe_tcc e t with
-  | None -> None
-  | Some c -> Some (TC_Comp c [])
+  | None ->
+    print_dbg dbg ("[> safe_typ_or_comp:" ^
+                   "\n-term: " ^ term_to_string t ^
+                   "\n-comp: None");
+    None
+  | Some c ->
+    print_dbg dbg ("[> safe_typ_or_comp:" ^
+                   "\n-term: " ^ term_to_string t ^
+                   "\n-comp: " ^ acomp_to_string c);
+    Some (TC_Comp c [])
 
 /// Update the current ``typ_or_comp`` before going into the body of an abstraction
 /// Any new binder needs to be added to the current environment (otherwise we can't,
@@ -557,7 +565,7 @@ let rec explore_term dbg #a f x ge0 pl0 c0 t0 =
     | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> x0, Continue
     | Tv_App hd (a,qual) ->
       (* Explore the argument - we update the target typ_or_comp when doing so *)
-      let a_c = safe_typ_or_comp ge0.env a in
+      let a_c = safe_typ_or_comp dbg ge0.env a in
       let x1, flag1 = explore_term dbg f x0 ge0 pl1 a_c a in
       (* Explore the head - no type information here: we can compute it,
        * but it seems useless (or maybe use it only if it is not Total) *)
@@ -607,7 +615,7 @@ let rec explore_term dbg #a f x ge0 pl0 c0 t0 =
         else x0, flag
       in
       (* Explore the scrutinee *)
-      let scrut_c = safe_typ_or_comp ge0.env scrutinee in
+      let scrut_c = safe_typ_or_comp dbg ge0.env scrutinee in
       let x1 = explore_term dbg #a f x0 ge0 pl1 scrut_c scrutinee in
       (* Explore the branches *)
       fold_left explore_branch x1 branches
@@ -649,8 +657,8 @@ and explore_pattern dbg #a f x ge0 pat =
     ge1, x, Continue
 
 /// Returns the list of variables free in a term
-val free_in : term -> Tac (list bv)
-let free_in t =
+val free_in : bool -> term -> Tac (list bv)
+let free_in dbg t =
   let same_name (bv1 bv2 : bv) : Tot bool =
     name_of_bv bv1 = name_of_bv bv2
   in
@@ -672,13 +680,13 @@ let free_in t =
   in
   let e = top_env () in (* we actually don't care about the environment *)
   let ge = mk_genv e [] [] in
-  List.Tot.rev (fst (explore_term false update_free [] ge [] None t))
+  List.Tot.rev (fst (explore_term dbg update_free [] ge [] None t))
 
 /// Returns the list of abstract variables appearing in a term, in the order in
 /// which they were introduced in the context.
-val abs_free_in : genv -> term -> Tac (list bv)
-let abs_free_in ge t =
-  let fvl = free_in t in
+val abs_free_in : bool -> genv -> term -> Tac (list bv)
+let abs_free_in dbg ge t =
+  let fvl = free_in dbg t in
   let absl = List.rev (genv_abstract_bvs ge) in
   let is_free_in_term bv =
     Some? (List.Tot.find (bv_eq bv) fvl)
@@ -1329,6 +1337,7 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
 /// expression.
 val eterm_info_to_assertions :
      dbg:bool
+  -> with_goal:bool
   -> ge:genv
   -> t:term
   -> is_let:bool (* the term is the bound expression in a let binding *)
@@ -1338,7 +1347,7 @@ val eterm_info_to_assertions :
   -> opt_c:option typ_or_comp ->
   Tac (genv & assertions)
 
-let eterm_info_to_assertions dbg ge t is_let is_assert info bind_var opt_c =
+let eterm_info_to_assertions dbg with_goal ge t is_let is_assert info bind_var opt_c =
   print_dbg dbg "[> eterm_info_to_assertions";
   (* Introduce additional variables to instantiate the return type refinement,
    * the precondition, the postcondition and the goal *)
@@ -1370,14 +1379,13 @@ let eterm_info_to_assertions dbg ge t is_let is_assert info bind_var opt_c =
   if is_assert then
     begin
     print_dbg dbg "The term is an assert: only keep the precondition";
-    ge1, { pres = opt_cons pre_prop []; posts = [] }  
+    ge1, { pres = opt_cons pre_prop []; posts = [] }
     end
   else begin
     (* Generate propositions from the target computation (pre, post, type cast) *)
     let ge2, gpre_prop, gcast_props, gpost_prop =
-      begin match opt_c with
-      | None -> ge1, None, [], None
-      | Some c ->
+      begin match opt_c, with_goal with
+      | Some c, true ->
         let ei = typ_or_comp_to_effect_info ge1 c in
         print_dbg dbg ("- target effect: " ^ effect_info_to_string ei);
         print_dbg dbg ("- global unfilt. pre: " ^ option_to_string term_to_string ei.ei_pre);
@@ -1389,7 +1397,7 @@ let eterm_info_to_assertions dbg ge t is_let is_assert info bind_var opt_c =
           begin match ei.ei_pre with
           | None -> None
           | Some pre ->
-            let abs_vars = abs_free_in ge1 pre in
+            let abs_vars = abs_free_in dbg ge1 pre in
             if Cons? abs_vars then
               begin
               print_dbg dbg "Dropping the global precondition because of shadowed variables";
@@ -1440,6 +1448,7 @@ let eterm_info_to_assertions dbg ge t is_let is_assert info bind_var opt_c =
         print_dbg dbg ("- global post prop: " ^ option_to_string term_to_string gpost_prop);
         (* Return type: TODO *)
         ge2, gpre_prop, gcast_props, gpost_prop
+      | _, _ -> ge1, None, [], None
       end <: Tac _
     in
     (* Generate the propositions: *)
@@ -1551,7 +1560,7 @@ let printout_string (prefix data:string) : Tac unit =
 
 let printout_term (ge:genv) (prefix:string) (t:term) : Tac unit =
   (* We need to look for abstract variables and abstract them away *)
-  let abs = abs_free_in ge t in
+  let abs = abs_free_in false ge t in
   let abs_binders = List.Tot.map mk_binder abs in
   let abs_terms = map (fun bv -> pack (Tv_Var bv)) abs in
   let t = mk_abs t abs_binders in
@@ -1625,6 +1634,7 @@ let unsquash_equality (t:term) : Tac (option (term & term)) =
   | _ -> None
   end
 
+#push-options "--ifuel 2"
 let pp_explore (dbg : bool)
                (#a : Type0)
                (f : explorer a)
@@ -1635,13 +1645,14 @@ let pp_explore (dbg : bool)
   print_dbg dbg ("[> pp_explore:\n" ^ term_to_string g);
   begin match unsquash_equality g with
   | Some (l, _) ->
-    let c = safe_typ_or_comp e l in
+    let c = safe_typ_or_comp dbg e l in
     let ge = mk_genv e [] [] in
     print_dbg dbg ("[> About to explore term:\n" ^ term_to_string l);
     let x = explore_term dbg #a f x ge [] c l in
     trefl()
   | _ -> mfail "pp_explore: not a squashed equality"
   end
+#pop-options
 
 /// This function goes through the goal, which is presumed to be a squashed equality,
 /// and prints all the subterms of its left operand. Very useful for debugging.
@@ -1738,7 +1749,7 @@ let find_focused_term_in_current_goal dbg =
   print_dbg dbg ("[> find_focused_assert_in_current_goal:\n" ^ term_to_string g);
   begin match unsquash_equality g with
   | Some (l, _) ->
-    let c = safe_typ_or_comp e l in
+    let c = safe_typ_or_comp dbg e l in
     let ge = mk_genv e [] [] in
     print_dbg dbg ("[> About to explore term:\n" ^ term_to_string l);
     begin match find_focused_term dbg ge [] c l with
@@ -1774,8 +1785,10 @@ let find_focused_assert_in_current_goal dbg =
 /// Aanalyze a term in order to print propertly instantiated pre/postconditions
 /// and type conditions.
 
-val analyze_effectful_term : bool -> exploration_result term -> Tac unit
-let analyze_effectful_term dbg res =
+/// with_globals states whether to analyze the target pre/post together with the
+/// focused term.
+val analyze_effectful_term : bool -> bool -> exploration_result term -> Tac unit
+let analyze_effectful_term dbg with_goal res =
   let ge = res.ge in
   let opt_c = res.tgt_comp in
   (* Analyze the effectful term and check whether it is a 'let' or not *)
@@ -1819,7 +1832,7 @@ let analyze_effectful_term dbg res =
   (* TODO: use bv rather than term for ret_arg *)
   let ret_arg = opt_tapply (fun x -> pack (Tv_Var x)) ret_bv in
   let ge2, asserts =
-    eterm_info_to_assertions dbg ge1 studied_term is_let is_assert info ret_arg opt_c in
+    eterm_info_to_assertions dbg with_goal ge1 studied_term is_let is_assert info ret_arg opt_c in
   (* Simplify and filter *)
   let asserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
   (* Introduce fresh variables for the shadowed ones and substitute *)
@@ -1832,10 +1845,10 @@ let analyze_effectful_term dbg res =
   (* Print *)
   printout_assertions ge3 "ainfo" asserts
 
-val pp_analyze_effectful_term : bool -> unit -> Tac unit
-let pp_analyze_effectful_term dbg () =
+val pp_analyze_effectful_term : bool -> bool -> unit -> Tac unit
+let pp_analyze_effectful_term dbg with_goal () =
   match find_focused_term_in_current_goal dbg with
-  | Some res -> analyze_effectful_term dbg res; trefl()
+  | Some res -> analyze_effectful_term dbg with_goal res; trefl()
   | _ -> mfail "Could not find a focused term"
 
 (**** Split conjunctions in an assert *)

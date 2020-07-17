@@ -1406,7 +1406,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
                                (fem-subexpr-has-semicol $subexpr))))
   (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit $subexpr
                                                  fem-process-buffer1
-                                                 "FEM.Process.pp_split_assert_conjs false"))
+                                                 "FEM.Process.pp_split_assert_conjs true"))
   ;; We are now in the destination buffer
   ;; Insert the ``focus_on_term`` indicator at the proper place, together
   ;; with an admit after the focused term.
@@ -1473,7 +1473,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
                                (fem-subexpr-has-semicol $subexpr))))
   (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit
                                                  $subexpr fem-process-buffer1
-                                                 "FEM.Process.pp_unfold_in_assert_or_assume false"))
+                                                 "FEM.Process.pp_unfold_in_assert_or_assume true"))
   ;; We are now in the destination buffer
   ;; Insert the ``focus_on_term`` indicators at the proper places, together
   ;; with an admit after the focused term.
@@ -1502,8 +1502,14 @@ Otherwise, the string is made of a number of spaces equal to the column position
                                  (apply-partially #'fem-insert-assert-pre-post--continuation
                                                   $indent-str $beg $end $subexpr))))
 
-(defun fem-insert-assert-pre-post ()
+;; TODO: move
+(defun bool-to-string (B)
+  "Return 'false' if B is nil, 'true' otherwise."
+  (if B "true" "false"))
+
+(defun fem-insert-assert-pre-post (WITH_GOAL)
   "Insert assertions with proof obligations and postconditions around a term.
+If WITH_GOAL is t, also try to insert the global precondition and postconditions.
 TODO: take into account if/match branches"
   (interactive)
   (fem-log-dbg "insert-assert-pre-post")
@@ -1512,7 +1518,7 @@ TODO: take into account if/match branches"
   (let ($next-point $beg $markers $p0 $allow-selection $delimiters $indent $indent-str
         $p1 $p2 $p3 $subexpr $cp1 $cp2
         $is-let-in $has-semicol $current-buffer $insert-admit
-        $cbuffer $subexpr1 $payload)
+        $cbuffer $pp-instr $subexpr1 $payload)
     (setq $beg (fstar-subp--untracked-beginning-position))
     ;; Find markers
     (setq $markers (fem-get-pos-markers))
@@ -1547,8 +1553,11 @@ TODO: take into account if/match branches"
     ;; Remember which is the original buffer
     (setq $cbuffer (current-buffer))
     ;; Copy and start processing the content
+    (setq $pp-instr (concat "FEM.Process.pp_analyze_effectful_term "
+                         (bool-to-string fem-debug) " "
+                         (bool-to-string WITH_GOAL)))
     (setq $subexpr1 (fem-copy-def-for-meta-process $p3 $insert-admit $subexpr fem-process-buffer1
-                                                  "FEM.Process.pp_analyze_effectful_term false"))
+                                                  $pp-instr))
     ;; We are now in the destination buffer
     ;; Modify the copied content and leave the pointer at the end of the region
     ;; to send to F*
@@ -1568,6 +1577,16 @@ TODO: take into account if/match branches"
                                    (apply-partially #'fem-insert-assert-pre-post--continuation
                                                     $indent-str $p1 $p2 $subexpr))))
 
+(defun fem-analyze-effectful-term ()
+  "Insert assertions with proof obligations and postconditions around a term."
+  (interactive)
+  (fem-insert-assert-pre-post nil))
+
+(defun fem-analyze-effectful-term-with-goal ()
+ "Do the same as fem-analyze-effectful-term but also include global pre/postcondition."
+  (interactive)
+  (fem-insert-assert-pre-post t))
+
 ;; Key bindings
 ;;(global-set-key (kbd "C-c C-e C-r") 'fem-roll-admit)
 (global-set-key (kbd "C-x C-a") 'fem-roll-admit)
@@ -1576,9 +1595,13 @@ TODO: take into account if/match branches"
 (global-set-key (kbd "C-S-a") 'fem-switch-assert-assume-in-current-line)
 
 (global-set-key (kbd "C-c C-e C-i") 'fem-insert-pos-markers)
-(global-set-key (kbd "C-c C-e C-e") 'fem-insert-assert-pre-post)
+;;(global-set-key (kbd "C-c C-e C-e") 'fem-insert-assert-pre-post)
+(global-set-key (kbd "C-c C-e C-e") 'fem-analyze-effectful-term)
+(global-set-key (kbd "C-c C-e C-g") 'fem-analyze-effectful-term-with-goal)
 (global-set-key (kbd "C-c C-e C-s") 'fem-split-assert-assume-conjuncts)
 (global-set-key (kbd "C-c C-e C-u") 'fem-unfold-in-assert-assume)
+
+(setq message-log-max 30000)
 
 (provide 'fstar-extended-mode)
 ;;; fstar-extended-mode.el ends here
