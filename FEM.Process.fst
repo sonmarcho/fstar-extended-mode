@@ -950,6 +950,14 @@ val opt_mk_app_norm : genv -> option term -> list term -> Tac (option term)
 let opt_mk_app_norm ge opt_t params =
   opt_tapply (fun t -> mk_app_norm ge t params) opt_t
 
+// TODO: remove
+let rec unzip #a #b (l : list (a & b)) : Tot (list a & list b) =
+  match l with
+  | [] -> ([],[])
+  | (hd1,hd2)::tl ->
+       let (tl1,tl2) = unzip tl in
+       (hd1::tl1,hd2::tl2)
+
 /// Perform a variable substitution in a term
 val apply_subst : env -> term -> list (bv & term) -> Tac term
 let apply_subst e t subst =
