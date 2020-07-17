@@ -1869,6 +1869,7 @@ let analyze_effectful_term dbg with_goal res =
   (* Print *)
   printout_assertions ge3 "ainfo" asserts
 
+[@plugin]
 val pp_analyze_effectful_term : bool -> bool -> unit -> Tac unit
 let pp_analyze_effectful_term dbg with_goal () =
   match find_focused_term_in_current_goal dbg with
@@ -1932,6 +1933,7 @@ let split_assert_conjs dbg res =
   (* Print *)
   printout_assertions ge0 "ainfo" asserts
 
+[@plugin]
 val pp_split_assert_conjs : bool -> unit -> Tac unit
 let pp_split_assert_conjs dbg () =
   match find_focused_assert_in_current_goal dbg with
@@ -2216,6 +2218,7 @@ let unfold_in_assert_or_assume dbg ares =
   (* Output *)
   printout_assertions ge2 "ainfo" asserts
 
+[@plugin]
 val pp_unfold_in_assert_or_assume : bool -> unit -> Tac unit
 let pp_unfold_in_assert_or_assume dbg () =
   match find_focused_assert_in_current_goal dbg with
