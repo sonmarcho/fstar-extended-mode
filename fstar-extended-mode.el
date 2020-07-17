@@ -78,9 +78,7 @@
 
 (define-error 'fstar-meta-parsing "Error while parsing F*")
 
-(defvar fem-debug
-  "Toggle debug mode"
-  t)
+(defvar fem-debug nil "Activvates debug mode")
 
 (defun fem-log-msg (format-string &rest format-params)
   "Log a message in the log buffer.
@@ -1360,11 +1358,15 @@ Otherwise, the string is made of a number of spaces equal to the column position
           (buffer-substring-no-properties $ip1 $ip2)
         (make-string $indent ? )))))
 
+(defun bool-to-string (B)
+  "Return 'false' if B is nil, 'true' otherwise."
+  (if B "true" "false"))
+
 (defun fem-split-assert-assume-conjuncts ()
   "Split the conjunctions in an assertion/assumption."
   (interactive)
   (let ($markers $p0 $tbeg $passert $a-beg $a-end $p-beg $p-end
-        $subexpr $subexpr1 $indent-str $beg $end $query-end $insert-admit
+        $subexpr $instr $subexpr1 $indent-str $beg $end $query-end $insert-admit
         $cbuffer $prefix $prefix-length $payload)
   (fem-log-dbg "split-assert-conjuncts")
   ;; Sanity check
@@ -1404,9 +1406,10 @@ Otherwise, the string is made of a number of spaces equal to the column position
   (setq $insert-admit (and (not $markers)
                            (or (fem-subexpr-is-let-in $subexpr)
                                (fem-subexpr-has-semicol $subexpr))))
+  (setq $instr (concat "FEM.Process.pp_split_assert_conjs " (bool-to-string fem-debug)))
   (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit $subexpr
                                                  fem-process-buffer1
-                                                 "FEM.Process.pp_split_assert_conjs true"))
+                                                 $instr))
   ;; We are now in the destination buffer
   ;; Insert the ``focus_on_term`` indicator at the proper place, together
   ;; with an admit after the focused term.
@@ -1432,7 +1435,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
   "Unfold an identifier in an assertion/assumption."
   (interactive)
   (let ($markers $p0 $id $tbeg $passert $a-beg $a-end $p-beg $p-end
-        $subexpr $subexpr1 $shift $indent-str $beg $end $cbuffer
+        $subexpr $instr $subexpr1 $shift $indent-str $beg $end $cbuffer
         $query-end $insert-admit $payload $insert-shift $insert-and-shift)
   (fem-log-dbg "unfold-in-assert-assume")
   ;; Sanity check
@@ -1471,9 +1474,10 @@ Otherwise, the string is made of a number of spaces equal to the column position
   (setq $insert-admit (and (not $markers)
                            (or (fem-subexpr-is-let-in $subexpr)
                                (fem-subexpr-has-semicol $subexpr))))
+  (setq $instr (concat "FEM.Process.pp_unfold_in_assert_or_assume " (bool-to-string fem-debug)))
   (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit
                                                  $subexpr fem-process-buffer1
-                                                 "FEM.Process.pp_unfold_in_assert_or_assume true"))
+                                                 $instr))
   ;; We are now in the destination buffer
   ;; Insert the ``focus_on_term`` indicators at the proper places, together
   ;; with an admit after the focused term.
@@ -1501,11 +1505,6 @@ Otherwise, the string is made of a number of spaces equal to the column position
   (fem-query-fstar-on-buffer-content $query-end $payload
                                  (apply-partially #'fem-insert-assert-pre-post--continuation
                                                   $indent-str $beg $end $subexpr))))
-
-;; TODO: move
-(defun bool-to-string (B)
-  "Return 'false' if B is nil, 'true' otherwise."
-  (if B "true" "false"))
 
 (defun fem-insert-assert-pre-post (WITH_GOAL)
   "Insert assertions with proof obligations and postconditions around a term.
@@ -1600,8 +1599,6 @@ TODO: take into account if/match branches"
 (global-set-key (kbd "C-c C-e C-g") 'fem-analyze-effectful-term-with-goal)
 (global-set-key (kbd "C-c C-e C-s") 'fem-split-assert-assume-conjuncts)
 (global-set-key (kbd "C-c C-e C-u") 'fem-unfold-in-assert-assume)
-
-(setq message-log-max 30000)
 
 (provide 'fstar-extended-mode)
 ;;; fstar-extended-mode.el ends here
