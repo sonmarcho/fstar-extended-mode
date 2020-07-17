@@ -528,9 +528,17 @@ let explorer (a : Type) =
   a -> genv -> list (genv & term_view) -> option typ_or_comp -> term_view ->
   Tac (a & ctrl_flag)
 
+// TODO: use more
+let bind_expl (#a : Type) (x : a) (f1 f2 : a -> Tac (a & ctrl_flag)) : Tac (a & ctrl_flag) =
+  let x1, flag1 = f1 x in
+  if flag1 = Continue then
+    f2 x1
+  else x1, convert_ctrl_flag flag1  
+
 // TODO: change the signature to move the dbg flag
 val explore_term :
      dbg : bool
+  -> dfs : bool (* depth-first search *)
   -> #a : Type0
   -> f : explorer a
   -> x : a
@@ -544,6 +552,7 @@ val explore_term :
 
 val explore_pattern :
      dbg : bool
+  -> dfs : bool (* depth-first search *)
   -> #a : Type0
   -> f : explorer a
   -> x : a
@@ -552,7 +561,7 @@ val explore_pattern :
   Tac (genv & a & ctrl_flag)
 
 (* TODO: carry around the list of encompassing terms *)
-let rec explore_term dbg #a f x ge0 pl0 c0 t0 =
+let rec explore_term dbg dfs #a f x ge0 pl0 c0 t0 =
   if dbg then
     begin
     print ("[> explore_term: " ^ term_construct t0 ^ ":\n" ^ term_to_string t0)
@@ -566,39 +575,46 @@ let rec explore_term dbg #a f x ge0 pl0 c0 t0 =
     | Tv_App hd (a,qual) ->
       (* Explore the argument - we update the target typ_or_comp when doing so *)
       let a_c = safe_typ_or_comp dbg ge0.env a in
-      let x1, flag1 = explore_term dbg f x0 ge0 pl1 a_c a in
+      let x1, flag1 = explore_term dbg dfs f x0 ge0 pl1 a_c a in
       (* Explore the head - no type information here: we can compute it,
        * but it seems useless (or maybe use it only if it is not Total) *)
       if flag1 = Continue then
-        explore_term dbg f x1 ge0 pl1 None hd
+        explore_term dbg dfs f x1 ge0 pl1 None hd
       else x1, convert_ctrl_flag flag1
     | Tv_Abs br body ->
       let ge1 = genv_push_binder ge0 br false None in
       let e2, c1 = abs_update_opt_typ_or_comp br c0 ge1.env in
       let ge2 = { ge1 with env = e2 } in
-      explore_term dbg f x0 ge2 pl1 c1 body
+      explore_term dbg dfs f x0 ge2 pl1 c1 body
     | Tv_Arrow br c0 -> x0, Continue (* TODO: we might want to explore that *)
     | Tv_Type () -> x0, Continue
     | Tv_Refine bv ref ->
       let bvv = inspect_bv bv in
-      let x1, flag1 = explore_term dbg f x0 ge0 pl1 None bvv.bv_sort in
+      let x1, flag1 = explore_term dbg dfs f x0 ge0 pl1 None bvv.bv_sort in
       if flag1 = Continue then
         let ge1 = genv_push_bv ge0 bv false None in
-        explore_term dbg f x1 ge1 pl1 None ref
+        explore_term dbg dfs f x1 ge1 pl1 None ref
       else x1, convert_ctrl_flag flag1
     | Tv_Const _ -> x0, Continue
     | Tv_Uvar _ _ -> x0, Continue
     | Tv_Let recf attrs bv def body ->
-      (* Explore the binding definition - for the target computation: initially we
+      (* Binding definition exploration - for the target computation: initially we
        * used the type of the definition, however it is often unnecessarily complex.
        * Now, we use the type of the binder used for the binding. *)
       let def_c = Some (TC_Typ (type_of_bv bv) []) in
-      let x1, flag1 = explore_term dbg f x0 ge0 pl1 def_c def in
-      if flag1 = Continue then
-        (* Explore the next subterm *)
-        let ge1 = genv_push_bv ge0 bv false (Some def) in
-        explore_term dbg f x1 ge1 pl1 c0 body
-      else x1, convert_ctrl_flag flag1
+//      let x1, flag1 = explore_term dbg f x0 ge0 pl1 def_c def in
+      let explore_def x = explore_term dbg dfs f x ge0 pl1 def_c def in
+      (* Exploration of the following instructions *)
+      let ge1 = genv_push_bv ge0 bv false (Some def) in
+      let explore_next x = explore_term dbg dfs f x ge1 pl1 c0 body in
+      (* Perform the exploration in the proper order *)
+      let expl1, expl2 = if dfs then explore_next, explore_def else explore_def, explore_next in
+      bind_expl x0 expl1 expl2
+      // if flag1 = Continue then
+      //   (* Explore the next subterm *)
+      //   let ge1 = genv_push_bv ge0 bv false (Some def) in
+      //   explore_term dbg f x1 ge1 pl1 c0 body
+      // else x1, convert_ctrl_flag flag1
     | Tv_Match scrutinee branches ->
       (* Auxiliary function to explore the branches *)
       let explore_branch (x_flag : a & ctrl_flag) (br : branch) : Tac (a & ctrl_flag)=
@@ -606,35 +622,35 @@ let rec explore_term dbg #a f x ge0 pl0 c0 t0 =
         if flag = Continue then
           let pat, branch_body = br in
           (* Explore the pattern *)
-          let ge1, x1, flag1 = explore_pattern dbg #a f x0 ge0 pat in
+          let ge1, x1, flag1 = explore_pattern dbg dfs #a f x0 ge0 pat in
           if flag1 = Continue then
             (* Explore the branch body *)
-            explore_term dbg #a f x1 ge1 pl1 c0 branch_body
+            explore_term dbg dfs #a f x1 ge1 pl1 c0 branch_body
           else x1, convert_ctrl_flag flag1
         (* Don't convert the flag *)
         else x0, flag
       in
       (* Explore the scrutinee *)
       let scrut_c = safe_typ_or_comp dbg ge0.env scrutinee in
-      let x1 = explore_term dbg #a f x0 ge0 pl1 scrut_c scrutinee in
+      let x1 = explore_term dbg dfs #a f x0 ge0 pl1 scrut_c scrutinee in
       (* Explore the branches *)
       fold_left explore_branch x1 branches
     | Tv_AscribedT e ty tac ->
       let c1 = Some (TC_Typ ty []) in
-      let x1, flag = explore_term dbg #a f x0 ge0 pl1 None ty in
+      let x1, flag = explore_term dbg dfs #a f x0 ge0 pl1 None ty in
       if flag = Continue then
-        explore_term dbg #a f x1 ge0 pl1 c1 e
+        explore_term dbg dfs #a f x1 ge0 pl1 c1 e
       else x1, convert_ctrl_flag flag
     | Tv_AscribedC e c1 tac ->
       (* TODO: explore the comp *)
-      explore_term dbg #a f x0 ge0 pl1 (Some (TC_Comp c1 [])) e
+      explore_term dbg dfs #a f x0 ge0 pl1 (Some (TC_Comp c1 [])) e
     | _ ->
       (* Unknown *)
       x0, Continue
     end
   else x0, convert_ctrl_flag flag
 
-and explore_pattern dbg #a f x ge0 pat =
+and explore_pattern dbg dfs #a f x ge0 pat =
   match pat with
   | Pat_Constant _ -> ge0, x, Continue
   | Pat_Cons fv patterns ->
@@ -642,7 +658,7 @@ and explore_pattern dbg #a f x ge0 pat =
       let ge0, x, flag = ge_x_flag in
       let pat1, _ = pat in
       if flag = Continue then
-        explore_pattern dbg #a f x ge0 pat1
+        explore_pattern dbg dfs #a f x ge0 pat1
       else
         (* Don't convert the flag *)
         ge0, x, flag
@@ -680,7 +696,7 @@ let free_in dbg t =
   in
   let e = top_env () in (* we actually don't care about the environment *)
   let ge = mk_genv e [] [] in
-  List.Tot.rev (fst (explore_term dbg update_free [] ge [] None t))
+  List.Tot.rev (fst (explore_term dbg false update_free [] ge [] None t))
 
 /// Returns the list of abstract variables appearing in a term, in the order in
 /// which they were introduced in the context.
@@ -1635,7 +1651,7 @@ let unsquash_equality (t:term) : Tac (option (term & term)) =
   end
 
 #push-options "--ifuel 2"
-let pp_explore (dbg : bool)
+let pp_explore (dbg dfs : bool)
                (#a : Type0)
                (f : explorer a)
                (x : a) :
@@ -1648,7 +1664,7 @@ let pp_explore (dbg : bool)
     let c = safe_typ_or_comp dbg e l in
     let ge = mk_genv e [] [] in
     print_dbg dbg ("[> About to explore term:\n" ^ term_to_string l);
-    let x = explore_term dbg #a f x ge [] c l in
+    let x = explore_term dbg dfs #a f x ge [] c l in
     trefl()
   | _ -> mfail "pp_explore: not a squashed equality"
   end
@@ -1661,7 +1677,7 @@ let pp_explore_print_goal () =
   let f : explorer unit =
     fun _ _ _ _ _ -> ((), Continue)
   in
-  pp_explore true f ()
+  pp_explore true false f ()
 
 /// Check for meta-identifiers. Note that we can't simply use ``term_eq`` which
 /// sometimes unexpectedly fails (maybe because of information hidden to Meta-F*)
@@ -1724,12 +1740,12 @@ let find_predicated_term_explorer #a pred dbg acc ge pl opt_c t =
   | Some ft -> Some (mk_exploration_result ge pl opt_c ft), Abort
   | None -> None, Continue
 
-val find_predicated_term : #a:Type0 -> pred_explorer a -> bool ->
+val find_predicated_term : #a:Type0 -> pred_explorer a -> bool -> bool ->
                            genv -> list (genv & term_view) ->
                            option typ_or_comp -> term ->
                            Tac (option (exploration_result a))
-let find_predicated_term #a pred dbg ge pl opt_c t =
-  fst (explore_term dbg #(option (exploration_result a))
+let find_predicated_term #a pred dbg dfs ge pl opt_c t =
+  fst (explore_term dbg dfs #(option (exploration_result a))
                     (find_predicated_term_explorer #a pred dbg)
                     None ge pl opt_c t)
 
@@ -1740,7 +1756,7 @@ let _is_focused_term_explorer ge pl opt_c tv =
 val find_focused_term : bool -> genv -> list (genv & term_view) -> option typ_or_comp -> term ->
                         Tac (option (exploration_result term))
 let find_focused_term dbg ge pl opt_c t =
-  find_predicated_term #term _is_focused_term_explorer dbg ge pl opt_c t
+  find_predicated_term #term _is_focused_term_explorer dbg true ge pl opt_c t
 
 val find_focused_term_in_current_goal : bool -> Tac (option (exploration_result term))
 let find_focused_term_in_current_goal dbg =
