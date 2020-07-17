@@ -1506,7 +1506,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
                                  (apply-partially #'fem-insert-assert-pre-post--continuation
                                                   $indent-str $beg $end $subexpr))))
 
-(defun fem-insert-assert-pre-post (WITH_GOAL)
+(defun fem-analyze-effectful-term (WITH_GOAL)
   "Insert assertions with proof obligations and postconditions around a term.
 If WITH_GOAL is t, also try to insert the global precondition and postconditions.
 TODO: take into account if/match branches"
@@ -1576,15 +1576,15 @@ TODO: take into account if/match branches"
                                    (apply-partially #'fem-insert-assert-pre-post--continuation
                                                     $indent-str $p1 $p2 $subexpr))))
 
-(defun fem-analyze-effectful-term ()
+(defun fem-analyze-effectful-term-no-goal ()
   "Insert assertions with proof obligations and postconditions around a term."
   (interactive)
-  (fem-insert-assert-pre-post nil))
+  (fem-analyze-effectful-term nil))
 
 (defun fem-analyze-effectful-term-with-goal ()
  "Do the same as fem-analyze-effectful-term but also include global pre/postcondition."
   (interactive)
-  (fem-insert-assert-pre-post t))
+  (fem-analyze-effectful-term t))
 
 ;; Key bindings
 ;;(global-set-key (kbd "C-c C-e C-r") 'fem-roll-admit)
@@ -1595,7 +1595,7 @@ TODO: take into account if/match branches"
 
 (global-set-key (kbd "C-c C-e C-i") 'fem-insert-pos-markers)
 ;;(global-set-key (kbd "C-c C-e C-e") 'fem-insert-assert-pre-post)
-(global-set-key (kbd "C-c C-e C-e") 'fem-analyze-effectful-term)
+(global-set-key (kbd "C-c C-e C-e") 'fem-analyze-effectful-term-no-goal)
 (global-set-key (kbd "C-c C-e C-g") 'fem-analyze-effectful-term-with-goal)
 (global-set-key (kbd "C-c C-e C-s") 'fem-split-assert-assume-conjuncts)
 (global-set-key (kbd "C-c C-e C-u") 'fem-unfold-in-assert-assume)
