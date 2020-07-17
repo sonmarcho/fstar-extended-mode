@@ -1753,10 +1753,10 @@ val _is_focused_term_explorer : pred_explorer term
 let _is_focused_term_explorer ge pl opt_c tv =
   is_focused_term tv
 
-val find_focused_term : bool -> genv -> list (genv & term_view) -> option typ_or_comp -> term ->
+val find_focused_term : bool -> bool -> genv -> list (genv & term_view) -> option typ_or_comp -> term ->
                         Tac (option (exploration_result term))
-let find_focused_term dbg ge pl opt_c t =
-  find_predicated_term #term _is_focused_term_explorer dbg true ge pl opt_c t
+let find_focused_term dbg dfs ge pl opt_c t =
+  find_predicated_term #term _is_focused_term_explorer dbg dfs ge pl opt_c t
 
 val find_focused_term_in_current_goal : bool -> Tac (option (exploration_result term))
 let find_focused_term_in_current_goal dbg =
@@ -1768,7 +1768,7 @@ let find_focused_term_in_current_goal dbg =
     let c = safe_typ_or_comp dbg e l in
     let ge = mk_genv e [] [] in
     print_dbg dbg ("[> About to explore term:\n" ^ term_to_string l);
-    begin match find_focused_term dbg ge [] c l with
+    begin match find_focused_term dbg true ge [] c l with
     | Some res ->
       print_dbg dbg ("[> Found focused term:\n" ^ term_to_string res.res);
       Some res
@@ -2112,7 +2112,7 @@ let unfold_in_assert_or_assume dbg ares =
   (* Find the focused term inside the assert, and on which side of the
    * equality if the assert is an equality *)
   let find_focused_in_term t =
-    find_focused_term dbg ares.ge ares.parents ares.tgt_comp t
+    find_focused_term dbg false ares.ge ares.parents ares.tgt_comp t
   in
   let find_in_whole_term () : Tac _ =
     match find_focused_in_term ares.res with
