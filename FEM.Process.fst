@@ -673,8 +673,8 @@ and explore_pattern dbg dfs #a f x ge0 pat =
     ge1, x, Continue
 
 /// Returns the list of variables free in a term
-val free_in : bool -> term -> Tac (list bv)
-let free_in dbg t =
+val free_in : term -> Tac (list bv)
+let free_in t =
   let same_name (bv1 bv2 : bv) : Tot bool =
     name_of_bv bv1 = name_of_bv bv2
   in
@@ -696,13 +696,13 @@ let free_in dbg t =
   in
   let e = top_env () in (* we actually don't care about the environment *)
   let ge = mk_genv e [] [] in
-  List.Tot.rev (fst (explore_term dbg false update_free [] ge [] None t))
+  List.Tot.rev (fst (explore_term false false update_free [] ge [] None t))
 
 /// Returns the list of abstract variables appearing in a term, in the order in
 /// which they were introduced in the context.
-val abs_free_in : bool -> genv -> term -> Tac (list bv)
-let abs_free_in dbg ge t =
-  let fvl = free_in dbg t in
+val abs_free_in : genv -> term -> Tac (list bv)
+let abs_free_in ge t =
+  let fvl = free_in t in
   let absl = List.rev (genv_abstract_bvs ge) in
   let is_free_in_term bv =
     Some? (List.Tot.find (bv_eq bv) fvl)
@@ -1421,7 +1421,7 @@ let eterm_info_to_assertions dbg with_goal ge t is_let is_assert info bind_var o
           begin match ei.ei_pre with
           | None -> None
           | Some pre ->
-            let abs_vars = abs_free_in dbg ge1 pre in
+            let abs_vars = abs_free_in ge1 pre in
             if Cons? abs_vars then
               begin
               print_dbg dbg "Dropping the global precondition because of shadowed variables";
@@ -1584,7 +1584,7 @@ let printout_string (prefix data:string) : Tac unit =
 
 let printout_term (ge:genv) (prefix:string) (t:term) : Tac unit =
   (* We need to look for abstract variables and abstract them away *)
-  let abs = abs_free_in false ge t in
+  let abs = abs_free_in ge t in
   let abs_binders = List.Tot.map mk_binder abs in
   let abs_terms = map (fun bv -> pack (Tv_Var bv)) abs in
   let t = mk_abs t abs_binders in
