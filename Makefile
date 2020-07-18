@@ -1,8 +1,22 @@
-# Build
-fstar.exe --cache_checked_modules FEM.Process.fst && fstar.exe --codegen Plugin --extract_module FEM.Process FEM.Process.fst
-
 # Test
-fstar.exe Test1.fst --load FEM.Process --tactics_info
+# fstar.exe Test1.fst --load FEM.Process --tactics_info
 
-# Clean
-rm -f *.ml *.cmxs *.cmi *.cmx *.o
+.PHONY: all
+all: FEM.Process.fst.cmxs
+
+
+.PHONY: FEM.Process.fst
+FEM.Process.fst:
+
+FEM.Process.fst.checked: FEM.Process.fst
+	fstar.exe --cache_checked_modules FEM.Process.fst
+
+FEM_Process.ml: FEM.Process.fst.checked
+	fstar.exe --codegen Plugin --extract_module FEM.Process FEM.Process.fst
+
+.PHONY: FEM.Process.fst.cmxs
+FEM.Process.fst.cmxs: FEM_Process.ml
+
+.PHONY: clean
+clean:
+	rm -f *.ml *.cmxs *.cmi *.cmx *.o *.checked
