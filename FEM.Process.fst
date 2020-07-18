@@ -710,6 +710,12 @@ let abs_free_in ge t =
   let absfree = List.Tot.filter is_free_in_term absl in
   absfree
 
+(*** Simplification *)
+/// Whenever we generate assertions, we simplify them to make them cleaner,
+/// prettier and remove the trivial ones. The normalization steps we apply
+/// are listed below.
+let simpl_norm_steps = [primops; simplify]
+
 (*** Effectful term analysis *)
 /// Analyze a term to retrieve its effectful information
 
@@ -1891,7 +1897,7 @@ let analyze_effectful_term dbg with_goal res =
   let ge2, asserts =
     eterm_info_to_assertions dbg with_goal ge1 studied_term is_let is_assert info ret_arg opt_c in
   (* Simplify and filter *)
-  let asserts = simp_filter_assertions ge2.env [primops; simplify] asserts in
+  let asserts = simp_filter_assertions ge2.env simpl_norm_steps asserts in
   (* Introduce fresh variables for the shadowed ones and substitute *)
   let ge3, asserts = subst_shadowed_with_abs_in_assertions dbg ge2 shadowed_bv asserts in
   (* If not a let, insert all the assertions before the term *)
@@ -1962,7 +1968,7 @@ val split_assert_conjs : bool -> exploration_result term -> Tac unit
 let split_assert_conjs dbg res =
   let ge0 = res.ge in
   (* Simplify the term (it may be an abstraction applied to some parameters) *)
-  let t = norm_term_env ge0.env [primops; simplify] res.res in
+  let t = norm_term_env ge0.env simpl_norm_steps res.res in
   (* Split the conjunctions *)
   let conjs = split_conjunctions t in
   let asserts = mk_assertions conjs [] in
