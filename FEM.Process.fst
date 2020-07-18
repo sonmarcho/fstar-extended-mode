@@ -196,8 +196,8 @@ noeq type genv =
 
 let get_env (e:genv) : env = e.env
 let get_bind_map (e:genv) : bind_map (bool & term) = e.bmap
-let mk_genv env bmap svars : genv =
-  Mkgenv env bmap svars
+let mk_genv env bmap svars : genv = Mkgenv env bmap svars
+let mk_init_genv env : genv = mk_genv env [] []
 
 val genv_to_string : genv -> Tot string
 let genv_to_string ge =
@@ -1607,11 +1607,42 @@ let printout_propositions (ge:genv) (prefix:string) (pl:list proposition) : Tac 
   printout_string (prefix ^ ":num") (string_of_int (List.Tot.length pl));
   iteri print_prop pl
 
-let printout_assertions (ge:genv) (prefix:string) (a:assertions) : Tac unit =
+let printout_error_message (prefix : string) (message : option string) : Tac unit =
+  let msg = match message with | Some msg -> msg | _ -> "" in
+  printout_string (prefix ^ ":error") msg
+
+/// Utility type and function to communicate the results to emacs.
+noeq type export_result =
+| ESuccess : ge:genv -> a:assertions -> export_result
+| EFailure : err:string -> export_result
+
+let printout_result (prefix:string) (res:export_result) :
+  Tac unit =
   print (prefix ^ ":BEGIN");
-  printout_propositions ge (prefix ^ ":pres") a.pres;
-  printout_propositions ge (prefix ^ ":posts") a.posts;
+  (* Note that the emacs commands will always look for fields for the error message
+   * and the pre/post assertions, so we need to generate them, even though they
+   * might be empty. *)
+  let err, ge, pres, posts =
+    match res with
+    | ESuccess ge a -> None, ge, a.pres, a.posts
+    | EFailure err ->
+      let ge = mk_init_genv (top_env ()) in (* dummy environment - will not be used *)
+      Some err, ge, [], []
+  in
+  (* Error message *)
+  printout_error_message prefix err;
+  (* Assertions *)
+  printout_propositions ge (prefix ^ ":pres") pres;
+  printout_propositions ge (prefix ^ ":posts") posts;
   print (prefix ^ ":END")
+
+/// The function to use to export the results in case of success
+let printout_success (ge:genv) (a:assertions) : Tac unit =
+  printout_result "ainfo" (ESuccess ge a)
+
+/// The function to use to communicate failure in case of error
+let printout_failure (err : string) : Tac unit =
+  printout_result "ainfo" (EFailure err)
 
 let _debug_print_var (name : string) (t : term) : Tac unit =
   print ("_debug_print_var: " ^ name ^ ": " ^ term_to_string t);
@@ -1766,7 +1797,8 @@ val find_focused_term : bool -> bool -> genv -> list (genv & term_view) -> optio
 let find_focused_term dbg dfs ge pl opt_c t =
   find_predicated_term #term _is_focused_term_explorer dbg dfs ge pl opt_c t
 
-val find_focused_term_in_current_goal : bool -> Tac (option (exploration_result term))
+/// This function raises a MetaAnalysis exception if it can't find a focused term
+val find_focused_term_in_current_goal : bool -> Tac (exploration_result term)
 let find_focused_term_in_current_goal dbg =
   let g = cur_goal () in
   let e = cur_env () in
@@ -1779,31 +1811,32 @@ let find_focused_term_in_current_goal dbg =
     begin match find_focused_term dbg true ge [] c l with
     | Some res ->
       print_dbg dbg ("[> Found focused term:\n" ^ term_to_string res.res);
-      Some res
-    | None -> None
+      res
+    | None ->
+      mfail ("find_focused_term_in_current_goal: could not find a focused term in the current goal: "
+             ^ term_to_string g)
     end
-  | _ -> mfail "pp_explore: not a squashed equality"
+  | _ -> mfail "find_focused_term_in_current_goal: not a squashed equality"
   end
 
-val find_focused_assert_in_current_goal : bool -> Tac (option (exploration_result term))
+/// This function raises a MetaAnalysis exception if it can't find a focused term
+val find_focused_assert_in_current_goal : bool -> Tac (exploration_result term)
 let find_focused_assert_in_current_goal dbg =
   print_dbg dbg ("[> find_focused_assert_in_current_goal");
-  match find_focused_term_in_current_goal dbg with
-  | Some res ->
-    print_dbg dbg ("[> Found focused term:\n" ^ term_to_string res.res);
-    (* Check that it is an assert or an assume, retrieve the assertion *)
-    let res' = 
-      match inspect res.res with
-      | Tv_Let _ _ bv0 fterm _ ->
-        let ge' = genv_push_bv res.ge bv0 false None in
-        ({ res with res = fterm; ge = ge' })
-      | _ -> res
-    in
-    begin match term_is_assert_or_assume res'.res with
-    | None -> None
-    | Some tm ->  Some ({ res' with res = tm })
-    end
-  | None -> None
+  let res = find_focused_term_in_current_goal dbg in
+  print_dbg dbg ("[> Found focused term:\n" ^ term_to_string res.res);
+  (* Check that it is an assert or an assume, retrieve the assertion *)
+  let res' = 
+    match inspect res.res with
+    | Tv_Let _ _ bv0 fterm _ ->
+      let ge' = genv_push_bv res.ge bv0 false None in
+      ({ res with res = fterm; ge = ge' })
+    | _ -> res
+  in
+  begin match term_is_assert_or_assume res'.res with
+  | None -> mfail ("find_focused_assert_in_current_goal: the found focused term is not an assertion or an assumption:" ^ term_to_string res.res)
+  | Some tm ->  { res' with res = tm }
+  end
 
 (**** Effectful term analysis *)
 /// Aanalyze a term in order to print propertly instantiated pre/postconditions
@@ -1867,14 +1900,17 @@ let analyze_effectful_term dbg with_goal res =
     else  mk_assertions (List.Tot.append asserts.pres asserts.posts) []
   in
   (* Print *)
-  printout_assertions ge3 "ainfo" asserts
+  printout_success ge3 asserts
 
 [@plugin]
 val pp_analyze_effectful_term : bool -> bool -> unit -> Tac unit
 let pp_analyze_effectful_term dbg with_goal () =
-  match find_focused_term_in_current_goal dbg with
-  | Some res -> analyze_effectful_term dbg with_goal res; trefl()
-  | _ -> mfail "Could not find a focused term"
+  try
+    let res = find_focused_term_in_current_goal dbg in
+    analyze_effectful_term dbg with_goal res;
+    trefl()
+  with | MetaAnalysis msg -> printout_failure msg
+       | err -> (* Shouldn't happen, so transmit the exception for debugging *) raise err
 
 (**** Split conjunctions in an assert *)
 /// Split an assert made of conjunctions so that there is one assert per
@@ -1931,16 +1967,17 @@ let split_assert_conjs dbg res =
   let conjs = split_conjunctions t in
   let asserts = mk_assertions conjs [] in
   (* Print *)
-  printout_assertions ge0 "ainfo" asserts
+  printout_success ge0 asserts
 
 [@plugin]
 val pp_split_assert_conjs : bool -> unit -> Tac unit
 let pp_split_assert_conjs dbg () =
-  match find_focused_assert_in_current_goal dbg with
-  | Some res -> split_assert_conjs dbg res; trefl()
-  | _ ->
-    let gstr = term_to_string (cur_goal ()) in
-    mfail ("Could not find a focused assert in the current goal: " ^ gstr)
+  try
+    let res = find_focused_assert_in_current_goal dbg in
+    split_assert_conjs dbg res;
+    trefl()
+  with | MetaAnalysis msg -> printout_failure msg
+       | err -> (* Shouldn't happen, so transmit the exception for debugging *) raise err
 
 (**** Term unfolding in assert *)
 /// Unfolds an identifier in an assert. If the assert is an equality, unfolds
@@ -2216,13 +2253,15 @@ let unfold_in_assert_or_assume dbg ares =
   (* Introduce fresh variables for the shadowed ones and substitute *)
   let ge2, asserts = subst_shadowed_with_abs_in_assertions dbg ge1 None asserts in
   (* Output *)
-  printout_assertions ge2 "ainfo" asserts
+  printout_success ge2 asserts
 
 [@plugin]
 val pp_unfold_in_assert_or_assume : bool -> unit -> Tac unit
 let pp_unfold_in_assert_or_assume dbg () =
-  match find_focused_assert_in_current_goal dbg with
-  | Some res -> unfold_in_assert_or_assume dbg res; trefl()
-  | _ ->
-    let gstr = term_to_string (cur_goal ()) in
-    mfail ("Could not find a focused assert in the current goal: " ^ gstr)
+  try
+    let res = find_focused_assert_in_current_goal dbg in
+    unfold_in_assert_or_assume dbg res;
+    trefl()
+  with | MetaAnalysis msg -> printout_failure msg
+       | err -> (* Shouldn't happen, so transmit the exception for debugging *) raise err
+
