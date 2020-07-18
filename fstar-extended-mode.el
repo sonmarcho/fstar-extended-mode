@@ -70,9 +70,9 @@
   bterm ;; the term binded by the 'let' if of the form 'let _ = _ in'
   )
 
-(cl-defstruct fem-assertions
-  "Counterpart of the F* assertions record type."
-  pres posts)
+(cl-defstruct fem-result
+  "Results exported by F* to the *Messages* buffer"
+  error pres posts)
 
 ;;; Debugging and errors
 
@@ -990,18 +990,24 @@ extracts those assertions."
     (fem-extract-assertion-list-from-buffer prefix id-prop 0 num no-error
                                         LIMIT)))
 
-(defun fem-extract-assertions-from-buffer (prefix id
-                                                   &optional no-error LIMIT)
+(defun fem-extract-error-from-buffer (PREFIX id &optional NO_ERROR lIMIT)
+  "Extracts a (potentially nil) error from the current buffer"
+  (fem-log-dbg "extract-error-from-buffer:\n\- prefix: %s\n- id: %s" PREFIX id)
+  (let (($error (fem-extract-string-from-buffer PREFIX (concat id ":error"))))
+    (if (string-equal $error "") nil $error)))
+  
+
+(defun fem-extract-result-from-buffer (PREFIX id &optional NO_ERROR LIMIT)
   "Extracts an assertion structure from the current buffer"
-  (fem-log-dbg "extract-assertions-from-buffer:\n\
-- prefix: %s\n- id: %s" prefix id)
-  ;; Extract the number of assertions
-  (let ((id-pres (concat id ":pres"))
-        (id-posts (concat id ":posts"))
-        pres posts)
-    (setq pres (fem-extract-assertion-num-and-list-from-buffer prefix id-pres no-error LIMIT))
-    (setq posts (fem-extract-assertion-num-and-list-from-buffer prefix id-posts no-error LIMIT))
-    (make-fem-assertions :pres pres :posts posts)))
+  (fem-log-dbg "extract-result-from-buffer:\n\- prefix: %s\n- id: %s" PREFIX id)
+  (let ($error
+        ($id-pres (concat id ":pres"))
+        ($id-posts (concat id ":posts"))
+        $pres $posts)
+    (setq $error (fem-extract-error-from-buffer PREFIX id NO_ERROR LIMIT))
+    (setq $pres (fem-extract-assertion-num-and-list-from-buffer PREFIX $id-pres NO_ERROR LIMIT))
+    (setq $posts (fem-extract-assertion-num-and-list-from-buffer PREFIX $id-posts NO_ERROR LIMIT))
+    (make-fem-result :error $error :pres $pres :posts $posts)))
 
 (defun fem-copy-data-from-messages-to-buffer (beg-delimiter end-delimiter
                                           include-delimiters dest-buffer
@@ -1076,13 +1082,13 @@ buffer."
       ;; Return the new end of the region
       (+ (point) new-end)))
 
-(defun fem-extract-assertions-from-messages (prefix id &optional process-buffer no-error
+(defun fem-extract-result-from-messages (prefix id &optional process-buffer no-error
                                          clear-process-buffer)
-  "Extracts assertions from the *Messages* buffer. Returns an assertions structure.
+  "Extracts a meta analysis result from the *Messages* buffer. Returns an fem-result structure.
 process-buffer is the buffer to use to copy and process the raw data
 (*fstar-data1* by default)."
   (setq-default process-buffer fem-process-buffer2)
-  (fem-log-dbg "extract-assertions-from-messages:\n\
+  (fem-log-dbg "extract-result-from-messages:\n\
 - prefix: %s\n- id: %s\n- process buffer: '%s'\n" prefix id process-buffer)
   (let ((prev-buffer (current-buffer))
         (region nil)
@@ -1109,7 +1115,7 @@ process-buffer is the buffer to use to copy and process the raw data
         ;; Clean
         (fem-clean-data-from-messages)
         ;; Extract the eterm-info
-        (setq result (fem-extract-assertions-from-buffer prefix id no-error)))
+        (setq result (fem-extract-result-from-buffer prefix id no-error)))
       ;; Switch back to the original buffer
       (switch-to-buffer prev-buffer)
       ;; Return
@@ -1165,16 +1171,22 @@ If F* succeeded, extracts the information and adds it to the proof"
     ;;
     ;; Extract the data. Note that we add two spaces to the indentation, because
     ;; if we need to indent the data, it is because it will be in an assertion.
-    (let ((assertions (fem-extract-assertions-from-messages "ainfo" ""
-                                                  fem-process-buffer2 t t)))
+    (let ((result (fem-extract-result-from-messages "ainfo" ""
+                                                        fem-process-buffer2 t t)))
+      ;; Check if error
+      (when (fem-result-error result)
+        (when (y-or-n-p (concat "F* failed: " (fem-result-error result)
+                                "\n-> Do you want to see the F* query?"))
+          (switch-to-buffer fem-process-buffer1))
+        (error "F* failed"))
       ;; Print the information
       ;; - before the focused term
       (goto-char p1)
-      (dolist (a (fem-assertions-pres assertions))
+      (dolist (a (fem-result-pres result))
         (fem-generate-assert-from-term indent-str nil a))
       ;; - after the focused term
       (forward-char (- p2 p1))
-      (dolist (a (fem-assertions-posts assertions))
+      (dolist (a (fem-result-posts result))
         (fem-generate-assert-from-term indent-str t a))
       )))
 

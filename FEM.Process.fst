@@ -1909,7 +1909,7 @@ let pp_analyze_effectful_term dbg with_goal () =
     let res = find_focused_term_in_current_goal dbg in
     analyze_effectful_term dbg with_goal res;
     trefl()
-  with | MetaAnalysis msg -> printout_failure msg
+  with | MetaAnalysis msg -> printout_failure msg; trefl()
        | err -> (* Shouldn't happen, so transmit the exception for debugging *) raise err
 
 (**** Split conjunctions in an assert *)
@@ -1976,7 +1976,7 @@ let pp_split_assert_conjs dbg () =
     let res = find_focused_assert_in_current_goal dbg in
     split_assert_conjs dbg res;
     trefl()
-  with | MetaAnalysis msg -> printout_failure msg
+  with | MetaAnalysis msg -> printout_failure msg; trefl()
        | err -> (* Shouldn't happen, so transmit the exception for debugging *) raise err
 
 (**** Term unfolding in assert *)
@@ -2262,6 +2262,6 @@ let pp_unfold_in_assert_or_assume dbg () =
     let res = find_focused_assert_in_current_goal dbg in
     unfold_in_assert_or_assume dbg res;
     trefl()
-  with | MetaAnalysis msg -> printout_failure msg
+  with | MetaAnalysis msg -> printout_failure msg; trefl()
        | err -> (* Shouldn't happen, so transmit the exception for debugging *) raise err
 
