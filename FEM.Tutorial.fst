@@ -282,9 +282,16 @@ let ut_ex1 (x y : nat) : unit =
 
   (* Note that if the assertion is an equality, the command will only
    * operate on one side of the equality at a time. *)
-  assert(z1 = z1)
-
-/// We intend to update the command to allow arbitrary terms rewriting in the future
+  assert(z1 = z1);
+  
+  (*
+   * It is even possible to apply the command on arbitrary term, in which
+   * case the command will explore post-conditions to find an equality to
+   * use for rewriting.
+   *)
+  assert(f3 (f3 (x + y)) = 4 * (x + y));
+  assert(2 * z1 = z1 + z1);  
+  assert(f3 (f3 (x + y)) = 2 * z1) (* <- Try the command on the left or right operand *)
 
 (**** Combining commands *)
 /// Those commands prove really useful when you combine them. The below example
@@ -350,8 +357,6 @@ let ts_ex1 (x : int) =
       begin
       let z1 = x + 4 in
       let z2 : int = f1 z1 x in (* <- Say you want to use C-c C-e here: first use C-c C-s C-i *)
-      assert(z2 = f1 (x + 4) x);
-      assert(z2 >= 0);
       z2
       end
     else -x
