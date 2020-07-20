@@ -1459,7 +1459,9 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
     | E_Stack | E_ST ->
       print_dbg dbg "E_Stack/E_ST";
       (* Look for state variables in the context *)
+      print_dbg dbg "Looking for the initial state in the context";
       let b1_opt = find_mem_in_related dbg ge0 parents in
+      print_dbg dbg "Looking for the final state in the context";
       let b2_opt = find_mem_in_related dbg ge0 children in
       (* Introduce state variables if necessary *)
       let opt_push_fresh_state opt_bv basename ge : Tac (term & binder & genv) =
@@ -1552,7 +1554,7 @@ let eterm_info_to_assertions dbg with_goal ge t is_let is_assert info bind_var o
       (* If the studied term is stateless, we can use it directly in the
        * propositions, otherwise we need to introduced a variable for the return
        * type *)
-      if effect_type_is_stateful info.einfo.ei_type then
+      if effect_type_is_stateful einfo.ei_type then
         let b = fresh_binder ge.env "__ret" einfo.ei_ret_type.ty in
         let bv = bv_of_binder b in
         let tm = pack (Tv_Var bv) in
@@ -1631,10 +1633,19 @@ let eterm_info_to_assertions dbg with_goal ge t is_let is_assert info bind_var o
         (* Generate the propositions from the precondition and the postcondition *)
         (* TODO: not sure about the return type parameter: maybe catch failures *)
         print_dbg dbg "> Instantiating global pre/post";
-        (* Note that we need to revert the lists of parents/children terms *)
+        (* Note that we need to revert the lists of parents terms *)
+        (* For the children:
+         * - if the focused term is the return value and is pure: go look for
+         *   a state variable introduced before
+         * - otherwise, use the children in revert order *)
+        let gchildren =
+          if is_let then rev children (* the postcondition should have been dropped anyway *)
+          else if effect_type_is_stateful einfo.ei_type then rev children
+          else parents
+        in
         let ge2, gpre_prop, gpost_prop =
           pre_post_to_propositions dbg ge1 ei.ei_type v opt_b einfo.ei_ret_type
-                                   gpre gpost (rev parents) (children) in
+                                   gpre gpost (rev parents) gchildren in
         (* Some debugging output *)
         print_dbg dbg ("- global pre prop: " ^ option_to_string term_to_string gpre_prop);
         print_dbg dbg ("- global post prop: " ^ option_to_string term_to_string gpost_prop);
