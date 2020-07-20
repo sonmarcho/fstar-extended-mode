@@ -2050,44 +2050,21 @@ let formula_construct (f : formula) : Tac string =
   | IntLit _    -> "IntLit"
   | F_Unknown   -> "F_Unknown"
 
-/// Check if a term is an equality of which one operand is the given bv, in
-/// which case return the other operand.
-val is_equality_for_bv : bool -> bv -> term -> Tac (option term)
-let is_equality_for_bv dbg bv t =
-  print_dbg dbg ("[> is_equality_for_bv:" ^
-                 "\n- bv: " ^ abv_to_string bv ^
-                 "\n- term: " ^ term_to_string t);
-  let is_bv (t:term) : Tac bool =
-    match inspect t with
-    | Tv_Var bv' ->
-      print_dbg dbg (term_to_string t ^ ": Tv_Var " ^ abv_to_string bv');
-      bv_eq bv bv'
-    | _ ->
-      print_dbg dbg (term_to_string t ^ " Not Tv_Var ");
-      false
-  in
-  match is_eq dbg t with
-  | Some (ekind, l, r) ->
-    (* We ignore heterogeneous equality, because it risks to cause havoc at
-     * typing after substitution *)
-    print_dbg dbg ("Term is eq: " ^ term_to_string l ^ " = " ^ term_to_string r);
-    if Eq_Hetero? ekind then
-      begin
-      print_dbg dbg "Ignoring heterogeneous equality";
-      None
-      end
-    else if is_bv l then Some r
-    else if is_bv r then Some l
-    else None
-  | _ ->
-    print_dbg dbg "Term is not eq";
-    None
-
+/// Check if a proposition is an equality which can be used to rewrite a term.
+/// Return the operand of the equality which the term is equal to if it is the case.
 val is_equality_for_term : bool -> term -> term -> Tac (option term)
 let is_equality_for_term dbg tm p =
   print_dbg dbg ("[> is_equality_for_term:" ^
                  "\n- term: " ^ term_to_string tm ^
                  "\n- prop: " ^ term_to_string p);
+  (* Specialize equality for bv - TODO: not sure if necessary, but I had problems
+   * in the past *)
+  let check_eq : term -> Tac bool =
+    match inspect tm with
+    | Tv_Var bv ->
+      (fun tm' -> match inspect tm' with | Tv_Var bv' -> bv_eq bv bv' | _ -> false)
+    | _ -> (fun tm' -> term_eq tm tm')
+  in    
   match is_eq dbg p with
   | Some (ekind, l, r) ->
     (* We ignore heterogeneous equality, because it risks to cause havoc at
@@ -2098,41 +2075,26 @@ let is_equality_for_term dbg tm p =
       print_dbg dbg "Ignoring heterogeneous equality";
       None
       end
-    else if term_eq tm l then Some r
-    else if term_eq tm r then Some l
+    else if check_eq l then Some r
+    else if check_eq r then Some l
     else None
   | _ ->
     print_dbg dbg "Term is not eq";
     None
 
-// TODO: we use a special equality for bv. It seems to be necessary, sometimes
-// (for unknown reasons). If not really necessary, merge this function with
-// find_equality_for_term_from_post
-/// If a term is a conjunction of equalities, check if one of them has bv as an
-/// operand, and return the other operand if it is the case.
-val find_subequality_for_bv : bool -> bv -> term -> Tac (option term)
-let find_subequality_for_bv dbg bv p =
-  print_dbg dbg ("[> find_subequality_for_bv:" ^ 
-                 "\n- bv   : " ^ abv_to_string bv ^
-                 "\n- props: " ^ term_to_string p);
-  let conjuncts = split_conjunctions p in
-  print_dbg dbg ("Conjuncts:\n" ^ list_to_string term_to_string conjuncts);
-  tryPick (is_equality_for_bv dbg bv) conjuncts
-
-val find_subequality_for_term : bool -> term -> term -> Tac (option term)
-let find_subequality_for_term dbg tm p =
-  print_dbg dbg ("[> find_subequality_for_term:" ^ 
+val find_subequality : bool -> term -> term -> Tac (option term)
+let find_subequality dbg tm p =
+  print_dbg dbg ("[> find_subequality:" ^ 
                  "\n- ter  : " ^ term_to_string tm ^
                  "\n- props: " ^ term_to_string p);
   let conjuncts = split_conjunctions p in
   print_dbg dbg ("Conjuncts:\n" ^ list_to_string term_to_string conjuncts);
   tryPick (is_equality_for_term dbg tm) conjuncts
 
-/// Look for an equality in a postcondition in a term which has one operant equal to bv.
-/// which bv is equal to according to this equality.
-val find_equality_for_bv_from_post : bool -> genv -> bv -> bv -> term -> typ -> effect_info -> Tac (genv & option term)
-let find_equality_for_bv_from_post dbg ge0 tgt_bv let_bv ret_value ret_type einfo =
-  print_dbg dbg "[> find_equality_for_bv_from_post";
+/// Look for an equality in a postcondition which can be used for rewriting.
+val find_equality_from_post : bool -> genv -> term -> bv -> term -> typ -> effect_info -> Tac (genv & option term)
+let find_equality_from_post dbg ge0 tm let_bv ret_value ret_type einfo =
+  print_dbg dbg "[> find_equality_from_post";
   let tinfo = get_type_info_from_type ret_type in
   (* Compute the post-condition *)
   let ge1, _, post_prop =
@@ -2144,74 +2106,18 @@ let find_equality_for_bv_from_post dbg ge0 tgt_bv let_bv ret_value ret_type einf
   let res =
     match post_prop with
     | None -> None
-    | Some p -> find_subequality_for_bv dbg tgt_bv p
+    | Some p -> find_subequality dbg tm p
   in
   (* If we found something, we return the updated environment,
    * otherwise we can return the original one *)
   match res with
   | None -> ge0, None
   | Some tm -> ge1, Some tm
-
-val find_equality_for_term_from_post : bool -> genv -> term -> bv -> term -> typ -> effect_info -> Tac (genv & option term)
-let find_equality_for_term_from_post dbg ge0 tm let_bv ret_value ret_type einfo =
-  print_dbg dbg "[> find_equality_for_term_from_post";
-  let tinfo = get_type_info_from_type ret_type in
-  (* Compute the post-condition *)
-  let ge1, _, post_prop =
-    pre_post_to_propositions dbg ge0 einfo.ei_type ret_value (Some (mk_binder let_bv))
-                             tinfo einfo.ei_pre einfo.ei_post
-  in
-  print_dbg dbg ("Computed post: " ^ option_to_string term_to_string post_prop);
-  (* Look for an equality in the post *)
-  let res =
-    match post_prop with
-    | None -> None
-    | Some p -> find_subequality_for_term dbg tm p
-  in
-  (* If we found something, we return the updated environment,
-   * otherwise we can return the original one *)
-  match res with
-  | None -> ge0, None
-  | Some tm -> ge1, Some tm
-
-/// Given a list of parent terms (as generated by ``explore_term``), look for an
-/// equality given by a pure let-binding or a post-condition which can be used
-/// to substitute the bv with another term.
-val find_context_equality_for_bv : bool -> genv -> bv -> list term_view -> Tac (genv & option term)
-let rec find_context_equality_for_bv dbg ge0 bv parents =
-  match parents with
-  | [] -> ge0, None
-  | tv :: parents' ->
-    print_dbg dbg ("[> find_context_equality_for_bv:\n" ^
-                   "- bv    : " ^ abv_to_string bv ^ "\n" ^
-                   "- parent: " ^ term_to_string tv);
-    (* We only consider let-bindings *)
-    match tv with
-    | Tv_Let _ _ bv' def _ ->
-      print_dbg dbg "Is Tv_Let";
-      let tm_info = compute_eterm_info ge0.env def in
-      let einfo = tm_info.einfo in
-      let is_bv = bv_eq bv bv' in
-      (* If bv' = bv and the term is pure: use def *)
-      if is_bv && effect_type_is_pure einfo.ei_type then ge0, Some def
-      (* Otherwise, try to use the postcondition *)
-      else
-        let ret_value = pack (Tv_Var bv') in
-        let ret_typ = type_of_bv bv' in
-        begin match find_equality_for_bv_from_post dbg ge0 bv bv' ret_value ret_typ einfo with
-        | ge1, Some p -> ge1, Some p
-        | _, None ->
-          (* If bv = bv': bv is introduced by this let-binding, we can't go further *)
-          if is_bv then ge0, None
-          (* Otherwise, recursion *)
-          else find_context_equality_for_bv dbg ge0 bv parents'
-        end
-   | _ -> find_context_equality_for_bv dbg ge0 bv parents'
 
 /// Given a list of parent terms (as generated by ``explore_term``), look for an
 /// equality given by a post-condition which can be used to replace a term.
-val find_context_equality_for_term : bool -> genv -> term -> list term_view -> Tac (genv & option term)
-let rec find_context_equality_for_term dbg ge0 tm parents =
+val find_context_equality : bool -> genv -> term -> list term_view -> Tac (genv & option term)
+let rec find_context_equality dbg ge0 tm parents =
   match parents with
   | [] -> ge0, None
   | tv :: parents' ->
@@ -2226,11 +2132,11 @@ let rec find_context_equality_for_term dbg ge0 tm parents =
       let einfo = tm_info.einfo in
       let ret_value = pack (Tv_Var bv') in
       let ret_typ = type_of_bv bv' in
-      begin match find_equality_for_term_from_post dbg ge0 tm bv' ret_value ret_typ einfo with
+      begin match find_equality_from_post dbg ge0 tm bv' ret_value ret_typ einfo with
       | ge1, Some p -> ge1, Some p
-      | _, None -> find_context_equality_for_term dbg ge0 tm parents'
+      | _, None -> find_context_equality dbg ge0 tm parents'
       end
-   | _ -> find_context_equality_for_term dbg ge0 tm parents'
+   | _ -> find_context_equality dbg ge0 tm parents'
 
 /// Replace a subterm by another term
 val replace_term_in : bool -> term -> term -> term -> Tac term
@@ -2349,19 +2255,19 @@ let unfold_in_assert_or_assume dbg ares =
        * the term is a bv, we can also use the let-binding which introduces it,
        * if it is pure. *)
       let parents = List.Tot.map snd ares.parents in
-      let (ge1, eq_tm), opt_bv =
+      let opt_bv =
         match res_view with
         | Tv_Var bv ->
-          print_dbg dbg ("The focused term is a bound variable: " ^ bv_to_string bv);
-          (* First check that the binder was not introduced by an abstraction
-           * inside the assertion *)
+          print_dbg dbg ("The focused term is a local variable: " ^ bv_to_string bv);
+          (* Check that the binder was not introduced by an abstraction inside the assertion *)
           if not (Some? (genv_get ares.ge bv)) then
             mfail "unfold_in_assert_or_assume: can't unfold a variable locally introduced in an assertion";
-          find_context_equality_for_bv dbg ares.ge bv parents, Some bv
+          Some bv
         | _ ->
           print_dbg dbg ("The focused term is an arbitrary term: " ^ term_to_string unf_res.res);
-          find_context_equality_for_term dbg ares.ge unf_res.res parents, None
+          None
       in
+      let ge1, eq_tm = find_context_equality dbg ares.ge unf_res.res parents in
       (* Check if we found an equality *)
       let eq_tm =
         match eq_tm with
