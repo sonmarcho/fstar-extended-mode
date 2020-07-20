@@ -196,17 +196,24 @@ let ci_ex2 (x y : int) :
   let z = x + y in
   z
 
-/// This command also works on effectful terms. In the case it needs variables it
-/// can't find in the context (for example, memory states for the pre/postconditions
-/// of some Stack functions), it introduces fresh variables preceded by "__", and
-/// abstracts them away, to indicate the user that he needs to provide some variables.
+/// This command also works on effectful terms. It may happen that it needs to
+/// introduce variables in the context. For instance, when dealing with pre/posts
+/// of stateful terms, it will look for state variables with which to instantiate
+/// those pre/posts, but might not be able to find suitable variables.
+/// In this case, it introduces fresh variables (easy to recognize because they are
+/// preceded by "__") and abstracts them away, to indicate the user that he needs
+/// to provide those variables.
+///
 /// It leads to assertions of the form:
 /// [> assert((fun __x0 __x1 -> pred __x0 __x1) __x0 __x1)
+///
 /// As fem-insert-pre-post performs simple normalization (to remove abstractions,
 /// for instance) on the terms it manipulates, the user can rewrite this assert to:
 /// [> assert((fun __x0 __x1 -> pred __x0 __x1) x y)
+///
 /// then apply C-c C-e on the above assertion to get:
 /// [> assert(pred x y)
+///
 /// Try this on the stateful calls in the below function. When applying C-c C-e on
 /// one of the resulting assertions, make sure you select the WHOLE assertion: as
 /// it will likely be written on several lines, the command will need some help for
@@ -217,14 +224,13 @@ let ci_ex3 (r1 r2 : B.buffer int) :
   (**) let h0 = ST.get () in
   let n1 = sf1 r1 in (* <- Try C-c C-e here *)
   (* [> assert(
-   * [> (fun __h0 __h1 ->
-   * [>  LowStar.Monotonic.Buffer.live __h0 r1 /\
-   * [>  LowStar.Monotonic.Buffer.as_seq __h0 r1 == LowStar.Monotonic.Buffer.as_seq __h1 r1 /\
-   * [>  n1 =
-   * [>  FStar.List.Tot.Base.fold_left (fun x y -> x + y)
-   * [>    0
-   * [>   (FStar.Seq.Properties.seq_to_list (LowStar.Monotonic.Buffer.as_seq __h0 r1))) __h0
-   * [> __h1); *)
+     [>   (fun __h1_0 ->
+     [>    LowStar.Monotonic.Buffer.live h0 r1 /\
+     [>    LowStar.Monotonic.Buffer.as_seq h0 r1 == LowStar.Monotonic.Buffer.as_seq __h1_0 r1 /\
+     [>    n1 =
+     [>    FStar.List.Tot.Base.fold_left (fun x y -> x + y)
+     [>      0
+     [>      (FStar.Seq.Properties.seq_to_list (LowStar.Monotonic.Buffer.as_seq h0 r1))) __h1_0); *)
   (**) let h1 = ST.get () in
   let n2 = sf1 r2 in
   (**) let h2 = ST.get () in
