@@ -1607,16 +1607,16 @@ TODO: take into account if/match branches"
   (fem-analyze-effectful-term t))
 
 ;; Key bindings
-;;(global-set-key (kbd "C-c C-e C-r") 'fem-roll-admit)
-(global-set-key (kbd "C-x C-a") 'fem-roll-admit)
-(global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
-;;(global-set-key (kbd "C-c C-e C-a") 'fem-switch-assert-assume-in-above-paragraph)
-(global-set-key (kbd "C-S-a") 'fem-switch-assert-assume-in-current-line)
+(global-set-key (kbd "C-c C-e C-r") 'fem-roll-admit)
+;;(global-set-key (kbd "C-x C-a") 'fem-roll-admit)
+;;(global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
+(global-set-key (kbd "C-c C-e C-a") 'fem-switch-assert-assume-in-above-paragraph)
+;;(global-set-key (kbd "C-S-a") 'fem-switch-assert-assume-in-current-line)
 
 (global-set-key (kbd "C-c C-e C-i") 'fem-insert-pos-markers)
 ;;(global-set-key (kbd "C-c C-e C-e") 'fem-insert-assert-pre-post)
-(global-set-key (kbd "C-c C-e C-e") 'fem-analyze-effectful-term-no-goal)
-(global-set-key (kbd "C-c C-e C-g") 'fem-analyze-effectful-term-with-goal)
+(global-set-key (kbd "C-c C-e C-e") 'fem-analyze-effectful-term-with-goal)
+;;(global-set-key (kbd "C-c C-e C-g") 'fem-analyze-effectful-term-with-goal)
 (global-set-key (kbd "C-c C-e C-s") 'fem-split-assert-assume-conjuncts)
 (global-set-key (kbd "C-c C-e C-u") 'fem-unfold-in-assert-assume)
 

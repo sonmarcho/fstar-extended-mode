@@ -32,23 +32,28 @@ You first need to install the [F* emacs mode](https://github.com/FStarLang/fstar
 (setq fstar-subp-debug t)
 ```
 
+The F* extended mode needs the `use-package` package. You can install it by using Melpa (`M-x list-packages`, then go to `use-package` and click on "Install").
+
 Then, you need to load the extended mode. You can do it simply by inserting the following command in your `.emacs` file:
 
 ```
 ;; Replace PATH-TO-REPO by the path to the cloned extended mode repository
+;; Warning: if the path to the repo is "/home/johndoe/fstar-extended-mode", you must write:
+;; "/home/johndoe/fstar-extended-mode/fstar-extended-mode"
+;; (this path actually indicates where to find the .el file)
 (load "~/PATH-TO-REPO/fstar-extended-mode")
 ```
 
-Finally, the F* extended mode needs the `use-package` package. You can install it by using Melpa (`M-x list-packages`, then go to `use-package` and click on "Install").
+Finally, you need to build it. Just go inside the clone directory and run `make`.
+
 
 # Commands and bindings
 The F* extended mode introduces the following commands:
 | Command       | Key binding           | Description  |
 | :------------- |:-------------:| :-----|
-| `fem-roll-admit` | (C-x C-a) | Helper for the "rolling admit" technique |
-| `fem-switch-assert-assume-in-above-paragraph` | (C-c C-s C-a) | Switch between assertions and assumptions in the paragraph above the pointer or in the selection |
-| `fem-switch-assert-assume-in-current-line` | (C-S-a) | Switch between assertions and assumptions in the current line |
-| `fem-insert-assert-pre-post` | (C-c C-e C-e) | **E**xpand an effectful term to insert context information (precondition, type obligations, postcondition) |
+| `fem-roll-admit` | (C-c C-e C-r) | Helper for the "**r**olling admit" technique |
+| `fem-switch-assert-assume-in-above-paragraph` | (C-c C-e C-a) | Switch between **a**ssertions and **a**ssumptions in the paragraph above the pointer, or in the current selection |
+| `fem-analyze-effectful-term-with-goal` | (C-c C-e C-e) | **E**xpand an effectful term to insert context information (precondition, type obligations, postcondition) |
 | `fem-split-assert-assume-conjuncts` | (C-c C-e C-s) | **S**plit the conjuncts in an assertion/assumption |
 | `fem-unfold-in-assert-assume` | (C-c C-e C-u) | **U**nfold/substitute a term in an assertion/assumption |
 | `fem-insert-pos-markers` | (C-c C-e C-i) | **I**nsert a marker in the code for two-steps execution, in case of parsing issues |
