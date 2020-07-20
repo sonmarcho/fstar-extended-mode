@@ -46,6 +46,7 @@ Then, you need to load the extended mode. You can do it simply by inserting the 
 
 Finally, you need to build it. Just go inside the clone directory and run `make`.
 
+**Important:** whenever you update the directory, run `make clean && make`.
 
 # Commands and bindings
 The F* extended mode introduces the following commands:
