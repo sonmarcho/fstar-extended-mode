@@ -1456,9 +1456,17 @@ Otherwise, the string is made of a number of spaces equal to the column position
   (setq $markers (fem-get-pos-markers))
   (setq $p0 (point))
   (when $markers (goto-char (fem-pair-fst $markers)))
-  ;; Find the identifier
-  (setq $id (fem-sexp-at-p))
-  (when (not $id) (error "Pointer not over a term"))
+  ;; Find the identifier by computing its delimiting positions
+  (if (and $markers (fem-pair-snd $markers))
+      ;; There is a second marker: use it as the end of the identifier
+      (setq $id $marker)
+    ;; Otherwise: use the active selection if there is one
+    (if (use-region-p)
+        ;; Use the selected region
+        (setq $id (make-fem-pair :fst (region-beginning) :snd (region-end)))
+      ;; Last case: parse the sexp under the pointer
+      (setq $id (fem-sexp-at-p))
+      (when (not $id) (error "Pointer not over a term"))))
   ;; Parse the assertion/assumption.
   (setq $tbeg (fstar-subp--untracked-beginning-position))
   (setq $passert (fem-find-assert-assume-p (point) $tbeg))
