@@ -1526,9 +1526,9 @@ Otherwise, the string is made of a number of spaces equal to the column position
                                  (apply-partially #'fem-insert-assert-pre-post--continuation
                                                   $indent-str $beg $end $subexpr))))
 
-(defun fem-analyze-effectful-term (WITH_GOAL)
+(defun fem-analyze-effectful-term (WITH_GPRE WITH_GPOST)
   "Insert assertions with proof obligations and postconditions around a term.
-If WITH_GOAL is t, also try to insert the global precondition and postconditions.
+If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
 TODO: take into account if/match branches"
   (interactive)
   (fem-log-dbg "insert-assert-pre-post")
@@ -1574,7 +1574,8 @@ TODO: take into account if/match branches"
     ;; Copy and start processing the content
     (setq $pp-instr (concat "FEM.Process.pp_analyze_effectful_term "
                          (bool-to-string fem-debug) " "
-                         (bool-to-string WITH_GOAL)))
+                         (bool-to-string WITH_GPRE) " "
+                         (bool-to-string WITH_GPOST)))
     (setq $subexpr1 (fem-copy-def-for-meta-process $p3 $insert-admit $subexpr fem-process-buffer1
                                                   $pp-instr))
     ;; We are now in the destination buffer
@@ -1599,12 +1600,12 @@ TODO: take into account if/match branches"
 (defun fem-analyze-effectful-term-no-goal ()
   "Insert assertions with proof obligations and postconditions around a term."
   (interactive)
-  (fem-analyze-effectful-term nil))
+  (fem-analyze-effectful-term nil nil))
 
 (defun fem-analyze-effectful-term-with-goal ()
  "Do the same as fem-analyze-effectful-term but also include global pre/postcondition."
   (interactive)
-  (fem-analyze-effectful-term t))
+  (fem-analyze-effectful-term t t))
 
 ;; Key bindings
 (global-set-key (kbd "C-c C-e C-r") 'fem-roll-admit)

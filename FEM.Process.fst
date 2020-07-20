@@ -1527,7 +1527,8 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
 /// expression.
 val eterm_info_to_assertions :
      dbg:bool
-  -> with_goal:bool
+  -> with_gpre:bool
+  -> with_gpost:bool
   -> ge:genv
   -> t:term
   -> is_let:bool (* the term is the bound expression in a let binding *)
@@ -1539,7 +1540,7 @@ val eterm_info_to_assertions :
   -> children:list term_view ->
   Tac (genv & assertions)
 
-let eterm_info_to_assertions dbg with_goal ge t is_let is_assert info bind_var opt_c
+let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info bind_var opt_c
                              parents children =
   print_dbg dbg "[> eterm_info_to_assertions";
   (* Introduce additional variables to instantiate the return type refinement,
@@ -1577,6 +1578,7 @@ let eterm_info_to_assertions dbg with_goal ge t is_let is_assert info bind_var o
   else begin
     (* Generate propositions from the target computation (pre, post, type cast) *)
     let ge2, gpre_prop, gcast_props, gpost_prop =
+      let with_goal : bool = with_gpre || with_gpost in
       begin match opt_c, with_goal with
       | Some c, true ->
         let ei = typ_or_comp_to_effect_info ge1 c in
@@ -1587,9 +1589,8 @@ let eterm_info_to_assertions dbg with_goal ge t is_let is_assert info bind_var o
          * are shadowed (which implies that we are close enough to the top of
          * the function *)
         let gpre =
-          begin match ei.ei_pre with
-          | None -> None
-          | Some pre ->
+          match ei.ei_pre, with_gpre with
+          | Some pre, true ->
             let abs_vars = abs_free_in ge1 pre in
             if Cons? abs_vars then
               begin
@@ -1597,12 +1598,13 @@ let eterm_info_to_assertions dbg with_goal ge t is_let is_assert info bind_var o
               None
               end
             else ei.ei_pre
-          end
+          | _ -> None
         in
         (* The global post-condition and the type cast are relevant only if the
          * studied term is not the definition in a let binding *)
         let gpost, gcast_props =
-          if is_let then
+          if not with_gpost then None, []
+          else if is_let then
             begin
             print_dbg dbg "Dropping the global postcondition and return type because we are studying a let expression";
             None, []
@@ -1651,7 +1653,8 @@ let eterm_info_to_assertions dbg with_goal ge t is_let is_assert info bind_var o
         print_dbg dbg ("- global post prop: " ^ option_to_string term_to_string gpost_prop);
         (* Return type: TODO *)
         ge2, gpre_prop, gcast_props, gpost_prop
-      | _, _ -> ge1, None, [], None
+      | _, _ ->
+        ge1, None, [], None
       end <: Tac _
     in
     (* Generate the propositions: *)
@@ -2025,11 +2028,12 @@ let find_focused_assert_in_current_goal dbg =
 /// focused term.
 val analyze_effectful_term : 
      dbg:bool
-  -> with_goal:bool
+  -> with_gpre:bool
+  -> with_gpost:bool
   -> res:exploration_result term
   -> Tac unit
 
-let analyze_effectful_term dbg with_goal res =
+let analyze_effectful_term dbg with_gpre with_gpost res =
   let ge = res.ge in
   let opt_c = res.tgt_comp in
   (* Analyze the effectful term and check whether it is a 'let' or not *)
@@ -2074,8 +2078,8 @@ let analyze_effectful_term dbg with_goal res =
   let ret_arg = opt_tapply (fun x -> pack (Tv_Var x)) ret_bv in
   let parents = List.Tot.map snd res.parents in
   let ge2, asserts =
-    eterm_info_to_assertions dbg with_goal ge1 studied_term is_let is_assert info
-                             ret_arg opt_c parents [] in
+    eterm_info_to_assertions dbg with_gpre with_gpost ge1 studied_term is_let
+                             is_assert info ret_arg opt_c parents [] in
   (* Simplify and filter *)
   let asserts = simp_filter_assertions ge2.env simpl_norm_steps asserts in
   (* Introduce fresh variables for the shadowed ones and substitute *)
@@ -2089,11 +2093,11 @@ let analyze_effectful_term dbg with_goal res =
   printout_success ge3 asserts
 
 [@plugin]
-val pp_analyze_effectful_term : bool -> bool -> unit -> Tac unit
-let pp_analyze_effectful_term dbg with_goal () =
+val pp_analyze_effectful_term : bool -> bool -> bool -> unit -> Tac unit
+let pp_analyze_effectful_term dbg with_gpre with_gpost () =
   try
     let res = find_focused_term_in_current_goal dbg in
-    analyze_effectful_term dbg with_goal res;
+    analyze_effectful_term dbg with_gpre with_gpost res;
     trefl()
   with | MetaAnalysis msg -> printout_failure msg; trefl()
        | err -> (* Shouldn't happen, so transmit the exception for debugging *) raise err
