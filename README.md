@@ -17,6 +17,7 @@ You first need to install the [F* emacs mode](https://github.com/FStarLang/fstar
                         (car (process-lines "make" "--quiet" target))
                         ;; TODO: Put the path to the local copy of the F* extended mode here
                         " --include " (getenv "HOME") "/fstar-extended-mode "
+                        "load FEM.Process" ;; Load the compiled tactics used by the extended mode
                         )
                      ;; If the above failed, use a default configuration
                      (error (concat
@@ -24,6 +25,7 @@ You first need to install the [F* emacs mode](https://github.com/FStarLang/fstar
                              "--include " (getenv "HOME") "/hacl-star/lib "
                              ;; TODO: Put the path to the local copy of the F* extended mode here
                              "--include " (getenv "HOME") "/fstar-extended-mode "
+                             "load FEM.Process" ;; Load the compiled tactics used by the extended mode
                              ;; TODO: Optional
                              "--debug yes --log_queries --use_hints --cache_checked_modules"
                              )))))
