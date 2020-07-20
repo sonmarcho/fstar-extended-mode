@@ -1302,20 +1302,31 @@ val find_mem_in_context :
   -> Tac (option (bv & bv))
 
 let is_st_get dbg t : Tac bool =
+  print_dbg dbg ("[> is_st_get:\n" ^ term_to_string t);
   match inspect t with
   | Tv_App  hd (a, qual) ->
+    print_dbg dbg "-> Is Tv_App";
     begin match inspect hd with
     | Tv_FVar fv ->
-      fv_eq_name fv ["FStar"; "Hyperstack"; "ST"; "get"]
-    | _ -> false
+      print_dbg dbg ("-> Head is Tv_FVar: " ^ fv_to_string fv);
+      fv_eq_name fv ["FStar"; "HyperStack"; "ST"; "get"]
+    | _ ->
+      print_dbg dbg "-> Head is not Tv_FVar";
+      false
     end
-  | _ -> false
+  | _ ->
+    print_dbg dbg "-> Is not Tv_App";
+    false
 
-let is_let_st_get dbg d =
-  match d with
+let is_let_st_get dbg (t : term_view) =
+  print_dbg dbg ("[> is_let_st_get:\n" ^ term_to_string t);
+  match t with
   | Tv_Let recf attrs bv def body ->
+    print_dbg dbg "The term is a let expression";
     if is_st_get dbg def then Some bv else None
-  | _ -> None
+  | _ ->
+    print_dbg dbg "The term is not a let expression";
+    None
 
 // TODO: Define relation between parents and children in and use it in explore_term
 // app: head or arg
@@ -1384,11 +1395,24 @@ let rec find_mem_in_related dbg ge tms =
   match tms with
   | [] -> None
   | tv :: tms' ->
+    print_dbg dbg ("[> find_mem_in_related:\n" ^ term_to_string tv);
     match is_let_st_get dbg tv with
-    | Some bv -> Some bv
+    | Some bv ->
+      print_dbg dbg "Term is of the form `let x = FStar.HyperStack.ST.get ()`: success";
+      Some bv
     | None ->
-      if related_term_is_effectul dbg ge tv then None
-      else find_mem_in_related dbg ge tms'
+      print_dbg dbg "Term is not of the form `let x = FStar.HyperStack.ST.get ()`: continuing";
+      if related_term_is_effectul dbg ge tv
+      then
+        begin
+        print_dbg dbg "Term is effectful: stopping here";
+        None
+        end
+      else
+        begin
+        print_dbg dbg "Term is not effectful: continuing";
+        find_mem_in_related dbg ge tms'
+        end
 
 // TODO: not used for now
 /// Look for a term of the form ``let h = ST.get ()`` in a child term (the
@@ -1448,14 +1472,13 @@ let pre_post_to_propositions dbg ge0 etype v ret_abs_binder ret_type opt_pre opt
       let b1_opt = find_mem_in_related dbg ge0 parents in
       let b2_opt = find_mem_in_related dbg ge0 children in
       (* Introduce state variables if necessary *)
-      let opt_push_fresh_state opt_bv ge : Tac (term & binder & genv) =
+      let opt_push_fresh_state opt_bv basename ge : Tac (term & binder & genv) =
         match opt_bv with
         | Some bv -> pack (Tv_Var bv), mk_binder bv, ge
-        | None -> genv_push_fresh_var ge "__h" (`HS.mem)
+        | None -> genv_push_fresh_var ge basename (`HS.mem)
       in
-      let h1, b1, ge1 = opt_push_fresh_state b1_opt ge0 in
-      let h2, b2, ge2 = opt_push_fresh_state b2_opt ge1 in
-      // let h1, b1, h2, b2, ge1 = genv_push_two_fresh_vars ge0 "__h" (`HS.mem) in
+      let h1, b1, ge1 = opt_push_fresh_state b1_opt "__h0_" ge0 in
+      let h2, b2, ge2 = opt_push_fresh_state b2_opt "__h1_" ge1 in
       ge2, ([h1], [b1]), ([h1; v; h2], List.Tot.flatten ([b1]::brs::[[b2]]))
     | E_Unknown ->
       (* We don't know what the effect is and the current pre and post-conditions
