@@ -9,7 +9,7 @@ all: FEM.Process.fst.cmxs
 FEM.Process.fst:
 
 FEM.Process.fst.checked: FEM.Process.fst
-	fstar.exe --cache_checked_modules FEM.Process.fst
+	fstar.exe --admit_smt_queries true --cache_checked_modules FEM.Process.fst
 
 FEM_Process.ml: FEM.Process.fst.checked
 	fstar.exe --codegen Plugin --extract_module FEM.Process FEM.Process.fst
