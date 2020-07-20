@@ -47,6 +47,13 @@ assume val sf1 (r : B.buffer int) :
     B.live h0 r /\ B.as_seq h0 r == B.as_seq h1 r /\
     n = List.Tot.fold_left (fun x y -> x + y) 0 (Seq.seq_to_list (B.as_seq h0 r))))
 
+assume val sf2 (l : list int) :
+  ST.ST (B.buffer int)
+  (requires (fun _ -> True))
+  (ensures (fun h0 r h1 ->
+    B.live h0 r /\
+    B.as_seq h1 r == Seq.seq_of_list l))
+
 let pred1 (x y z : nat) = True
 let pred2 (x y z : nat) = True
 let pred3 (x y z : nat) = True
@@ -209,7 +216,6 @@ let ci_ex3 (r1 r2 : B.buffer int) :
   ST.Stack int (requires (fun _ -> True)) (ensures (fun _ _ _ -> True)) =
   (**) let h0 = ST.get () in
   let n1 = sf1 r1 in (* <- Try C-c C-e here *)
-  (**) let h1 = ST.get () in
   (* [> assert(
    * [> (fun __h0 __h1 ->
    * [>  LowStar.Monotonic.Buffer.live __h0 r1 /\
@@ -291,7 +297,18 @@ let ut_ex1 (x y : nat) : unit =
    *)
   assert(f3 (f3 (x + y)) = 4 * (x + y));
   assert(2 * z1 = z1 + z1);  
-  assert(f3 (f3 (x + y)) = 2 * z1) (* <- Try the command on the left or right operand *)
+  assert(f3 (f3 (x + y)) = 2 * z1) (* <- Try to rewrite any operand *)
+
+/// Of course, it works with effectful functions too, and searches the context
+/// for state variables to use:
+let ut_ex2 () : ST.ST unit (requires (fun _ -> True)) (ensures (fun _ _ _ -> True)) =
+  let l : list int = [1; 2; 3; 4; 5; 6] in
+  let h0 = ST.get () in
+  let r = sf2 l in
+  let h1 = ST.get () in
+  assert(B.as_seq h1 r == B.as_seq h1 r); (* <- Try here *)
+  ()
+
 
 (**** Combining commands *)
 /// Those commands prove really useful when you combine them. The below example
@@ -300,7 +317,6 @@ let ut_ex1 (x y : nat) : unit =
 /// Invariants are sometimes divided in several pieces, for example a
 /// functional part, to which we later add information about aliasing.
 /// Moreover they are often written in the form of big conjunctions.
-// TODO: make this invariant functional
 let invariant1_s (l1 l2 l3 : Seq.seq int) =
   lpred1 l1 l2 /\
   lpred2 l2 l3 /\
