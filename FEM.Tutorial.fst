@@ -77,9 +77,9 @@ let spred4 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
 /// "rolling-admit" technique, which consists in inserting an admit in the
 /// problematic function and moving it around until we identify the exact
 /// piece of code which makes verification fail. This technique is made
-/// simpler by the [fem-roll-admit command] (C-x C-a).
+/// simpler by the [fem-roll-admit command] (C-c C-e C-r).
 
-/// Try typing C-x C-a anywhere below to insert/move an admit. Note that if
+/// Try typing C-c C-e C-r anywhere below to insert/move an admit. Note that if
 /// insert an admit inside the "if ... then ... else ...", you may have to
 /// add a ";" to ensure that F* can parse the function. fem-roll-admit tries
 /// to take that into account when you move the admit inside the if.
@@ -112,11 +112,10 @@ let simpl_ex1 (x : nat) =
 /// mitigating this problem is to convert the assertions to assumptions once we
 /// know they succeed.
 
-/// Try calling fem-switch-assert-assert-in-above-paragraph (C-c C-s C-a) or
-/// fem-switch-assert-assert-in-current-line (C-S-a) several times in the below
-/// function.
-/// Note that the first command operates either on the region above the pointer,
-/// or on the active selection.
+/// Try calling fem-switch-assert-assert-in-above-paragraph (C-c C-e C-a) in
+/// the below function.
+/// Note that it operates either on the region above the pointer, or on the active
+/// selection.
 let simpl_ex2 (x : nat) =
   let x1 = x + 1 in
   assert(x1 = x + 1);
@@ -139,23 +138,23 @@ let simpl_ex2 (x : nat) =
 /// obligation for example, etc. In other words: we sometimes feel blind when
 /// working in F*, and the workarounds (mostly copy-pasting and instantiating by hand
 /// the relevant pre/postconditions) are often painful.
-/// The fem-insert-pre-post command (C-c C-e) addresses this issue.
+/// The fem-analyze-effectful-term command (C-c C-e C-e) addresses this issue.
 
 /// Try testing the fem-insert-pre-post command on the let-bindings and the return result
 let ci_ex1 (x y : nat) : z:int{z % 3 = 0} =
   (* Preconditions:
-   * Type C-c C-e below to insert:
+   * Type C-c C-e C-e below to insert:
    * [> assert(x + 4 > 3); *)
-  let x1 = f1 (x + 4) y in (* <- Put your pointer on the left and type C-c C-e *)
+  let x1 = f1 (x + 4) y in (* <- Put your pointer on the left and type C-c C-e C-e *)
 
   (* Postconditions: *)
-  let x2 = f2 x1 y in (* <- Put your pointer on the left and type C-c C-e *)
-  (* Type C-c C-e above to insert:
+  let x2 = f2 x1 y in (* <- Put your pointer on the left and type C-c C-e C-e *)
+  (* Type C-c C-e C-e above to insert:
    * [> assert(x2 >= 8);
    * [> assert(x2 % 2 = 0); *)
 
   (* Typing obligations:
-   * Type C-c C-e below to insert:
+   * Type C-c C-e C-e below to insert:
    * [> assert(Prims.has_type (x2 <: Prims.nat) Prims.int);
    * [> assert(x2 % 2 = 0);
    * Note that the assertion gives indications about the parameter
@@ -166,13 +165,13 @@ let ci_ex1 (x y : nat) : z:int{z % 3 = 0} =
    * they are trivial (if the original type and the target type are
    * exactly the same, syntactically).
    *)
-  let x3 = f4 x2 in (* <- Put your pointer on the left and type C-c C-e *)
+  let x3 = f4 x2 in (* <- Put your pointer on the left and type C-c C-e C-e *)
 
   (* Current goal:
-   * Type C-c C-e below to insert:
+   * Type C-c C-e C-e below to insert:
    * [> assert(Prims.has_type (3 * (x1 + x2 + x3) <: Prims.int) Prims.nat);
    * [> assert(3 * (x1 + x2 + x3) % 3 = 0); *)
-  3 * (x1 + x2 + x3) (* <- Put your pointer on the left and type C-c C-e *)
+  3 * (x1 + x2 + x3) (* <- Put your pointer on the left and type C-c C-e C-e *)
 
 /// Note that you can use the "--print_implicits" option to adjust the output.
 /// Some proof obligations indeed sometimes fail while the user is certain to
@@ -182,7 +181,7 @@ let ci_ex1 (x y : nat) : z:int{z % 3 = 0} =
 #push-options "--print_implicits"
 let ci_ex1_ (x : nat) : unit =
   let y = x in
-  assert(x == y); (* <- Use C-c C-e here *)
+  assert(x == y); (* <- Use C-c C-e C-e here *)
   ()  
 #pop-options
 
@@ -207,14 +206,14 @@ let ci_ex2 (x y : int) :
 /// It leads to assertions of the form:
 /// [> assert((fun __x0 __x1 -> pred __x0 __x1) __x0 __x1)
 ///
-/// As fem-insert-pre-post performs simple normalization (to remove abstractions,
-/// for instance) on the terms it manipulates, the user can rewrite this assert to:
+/// As C-c C-e C-e simple normalization (to remove abstractions, for instance) on
+/// the terms it manipulates, you can manually rewrite this assert to:
 /// [> assert((fun __x0 __x1 -> pred __x0 __x1) x y)
 ///
-/// then apply C-c C-e on the above assertion to get:
+/// then apply C-c C-e C-e on the above assertion to get:
 /// [> assert(pred x y)
 ///
-/// Try this on the stateful calls in the below function. When applying C-c C-e on
+/// Try this on the stateful calls in the below function. When applying C-c C-e C-e on
 /// one of the resulting assertions, make sure you select the WHOLE assertion: as
 /// it will likely be written on several lines, the command will need some help for
 /// parsing.
@@ -222,7 +221,7 @@ let ci_ex2 (x y : int) :
 let ci_ex3 (r1 r2 : B.buffer int) :
   ST.Stack int (requires (fun _ -> True)) (ensures (fun _ _ _ -> True)) =
   (**) let h0 = ST.get () in
-  let n1 = sf1 r1 in (* <- Try C-c C-e here *)
+  let n1 = sf1 r1 in (* <- Try C-c C-e C-e here *)
   (* [> assert(
      [>   (fun __h1_0 ->
      [>    LowStar.Monotonic.Buffer.live h0 r1 /\
@@ -246,7 +245,7 @@ let ci_ex4 (x : int{x % 2 = 0}) :
   (requires True)
   (ensures (fun x' -> x' % 2 = 0 /\ x' >= x)) =
   let x = x + 4 in (* We shadow the original ``x`` here *)
-  x (* <- Try C-c C-e here *)
+  x (* <- Try C-c C-e C-e here *)
 
 
 (**** Split conjunctions *)
@@ -255,13 +254,13 @@ let ci_ex4 (x : int{x % 2 = 0}) :
 /// to copy-paste the proof obligation in an assertion, then split this assertion
 /// by hand. The copying part is already taken care of above, and the splitting part
 /// can be easily achieved with the fem-split-assert-assume-conjuncts command
-/// (C-c C-s C-u):
+/// (C-c C-e C-s):
 
-/// Move the pointer anywhere inside the below assert and use C-c C-s C-u.
+/// Move the pointer anywhere inside the below assert and use C-c C-e C-s.
 /// Note that you don't need to select the assert: the command expects to be inside
 /// an assert and can find its boundaries on its own.
 let split_ex1 (x y z : nat) : unit =
-  assert( (* <- Try C-c C-s C-u anywhere inside the assert *)
+  assert( (* <- Try C-c C-e C-s anywhere inside the assert *)
     pred1 x y z /\
     pred2 x y z /\
     pred3 x y z /\
@@ -277,13 +276,13 @@ let split_ex1 (x y z : nat) : unit =
 (**** Unfold terms *)
 /// It sometimes happens that we need to unfold a term in an assertion, for example
 /// in order to check why some equality is not satisfied.
-/// fem-unfold-in-assert-assume (C-c C-s C-f) addresses this issue.
+/// fem-unfold-in-assert-assume (C-c C-s C-u) addresses this issue.
 
 let ut_ex1 (x y : nat) : unit =
   let z1 = f3 (x + y) in
 
   (* Unfold definitions: *)
-  assert(z1 = f3 (x + y)); (* <- Move the pointer EXACTLY over ``f3`` and use C-c C-s C-f *)
+  assert(z1 = f3 (x + y)); (* <- Move the pointer EXACTLY over ``f3`` and use C-c C-e C-u *)
 
   (* Unfold arbitrary identifiers:
    * In case the term to unfold is not a top-level definition but a local
