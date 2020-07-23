@@ -939,11 +939,10 @@ have to be inside the assertion/assumption.  It can for instance be on an
               (setq $pbeg (point))
               (fem-safe-forward-sexp)
               (setq $pend (point))
-              (make-fem-pair :fst $sexp :snd (make-fem-pair :fst $pbeg :snd $pend))
-              ))
-          ;; Otherwise, call find-encompassing-assert-assume-p
+              (make-fem-pair :fst $sexp :snd (make-fem-pair :fst $pbeg :snd $pend)))
+          ;; Otherwise, move then call find-encompassing-assert-assume-p
           (goto-char $pos)
-          (fem-find-encompassing-assert-assume-p $pos $rbeg $rend)))))
+          (fem-find-encompassing-assert-assume-p $pos $rbeg $rend))))))
 
 (defun fem-find-encompassing-let-in (TERM_BEG TERM_END &optional BEG END)
   "Look for the 'let _ = _ in' or '_;' expression around the term.
@@ -1541,12 +1540,19 @@ Otherwise, the string is made of a number of spaces equal to the column position
   (setq $p0 (point))
   (when $markers (goto-char (fem-pair-fst $markers)))
   ;; Parse the assertion/assumption. Note that we may be at the beginning of a
-  ;; line with an assertion/assumption, so we first try to move. More
-  ;; specifically, it is safe to ignore comments and space if we are surrounded
-  ;; by spaces or inside a comment.
+  ;; line with an assertion/assumption, or just after the assertion/assumption.
+  ;; so we first try to move.
   (setq $tbeg (fstar-subp--untracked-beginning-position))
-  (when (or (fem-is-in-spaces-p) (fstar-in-comment-p)) (fem-skip-comments-and-spaces t))
+  ;; First: we are inside or before the assert: move forward
+  (when (or (fem-is-in-spaces-p) (fstar-in-comment-p)) (fem-skip-comments-and-spaces t))  
   (setq $passert (fem-find-assert-assume-p (point) $tbeg))
+  ;; If not found: move backward and eventually ignore a ';'
+  (when (not $passert)
+    (goto-char $p0)
+    (fem-skip-comments-and-spaces nil (point-at-bol))
+    (when (fem-previous-char-is-semicol-p)
+      (backward-char))
+    (setq $passert (fem-find-assert-assume-p (point) $tbeg)))
   (when (not $passert) (error "Pointer not over an assert/assert_norm/assume"))
   ;; Parse the encompassing let (if there is)
   (setq $a-beg (fem-pair-fst (fem-pair-fst $passert))
