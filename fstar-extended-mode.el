@@ -339,42 +339,57 @@ Return the number of deleted characters."
    (equivalent) original position."
   (fem-apply-in-current-region ACTION nil t nil nil))
 
-(defun fem-replace-all-in (FROM TO &optional IGNORE_COMMENTS BEG END)
+(defun fem-replace-all-in (FROM TO &optional IGNORE_COMMENTS FULL_SEXP BEG END)
   "Replace all the occurrences of FROM by TO and return the number of characters
 by which to shift the pointer, leaving the pointer at the shifted position.
 Takes optional region delimiters BEG and END as arguments.
-Doesn't replace inside comments if IGNORE_COMMENTS is t."
+Doesn't replace inside comments if IGNORE_COMMENTS is t.
+If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
   (let (($p0 (point)) ;; original position
         ($p (point)) ;; current position
         ($shift 0) ;; number of characters by which we shift the original position
         ($length-dif (- (length TO) (length FROM))) ;; shift of one replacement
         ($beg (or BEG (point-min)))
         ($end (or END (point-max)))
-        )
+        $replace
+        $exp)
     ;; Replace all the occurrences of FROM
     (goto-char $beg)
     (while (search-forward FROM $end t)
-      (progn
-        ;; Check if we need to replace
-        (if (or (not IGNORE_COMMENTS) (not (fem-in-general-comment-p)))
-            (progn
-              ;; Compute the pointer shift: if the current position is smaller or equal
-              ;; than the original position with the current shift, add $length-dif
-              ;; to the shift
-              (setq $p (point))
-              (when (<= $p (+ $p0 $shift)) (setq $shift (+ $shift $length-dif)))
-              ;; Replace
-              (replace-match TO))
-          ;; Otherwise: just move
-          (goto-char (match-end 0)))))
-    ;; Move to the shifted position and return the shift
-    (goto-char (+ $p0 $shift))
-    $shift))
+      ;; Check if we need to replace
+      (cond
+       ;; Ignore comments
+       ((and IGNORE_COMMENTS (fem-in-general-comment-p))
+        (setq $replace nil))
+       ;; Check if full sexp
+       (FULL_SEXP
+        (goto-char (match-beginning 0))
+        (setq $exp (fem-sexp-at-p-as-string))
+        (if $exp (setq $replace (string-equal $exp FROM))
+          (setq $replace nil)))
+       (t (setq $replace t)))
+       (goto-char (match-end 0))
+       ;; Replace          
+      (when $replace
+        (progn
+          ;; Compute the pointer shift: if the current position is smaller or equal
+          ;; to the original position with the current shift, add $length-dif
+          ;; to the shift
+          (setq $p (point))
+          (when (<= $p (+ $p0 $shift)) (setq $shift (+ $shift $length-dif)))
+          ;; Replace
+          (replace-match TO))
+        ;; Otherwise: just move
+        (goto-char (match-end 0))))
+  ;; Move to the shifted position and return the shift
+  (goto-char (+ $p0 $shift))
+  $shift))
 
-(defun fem-replace-in-current-region (FROM TO IGNORE_COMMENTS ALLOW_SELECTION INCLUDE_CURRENT_LINE
+(defun fem-replace-in-current-region (FROM TO IGNORE_COMMENTS FULL_SEXP
+                                      ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                       ABOVE_PARAGRAPH BELOW_PARAGRAPH)
   ""
-  (let (($r (apply-partially 'fem-replace-all-in FROM TO IGNORE_COMMENTS)))
+  (let (($r (apply-partially 'fem-replace-all-in FROM TO IGNORE_COMMENTS FULL_SEXP)))
     ;; Apply the replace function
     (fem-apply-in-current-region $r ALLOW_SELECTION INCLUDE_CURRENT_LINE
                              ABOVE_PARAGRAPH BELOW_PARAGRAPH)))
@@ -388,27 +403,35 @@ Doesn't replace inside comments if IGNORE_COMMENTS is t."
   (interactive)
   "Check if there are occurrences of 'assert' or 'assert_norm in the current region.
    If so, replace them with 'assume'. Ohterwise, replace all the 'assume' with 'assert'."
-  (let ($p $p1 $p2 $has-asserts $replace $delimiters $p)
+  (let ($p $p1 $p2 $keep-selection $has-asserts $replace $delimiters $p)
     ;; Find the region delimiters and restrain the region
     (setq $delimiters (fem-find-region-delimiters ALLOW_SELECTION INCLUDE_CURRENT_LINE
-                                              ABOVE_PARAGRAPH BELOW_PARAGRAPH))
-    (setq $p1 (fem-pair-fst $delimiters) $p2 (fem-pair-snd $delimiters))
+                                                  ABOVE_PARAGRAPH BELOW_PARAGRAPH))
+    (setq $p1 (fem-pair-fst $delimiters)
+          $p2 (fem-pair-snd $delimiters)
+          $keep-selection (and (use-region-p) ALLOW_SELECTION))
     (save-restriction
       (narrow-to-region $p1 $p2)
       (setq $p (point))
       ;; Check if there are assertions to know whether to replace assertions
       ;; by assumptions or the revert
       (goto-char (point-min))
-      (setq $has-asserts (fem-search-forward-not-comment "assert" nil))
+      (setq $has-asserts (fem-search-forward-not-comment "assert" t nil))
       (goto-char $p)
       ;; Replace
       (if $has-asserts
           (progn
-             (fem-replace-all-in "assert_norm" "assume(*norm*)" t)
-             (fem-replace-all-in "assert" "assume" t))
+             (fem-replace-all-in "assert_norm" "assume(*norm*)" t t)
+             (fem-replace-all-in "assert" "assume" t t))
            (progn
-             (fem-replace-all-in "assume(*norm*)" "assert_norm" t)
-             (fem-replace-all-in "assume" "assert" t))))))
+             (fem-replace-all-in "assume(*norm*)" "assert_norm" t nil)
+             (fem-replace-all-in "assume" "assert" t t))))
+      ;; Maintain the selection if there was one
+    (when $keep-selection
+      (message "keep selection")
+      (setq deactivate-mark nil)
+      (exchange-point-and-mark)
+      (exchange-point-and-mark))))
 
 (defun fem-switch-assert-assume-in-above-paragraph ()
   (interactive)
@@ -490,13 +513,26 @@ Doesn't replace inside comments if IGNORE_COMMENTS is t."
   (save-restriction
     (or (fstar-in-comment-p POS) (fstar-in-literate-comment-p))))
 
-(defun fem-search-forward-not-comment (STR &optional LIMIT)
+(defun fem-search-forward-not-comment (STR &optional FULL_SEXP LIMIT)
     "Looks for the first occurrence of STR not inside a comment, returns t and
 moves the pointer immediately after if it finds one, doesn't move the pointer
-and returns nil otherwise."
-    (let (($p (point)))
+and returns nil otherwise.
+If FULL_SEXP, look for the first occurrence which is a full sexp."
+    (let (($p (point))
+          $exp)
       (fstar--search-predicated-forward
-       (lambda () (not (fem-in-general-comment-p))) STR LIMIT)
+       (lambda ()
+         (if (fem-in-general-comment-p)
+             nil
+           (if (not FULL_SEXP)
+               t
+             (goto-char (match-beginning 0))
+             (setq $exp (fem-sexp-at-p-as-string))
+             (goto-char (match-end 0))
+             (if $exp
+                 (string-equal $exp STR)
+               nil))))
+       STR LIMIT)
       (not (= $p (point)))))
 
 ;; TODO: add to fstar-mode.el
@@ -643,7 +679,7 @@ In practice, simply check if there is a ',' inside."
   (save-excursion
     (save-restriction
       (goto-char BEG)
-      (fem-search-forward-not-comment "," END))))
+      (fem-search-forward-not-comment "," nil END))))
 
 (defun fem-space-after-p (&optional POS)
   "Return t if there is a space at POS.
@@ -1738,7 +1774,8 @@ TODO: take into account if/match branches"
 ;;(global-set-key (kbd "C-x C-a") 'fem-roll-admit)
 ;;(global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
 
-(global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
+(global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-in-above-paragraph)
+;;(global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
 ;;(global-set-key (kbd "C-c C-e C-a") 'fem-switch-assert-assume-in-above-paragraph)
 
 ;;(global-set-key (kbd "C-S-a") 'fem-switch-assert-assume-in-current-line)
