@@ -33,6 +33,11 @@ let rec tryPick f l = match l with
          | Some x -> Some x
          | None -> tryPick f tl
 
+val filter: ('a -> Tac bool) -> list 'a -> Tac (list 'a)
+let rec filter f = function
+  | [] -> []
+  | hd::tl -> if f hd then hd::(filter f tl) else filter f tl
+
 (* TODO: move to FStar.Tactics.Derived.fst *)
 let rec mk_abs (t : term) (args : list binder) : Tac term (decreases args) =
   match args with
@@ -454,6 +459,10 @@ noeq type typ_or_comp =
 | TC_Typ : v:typ -> m:list (bv & bv) -> typ_or_comp
 | TC_Comp : v:comp -> m:list (bv & bv) -> typ_or_comp
 
+val inst_vars_of_typ_or_comp : typ_or_comp -> Tot (list (bv & bv))
+let inst_vars_of_typ_or_comp c =
+  match c with | TC_Typ _ m | TC_Comp _ m -> m
+
 /// Compute a ``typ_or_comp`` from the type of a term
 val safe_typ_or_comp : bool -> env -> term ->
                        Tac (opt:option typ_or_comp{Some? opt ==> TC_Comp? (Some?.v opt)})
@@ -704,6 +713,18 @@ let abs_free_in ge t =
   let absfree = List.Tot.filter is_free_in_term absl in
   absfree
 
+/// Returns the list of free shadowed variables appearing in a term.
+val shadowed_free_in : genv -> term -> Tac (list bv)
+let shadowed_free_in ge t =
+  let fvl = free_in t in
+  List.Tot.filter (fun bv -> bv_is_shadowed ge bv) fvl
+
+/// Returns true if a term contains variables which are shadowed in a given environment
+val term_has_shadowed_variables : genv -> term -> Tac bool
+let term_has_shadowed_variables ge t =
+  let fvl = free_in t in
+  Some? (List.Tot.tryFind (bv_is_shadowed ge) fvl)
+
 (*** Simplification *)
 /// Whenever we generate assertions, we simplify them to make them cleaner,
 /// prettier and remove the trivial ones. The normalization steps we apply
@@ -946,7 +967,7 @@ let opt_cons (#a : Type) (opt_x : option a) (ls : list a) : Tot (list a) =
   | None -> ls
 
 /// Apply a term to a list of parameters, normalize the result to make sure
-/// any abstractions are evaluated
+/// all the abstractions are simplified
 val mk_app_norm : genv -> term -> list term -> Tac term
 let mk_app_norm ge t params =
   let t1 = mk_e_app t params in
@@ -1013,15 +1034,16 @@ let generate_shadowed_subst ge =
   let dummy = mk_abs (`()) bl in
   _generate_shadowed_subst ge dummy bvl
 
-/// Converts a ``typ_or_comp`` to an ``effect_info``, applies the instantiation
+/// Converts a ``typ_or_comp`` to an ``effect_info`` by applying the instantiation
 /// stored in the ``typ_or_comp``.
 let typ_or_comp_to_effect_info (ge : genv) (c : typ_or_comp) :
   Tac effect_info =
   (* Prepare the substitution of the variables from m *)
-  let m = match c with | TC_Typ ty m -> m | TC_Comp cv m -> m in
-  let subst_src, subst_tgt = unzip m in
-  let subst_tgt = map (fun x -> pack (Tv_Var x)) subst_tgt in
-  let subst = zip subst_src subst_tgt in
+  let m = inst_vars_of_typ_or_comp c in
+  let subst = map (fun (src, tgt) -> (src, pack(Tv_Var tgt))) m in
+  (* We need to revert the list of substitutions: the outer variables are
+   * inserted in the list first and are first at the end *)
+  let subst = rev subst in
   let asubst x = apply_subst ge.env x subst in
   let opt_asubst (opt : option term) : Tac (option term) =
     match opt with
@@ -1033,6 +1055,7 @@ let typ_or_comp_to_effect_info (ge : genv) (c : typ_or_comp) :
     let refin' = opt_asubst tinfo.refin in
     mk_type_info ty' refin'
   in
+  (* Apply the substitution on the effect *)
   match c with
   | TC_Typ ty m ->
     let tinfo = get_type_info_from_type ty in
@@ -1047,6 +1070,17 @@ let typ_or_comp_to_effect_info (ge : genv) (c : typ_or_comp) :
       let pre = opt_asubst einfo.ei_pre in
       let post = opt_asubst einfo.ei_post in
       mk_effect_info einfo.ei_type ret_type_info pre post
+
+/// Retrieve the list of types from the parameters stored in ``typ_or_comp``.
+val typ_or_comp_to_param_types : typ_or_comp -> Tot (list typ)
+
+let typ_or_comp_to_param_types c =
+  (* For now we only retrieve the types from the variables used for instantiation.
+   * Note that we may have to do something more complex (maybe the variables used
+   * for the instantiation don't have a type which exactly macthes the expected
+   * types). *)
+  let m = inst_vars_of_typ_or_comp c in
+  List.Tot.map (fun (_, x) -> type_of_bv x) m
 
 (**** Step 2 *)
 /// The retrieved type refinements and post-conditions are not instantiated (they
@@ -1585,7 +1619,7 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
     end
   else begin
     (* Generate propositions from the target computation (pre, post, type cast) *)
-    let ge2, gpre_prop, gcast_props, gpost_prop =
+    let ge2, gparams_props, gpre_prop, gcast_props, gpost_prop =
       let with_goal : bool = with_gpre || with_gpost in
       begin match opt_c, with_goal with
       | Some c, true ->
@@ -1593,14 +1627,61 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
         print_dbg dbg ("- target effect: " ^ effect_info_to_string ei);
         print_dbg dbg ("- global unfilt. pre: " ^ option_to_string term_to_string ei.ei_pre);
         print_dbg dbg ("- global unfilt. post: " ^ option_to_string term_to_string ei.ei_post);
+        (* The parameters' type information. To be used only if the variables are not
+         * shadowed (the parameters themselves, but also the variables inside the refinements) *)
+        let gparams_props =
+          begin
+          if with_gpre then
+            begin
+            print_dbg dbg "Generating assertions from the global parameters' types";
+            print_dbg dbg ("Current genv:\n" ^ genv_to_string ge1);
+            (* Retrieve the types and pair them with the parameters - note that
+             * we need to reverse the list of parameters (the outer parameter was
+             * added first in the list and is thus last) *)
+            let param_types = typ_or_comp_to_param_types c in
+            let params = inst_vars_of_typ_or_comp c in
+            if dbg then
+              iteri (fun i (_, bv) -> print ("Global parameter " ^ string_of_int i ^
+                                           ": " ^ bv_to_string bv)) params;
+            let params = rev (zip params param_types) in
+            (* Filter the shadowed parameters *)
+            let params = filter (fun ((_, bv), _) -> not (bv_is_shadowed ge1 bv)) params in
+            (* Generate the propositions *)
+            let param_to_props (x : (bv & bv) & typ) : Tac (list term) =
+              let (_, bv), ty = x in
+              print_dbg dbg ("Generating assertions from global parameter: " ^ bv_to_string bv);
+              let tinfo = get_type_info_from_type ty in
+              let v = pack (Tv_Var bv) in
+              let p1 = mk_has_type v tinfo.ty in
+              let pl = match tinfo.refin with
+              | None -> []
+              | Some r ->
+                let p2 = mk_app_norm ge1 r [v] in
+                (* Discard the proposition generated from the type refinement if
+                 * it contains shadowed variables *)
+                if term_has_shadowed_variables ge1 p2
+                then begin print_dbg dbg "Discarding type refinement because of shadowed variables"; [] end
+                else begin print_dbg dbg "Keeping type refinement"; [p2] end
+              in
+              p1 :: pl
+            in
+            let props = map param_to_props params in
+            List.Tot.flatten props
+            end
+          else
+            begin
+            print_dbg dbg "Ignoring the global parameters' types";
+            []
+            end
+          end <: Tac (list term)
+        in
         (* The global pre-condition is to be used only if none of its variables
          * are shadowed (which implies that we are close enough to the top of
          * the function *)
         let gpre =
           match ei.ei_pre, with_gpre with
           | Some pre, true ->
-            let abs_vars = abs_free_in ge1 pre in
-            if Cons? abs_vars then
+            if term_has_shadowed_variables ge1 pre then
               begin
               print_dbg dbg "Dropping the global precondition because of shadowed variables";
               None
@@ -1660,9 +1741,9 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
         print_dbg dbg ("- global pre prop: " ^ option_to_string term_to_string gpre_prop);
         print_dbg dbg ("- global post prop: " ^ option_to_string term_to_string gpost_prop);
         (* Return type: TODO *)
-        ge2, gpre_prop, gcast_props, gpost_prop
+        ge2, gparams_props, gpre_prop, gcast_props, gpost_prop
       | _, _ ->
-        ge1, None, [], None
+        ge1, [], None, [], None
       end <: Tac _
     in
     (* Generate the propositions: *)
@@ -1680,6 +1761,7 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
     let ret_refin_prop = opt_mk_app_norm ge2 (get_opt_refinment einfo.ei_ret_type) ret_values in
     (* Concatenate, revert and return *)
     let pres = opt_cons gpre_prop (List.Tot.rev (opt_cons pre_prop params_props)) in
+    let pres = append gparams_props pres in
     let posts = opt_cons ret_has_type_prop
                 (opt_cons ret_refin_prop (opt_cons post_prop
                  (List.append gcast_props (opt_cons gpost_prop [])))) in
