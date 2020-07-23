@@ -270,8 +270,8 @@ let genv_abstract_bvs ge =
 /// (it is thus not enough to have a fresh integer).
 let rec _fresh_bv binder_names basename i ty : Tac bv =
   let name = basename ^ string_of_int i in
-  (* In worst case the performance is quadratic in the number of binders,
-   * but it is very unlikely that we get the worst case  *)
+  (* In worst case the performance is quadratic in the number of binders.
+   * TODO: fix that, it actually probably happens for anonymous variables ('_') *)
   if List.mem name binder_names then _fresh_bv binder_names basename (i+1) ty
   else fresh_bv_named name ty
 
@@ -1061,6 +1061,13 @@ noeq type assertions = {
 let mk_assertions pres posts : assertions =
   Mkassertions pres posts
 
+/// Generate a term of the form [has_type x ty]
+val mk_has_type : term -> typ -> Tac term
+let mk_has_type t ty =
+  let params = [(ty, Q_Implicit); (t, Q_Explicit); (ty, Q_Explicit)] in
+  mk_app (`has_type) params  
+
+
 // TODO: I don't understand why I need ifuel 2 here
 #push-options "--ifuel 2"
 /// Generate the propositions equivalent to a correct type cast.
@@ -1553,8 +1560,9 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
     | Some v -> ge, v, None
     | None ->
       (* If the studied term is stateless, we can use it directly in the
-       * propositions, otherwise we need to introduced a variable for the return
-       * type *)
+       * propositions, otherwise we need to introduce a variable for the return
+       * type. Remember that the studied term might be a return value: it is
+       * not necessarily binded in a let. *)
       if effect_type_is_stateful einfo.ei_type then
         let b = fresh_binder ge.env "__ret" einfo.ei_ret_type.ty in
         let bv = bv_of_binder b in
@@ -1664,11 +1672,17 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
     let (ret_values : list term), (ret_binders : list binder) =
       if E_Lemma? einfo.ei_type then ([] <: list term), ([] <: list binder)
       else [v], (match opt_b with | Some b -> [b] | None -> []) in
+    let ret_has_type_prop =
+      match ret_values with
+      | [v] -> Some (mk_has_type v einfo.ei_ret_type.ty)
+      | _ -> None
+    in
     let ret_refin_prop = opt_mk_app_norm ge2 (get_opt_refinment einfo.ei_ret_type) ret_values in
     (* Concatenate, revert and return *)
     let pres = opt_cons gpre_prop (List.Tot.rev (opt_cons pre_prop params_props)) in
-    let posts = opt_cons ret_refin_prop (opt_cons post_prop
-                 (List.append gcast_props (opt_cons gpost_prop []))) in
+    let posts = opt_cons ret_has_type_prop
+                (opt_cons ret_refin_prop (opt_cons post_prop
+                 (List.append gcast_props (opt_cons gpost_prop [])))) in
     ge2, { pres = pres; posts = posts }
     end
 
