@@ -1618,7 +1618,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
   ;; Find the identifier by computing its delimiting positions
   (if (and $markers (fem-pair-snd $markers))
       ;; There is a second marker: use it as the end of the identifier
-      (setq $id $marker)
+      (setq $id $markers)
     ;; Otherwise: use the active selection if there is one
     (if (use-region-p)
         ;; Use the selected region
