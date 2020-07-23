@@ -99,6 +99,9 @@ let simpl_ex1 (x : nat) =
       end
     else 12
   in
+  assert(
+    x >= 0 /\
+    y >= 0);
   let w' = 2 * w + z in
   w'
 
@@ -112,7 +115,7 @@ let simpl_ex1 (x : nat) =
 /// mitigating this problem is to convert the assertions to assumptions once we
 /// know they succeed.
 
-/// Try calling fem-switch-assert-assert-in-above-paragraph (C-c C-e C-a) in
+/// Try calling fem-switch-assert-assume-in-above-paragraph (C-c C-e C-a) in
 /// the below function.
 /// Note that it operates either on the region above the pointer, or on the active
 /// selection.
@@ -126,6 +129,7 @@ let simpl_ex2 (x : nat) =
   assert_norm(8 * 4 < 40);
   let x3 = 2 * x2 + 6 in
   assert(x3 = 6 * (x + 2) + 6);
+  let assertion = True in
   assert(x3 = 6 * (x + 3));
   assert(x3 % 3 = 0);
   x3
@@ -186,11 +190,15 @@ let ci_ex1_ (x : nat) : unit =
 #pop-options
 
 /// fem-insert-pre-post also handles the "global" precondition (execute the command
-/// while anywhere inside the below function).
-let ci_ex2 (x y : int) :
+/// while anywhere inside the below function) and the "global" parameters.
+let ci_ex2 (x : nat{x % 2 = 0}) (y : int{y % 3 = 0 /\ x + y % 5 = 0}) :
   Pure int
   (requires (x + y >= 0))
   (ensures (fun z -> z >= 0)) =
+  (* [> assert(Prims.has_type x Prims.nat); *)
+  (* [> assert(x % 2 = 0); *)
+  (* [> assert(Prims.has_type y Prims.int); *)
+  (* [> assert(y % 3 = 0 /\ x + y % 5 = 0); *)
   (* [> assert(x + y >= 0); *)
   let z = x + y in
   z
