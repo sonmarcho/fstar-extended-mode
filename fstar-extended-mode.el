@@ -106,7 +106,7 @@ Format FORMAT-PARAMS according to FORMAT-STRING."
   "Check if the current line is only made of spaces."
   (save-excursion
     (beginning-of-line)
-    (looking-at-p "[[:space:]]*$")))
+    (looking-at-p "[ ]*$")))
 
 (defun fem-current-line-is-comments-and-spaces ()
   "Check if the current line is only made of comments and spaces."
@@ -147,9 +147,25 @@ returns nil or raises an error depending on NO_ERROR."
   (ignore-errors
     (= (char-before) ?;)))
 
-(defun fem-parse-previous-sexp-p (&optional LIMIT)
+(defun fem-next-char-is-semicol-p (&optional POS)
+  "Return t if the point before POS is ';'"
+  (ignore-errors
+    (= (char-after) ?;)))
+
+(defun fem-parse-next-sexp-p (&optional POS LIMIT)
   (let (($limit (or LIMIT (point-min)))
-        ($p0 (point))
+        ($p0 (or POS (point)))
+        $p1)
+    (fem-skip-comments-and-spaces t $limit)
+    ;; Ignore the errors: if can't parse a sexp, return nil
+    (ignore-errors
+      (forward-sexp)
+      (setq $p1 (point))
+      (buffer-substring-no-properties $p0 $p1))))
+
+(defun fem-parse-previous-sexp-p (&optional POS LIMIT)
+  (let (($limit (or LIMIT (point-min)))
+        ($p0 (or POS (point)))
         $p1)
     (fem-skip-comments-and-spaces nil $limit)
     ;; Ignore the errors: if can't parse a sexp, return nil
@@ -1423,6 +1439,147 @@ TODO: use overlays."
         (setq $delimiters (fem-find-region-delimiters $allow-selection t nil nil $p)))
       (goto-char $p0)
       $delimiters)))
+
+;; The result of a few tests on regexps:
+;; - for letters: use [:alpha:] or [:a-zA-Z]
+;; - for numbers: use [:0-9:] ([:digit:] and [:alnum:] doesn't work)
+;; - for spaces: use [\t\n\r ] (this includes line breaks) ([:space:] and [:blank:] don't work)
+
+(defconst fem--spaces-re (concat "[" fstar--spaces "]")) ;; [\t\n\r ]
+
+(defun fem-next-char-is-single-equal ()
+  "Return t if the next character is '=' and is the beginning of a special symbol."
+  (looking-at-p "=\\([:alpha:]\\|[0-9]\\|[\t\n\r ]\\)"))
+
+(defun fem-next-char-is-single-bar ()
+  "Return t if the next character is '|' and is the beginning of a special symbol."
+  (looking-at-p "|\\([:alpha:]\\|[0-9]\\|[\t\n\r ]\\)"))
+
+(defun fem-parse-control-flow (&optional BEG END)
+  "Parse the region from BEG to END to analyze the control flow.
+Only perform very simple parsing to analyze whether the point is inside the branch of an if, etc.
+Return the list of encountered parent constructs."
+  (let (($beg (or BEG (point-min)))
+        ($end (or END (point-max)))
+        ($parents nil)
+        ($continue t) ;; looping condition
+        ($skip nil) ;; skip the end of the loop body for this iteration if t
+        $first-parent-is
+        $pop-parent $push-parent $pop-until
+        $exp $exp-str $p)
+    (save-restriction
+      (narrow-to-region $beg $end)
+      (defun $first-parent-is (SYMBOL)
+        "Check if the first parent is equal to SYMBOL, if there is such a parent"
+        (if $parents (= SYMBOL (fem-pair-fst (car $parents))) nil))
+      (defun $pop-parent ()
+        "Pop the first parent"
+        (let (($p (car $parents)))
+          (setq $parents (cdr $parents))
+          $p))
+      (defun $push-parent (P DATA)
+        "Push P to the list of parents with metadata DATA"
+        (setq $parents (cons (make-fem-pair :fst P :snd DATA) $parents)))
+      ;; TODO: the below function is not safe.
+      ;; List the cases where it makes sense, depending on the symbol we give.
+      ;; For 'end:
+      ;; - 'match, 'else: ok
+      ;; - 'let: not ok
+      (defun $pop-until (SYMBOL)
+        "Pop all the parents up to (and including) the first occurrence of SYMBOL"
+        (let (($continue t))
+          (while $continue
+            (if (or ($first-parent-is SYMBOL) (not $parents))
+                (setq $continue nil)
+              ($pop-parent)))))
+      ;; The parsing loop
+      (while $continue
+        ;; Reinitialize the $skip variable
+        (setq $skip nil)
+        ;; Ignore comments and spaces
+        (fem-skip-comments-and-spaces t)
+        ;; SEMI-COLONS
+        ;; Before parsing the sexp, we need to check if there is a ';' (because
+        ;; it is treated in an invalid manner by the current syntax table)
+        (when
+            (fem-next-char-is-semicol)
+          ;; Ignore the ";"
+          (forward-char)
+          ;; Check if we are in the branch of an 'if ... then ... else ...
+          ;; If inside a 'then': it should have only one branch (of type unit): pop it
+          (if ($first-parent-is 'then) ($pop-parent)
+            ;; If inside an 'else": this is the end of this branch (pop it)
+            (when ($first-parent-is 'else) ($pop-parent)))
+          ;; Skip the end of the current iteration
+          (setq $skip t))
+        ;; VERTICAL BARS
+        ;; '|' characters are not treated correctly either. Note that we need to
+        ;; check that there is only one such character.
+        (when
+            (and (not $skip)
+                 (fem-next-char-is-single-bar)) ;; TODO: implement
+          ;; Ignore the "|"
+          (forward-char))
+        ;; EQUALS
+        ;; '=' characters are not treated correctly either. Note that we need to
+        ;; check that there is only one such character.
+        (when
+            (and (not $skip)
+                 (fem-next-char-is-single-equal)) ;; TODO: implement
+          ;; Ignore the "|"
+          (forward-char))
+        ;; SEXP
+        ;; Parse the next sexp and check if it is a delimiter
+        (when (not $skip)
+          (setq $exp (fem-parse-next-sexp-p))
+          (if (not $exp)
+              ;; If we couldn't parse a sexp, there are several cases:
+              ;; - either we reached the end of the region: we stop
+              ;; - or we reached an open parenthesis which is not closed: we dive in
+              ;; - any other situation is an error
+              (cond
+               ;; Reached the end
+               ((= (point) ($end))
+                (setq $continue nil))
+               ;; Open parenthesis
+               ((looking-at-p (regexp-quote "("))
+                ($push-parent 'open-parenthesis (point))
+                (forward-char))
+               ;; Error
+               (t (error (concat "fem-parse-control-flow: inconsistent parse: expected '(', got:\n"
+                                 (buffer-substring-no-properties (point) $end)))))
+            ;; Otherwise: check if the sexp is a syntax identifier
+            (setq $exp-str (buffer-substring-no-properties (fem-pair-fst $exp)
+                                                           (fem-pair-snd $exp)))
+            ;; Get the beginning of the sexp
+            (setq $p (fem-pair-fst $exp))
+            (cond
+             ;; begin
+             ((string-equal $exp-str "begin")
+              ($push-parent 'begin $p))
+             ;; end: this delimiter might end several expressions at once
+             ((string-equal $exp-str "end")
+              ($pop-until 'begin))
+             ;; match
+             ((string-equal $exp-str "match")
+              ($push-parent 'match $p))
+             ;; if
+             ((string-equal $exp-str "if")
+              ($push-parent 'if $p))
+             ;; then: might end several expressions at once
+             ((string-equal $exp-str "then")
+              ($pop-until 'if))
+             ;; else: might end several expressions at once
+             ((string-equal $exp-str "else")
+              ($pop-until 'then))
+             ((string-equal $exp-str "let")
+              ($push-parent 'let $p))
+             ;; in: might end several expressions at once
+             ((string-equal $exp-str "in")
+              ($pop-until 'let))
+            ))))
+      ;; Return
+      $parents)))
 
 (defun fem-copy-def-for-meta-process (END INSERT_ADMIT SUBEXPR DEST_BUFFER PP_INSTR)
   "Copy code for meta-processing and update the parsed result positions.
