@@ -140,26 +140,7 @@ returns nil or raises an error depending on NO_ERROR."
       (end-of-line)
       (newline)
       (indent-according-to-mode))
-;;    (if $indent-str (insert $indent-str) (indent-according-to-mode))
     (insert TERM)))
-
-(defun t2 ()
-  (interactive)
-  (backward-sexp))
-
-;; TODO HERE
-;;(defun fem-find-assert-assume-p (&optional POS BEG END)
-
-(defun t3 ()
-  (interactive)
-  (let ((a (fem-find-assert-assume-p)))
-    (if a (goto-char (fem-pair-fst (fem-pair-fst a)))
-      (message "no assert found"))))
-
-
-(defun t4 ()
-  (interactive)
-  (if (fem-previous-char-is-semicol-p) (message "yes") (message "no")))
 
 (defun fem-previous-char-is-semicol-p (&optional POS)
   "Return t if the point before POS is ';'"
@@ -177,29 +158,28 @@ returns nil or raises an error depending on NO_ERROR."
       (setq $p1 (point))
       (buffer-substring-no-properties $p1 $p0))))
 
-;; TODO: this parsing function can be fooled by expressions of the form:
-;; 'let x = let y = _ in _ in'
 (defun fem-parse-previous-letb (&optional LIMIT)
-  "Return a fem-pair delimiting the parsed let expression, nil otherwise"
+  "Return a fem-pair delimiting the parsed let expression, nil otherwise.
+The expression can also of the form: '...;', which is syntactic sugar for 'let _ = ... in;'"
   (let (($limit (or LIMIT (point-min)))
         ($p0 (point))
         ($p (point))
         ($p1 nil)
         ($continue t)
-        ($in-cnt 0) ;; Count the number of 'in' we encountered, to handle nested let expressions
+        ($in-cnt 0) ;; Count the number of 'in' encountered, to handle nested let expressions
         $parse-sexp
         $exp)
-    (message "[> fem-parse-previous-letb")
+    (fem-log-dbg "[> fem-parse-previous-letb")
     ;; Find the end of expression delimiter
     (fem-skip-comments-and-spaces nil $limit)
     ;; Check if previous is ';': if so, find next occurrence of ';' or 'in'
     (if (fem-previous-char-is-semicol-p)
         (progn
-          (message "End delimiter is ';'")
+          (fem-log-dbg "End delimiter is ';'")
           (backward-char 1)
           (while $continue
-            (fem-skip-comments-and-spaces nil $limit)
             (setq $p (point))
+            (fem-skip-comments-and-spaces nil $limit)
             (if (fem-previous-char-is-semicol-p)
                 ;; Semicol: stop here
                 (setq $p1 (point) $continue nil)
@@ -208,7 +188,7 @@ returns nil or raises an error depending on NO_ERROR."
               (if (not $exp)
                   ;; Error: abort
                   (setq $continue nil)
-                ;; Check if 'in'
+                ;; Check if 'in' - note that we don't have to worry about nested let here
                 (when (string-equal "in" $exp)
                   (setq $p1 $p $continue nil)))))
           ;; Return
@@ -217,7 +197,7 @@ returns nil or raises an error depending on NO_ERROR."
       (setq $exp (fem-parse-previous-sexp-p))
       (if (and $exp (string-equal $exp "in"))
           (progn
-          (message "End delimiter is 'in'")
+          (fem-log-dbg "End delimiter is 'in'")
             (while $continue
               (fem-skip-comments-and-spaces nil $limit)
               (setq $exp (fem-parse-previous-sexp-p))
@@ -225,30 +205,30 @@ returns nil or raises an error depending on NO_ERROR."
                   ;; Error: abort
                   (setq $continue nil)
                 ;; Check if 'let'
-                (message (concat "Parsed [" $exp "]"))
-                (when (string-equal "let" $exp)
-                  (setq $p1 (point) $continue nil))))
+                (fem-log-dbg (concat "Parsed [" $exp "]"))
+                (cond
+                 ;; If find a 'in': increment the counter
+                 ((string-equal "in" $exp)
+                  (setq $in-cnt (+ $in-cnt 1)))
+                 ;; If find a 'let': stop if counter is 0, otherwise decrement it
+                 ((string-equal "let" $exp)
+                  (if (= $in-cnt 0)
+                      (setq $p1 (point) $continue nil)
+                    (setq $in-cnt (- $in-cnt 1))))
+                 ;; Otherwise: do nothing
+                 (t nil))))
             ;; Return
             (if $p1 (make-fem-pair :fst $p1 :snd $p0) nil))
         ;; Otherwise: return nil
         nil))))
-
-(defun t5 ()
-  (interactive)
-  (let (($p (fem-parse-previous-letb)))
-    (if $p (goto-char (fem-pair-fst $p)) (message "could not parse"))))
-        
-          
-          
-          
-    
 
 (defun fem-insert-newline-term-smart-indent (TERM)
   "Insert a new line if the current one is not empty, then insert TERM."
   (interactive)
   (let (($indent-str nil)
         ($p0 (point))
-        $p1)
+        $p1
+        $letb)
     ;; If the current line is empty: insert in this line
     (if (fem-current-line-is-whitespaces) ()
       ;; Go to the end of the line then move backward until we find some code
@@ -256,7 +236,11 @@ returns nil or raises an error depending on NO_ERROR."
       (fem-skip-comments-and-spaces nil)
       (setq $p1 (point))
       ;; Try to parse the expression
-      
+      (setq $letb (fem-parse-previous-letb))
+      ;; If we managed to parse the expression: use the indent of the expression
+      (if $letb (goto-char (fem-pair-fst $letb))
+        ;; Otherwise, use the indent of the line where we were
+        (goto-char $p1))
       ;; Compute the indent
       (beginning-of-line)
       (fem-skip-comments-and-spaces t (point-at-eol))
@@ -267,20 +251,6 @@ returns nil or raises an error depending on NO_ERROR."
       (end-of-line)
       (newline))
     ;; Insert
-    (if $indent-str (insert $indent-str) (indent-according-to-mode))
-    (insert TERM)))
-
-    (if (fem-current-line-is-whitespaces) ()
-      ;; Compute the indent
-      (beginning-of-line)
-      (fem-skip-comments-and-spaces t (point-at-eol))
-      ;; Check if we reached the end of line
-      (if (not (point) (point-at-eol))
-          ;; No: there is code on this line, we can use its indent
-      (setq $indent-str (make-string (- (point) (point-at-bol)) ? ))
-      ;; Create the new line
-      (end-of-line)
-      (newline))
     (if $indent-str (insert $indent-str) (indent-according-to-mode))
     (insert TERM)))
 
