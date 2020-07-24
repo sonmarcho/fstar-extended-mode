@@ -1461,35 +1461,77 @@ TODO: use overlays."
       (goto-char $p0)
       $delimiters)))
 
+;;
+;; General control flow parsing
+;;
+;; Parse an F* expression up to some point. The parsing is quite simple, but
+;; allows to figure out, for instance, if the pointer is inside the branch
+;; of an if, etc.
+
 ;; The result of a few tests on regexps:
-;; - for letters: use [:alpha:] or [:a-zA-Z]
-;; - for numbers: use [:0-9:] ([:digit:] and [:alnum:] doesn't work)
+;; - for letters: use [:alpha:] or [a-zA-Z]
+;; - for numbers: use [:0-9:] ([:digit:] and [:alnum:] don't work)
 ;; - for spaces: use [\t\n\r ] (this includes line breaks) ([:space:] and [:blank:] don't work)
 ;; - to match the empty string at point: \\=
 
 (defconst fem--spaces-re (concat "[" fstar--spaces "]")) ;; [\t\n\r ]
 
+;; TODO: remove ',', ';' (it might not be safe to mix them here)
 (defun fem-parse-special-symbols-p ()
-  "Try to parse special symbols and return a pair of positions if succeed"
+  "Try to parse special symbols and return a pair of positions if successful."
   (save-match-data
-    (if (looking-at "[;\\^*\+-/=\|=\$,.':><]+")
+    (if (looking-at "[;\\^*\+-/=\|=\$,':><]+")
+        (make-fem-pair :fst (match-beginning 0) :snd (match-end 0))
+      nil)))
+
+;; TODO: use those below functions
+(defun fem-parse-special-delimiter-p ()
+  "Match a special delimiter, which can't be used in combination with other symbols."
+  (save-match-data
+    (if (looking-at "[;,]")
+        (make-fem-pair :fst (match-beginning 0) :snd (match-end 0))
+      nil)))
+
+(defun fem-parse-identifier-p ()
+  "Parse an identifier and return a pair of positions if successful.
+Identifiers are of the form 'Foo.Bar....' and may contain alphanumerical symbols, \"_\" and \"'\'."
+  (save-match-data
+    (if (looking-at "[']?[_[:alpha:]][[:alpha:]0-9_']*\\(\\.[[:alpha:]_][[:alpha:]0-9_']*\\)*")
         (progn
-          (goto-char (match-end 0))
           (make-fem-pair :fst (match-beginning 0) :snd (match-end 0)))
       nil)))
 
-;; Parsed sexp data
-(cl-defstruct fem-ps-data
+(defun fem-parse-number-p ()
+  (save-match-data
+    (if (looking-at "[0-9]+")
+        (progn
+          (make-fem-pair :fst (match-beginning 0) :snd (match-end 0)))
+      nil)))
+
+(defun parse-parenthesis-group-p ()
+  "Parse a balanced parenthesized expression."
+  (save-excursion
+    (save-match-data
+      (ignore-errors ;; the call to forward-sexp may fail
+        (if (looking-at "[\\[({]+")
+            (let (($p0 (point)))
+              (forward-sexp) ;; This may fail
+              (make-fem-pair :fst $p0 :snd (point)))
+          nil)))))
+
+;; Parsed F* expression data
+(cl-defstruct fem-pfe-data
   symbol pos index parent)
 
-(defun fem-parse-control-flow (&optional BEG END DEBUG_INSERT)
+(defun fem-parse-control-flow (&optional BEG END PARENTS DEBUG_INSERT)
   "Parse the region from BEG to END to analyze the control flow.
 Only perform very simple parsing to analyze whether the point is inside the branch of an if, etc.
 Return the list of encountered parent constructs.
-If DEBUG_INSERT is t, insert annotations in the code to indicate to the user the result of parsing."
+If DEBUG_INSERT is t, insert annotations in the code to indicate to the user the result of parsing.
+If PARENTS is not nil, resume from a previous parsing."
   (let (($beg (or BEG (point-min)))
         ($end (or END (point-max)))
-        ($parents nil)
+        ($parents PARENTS)
         ($continue t) ;; looping condition
         ($skip nil) ;; skip the end of the loop body for this iteration if t
         ($counter 0) ;; indentifiers counter: give a unique index to each of them, for debugging
@@ -1504,14 +1546,14 @@ If DEBUG_INSERT is t, insert annotations in the code to indicate to the user the
         (fem-log-dbg "[> first-parent-is (%s)" SYMBOL)
         (if $parents
             (progn
-              (fem-log-dbg "%s" (fem-ps-data-symbol (car $parents)))
-              (string= SYMBOL (fem-ps-data-symbol (car $parents))))
+              (fem-log-dbg "%s" (fem-pfe-data-symbol (car $parents)))
+              (string= SYMBOL (fem-pfe-data-symbol (car $parents))))
           nil))
       (defun $pop-parent ()
         "Pop the first parent"
         (let* (($p (car $parents))
-               ($symbol (fem-ps-data-symbol $p))
-               ($index (fem-ps-data-index $p))
+               ($symbol (fem-pfe-data-symbol $p))
+               ($index (fem-pfe-data-index $p))
                ($msg (format " (* pop: %s (%s) *) " $symbol $index)))
           (fem-log-dbg "[> pop-parent")
           (setq $parents (cdr $parents))
@@ -1525,7 +1567,7 @@ If DEBUG_INSERT is t, insert annotations in the code to indicate to the user the
           PARENT is another symbol related to the current one (for example, if
           we push an 'else, we keep track of the 'if starting the 'if then else'
           construct."
-          (setq $parents (cons (make-fem-ps-data :symbol SYMBOL :pos POS_PAIR
+          (setq $parents (cons (make-fem-pfe-data :symbol SYMBOL :pos POS_PAIR
                                                  :index $counter :parent PARENT)
                                $parents))
           ;; For debugging
@@ -1627,7 +1669,7 @@ If DEBUG_INSERT is t, insert annotations in the code to indicate to the user the
              ((string-equal $exp-str "else")
               ;; First retrieve the original 'if
               (let* (($then ($pop-until 'then))
-                     ($if (if $then (fem-ps-data-parent $then) nil)))
+                     ($if (if $then (fem-pfe-data-parent $then) nil)))
                 ($push-parent 'else $exp $if)))
              ((string-equal $exp-str "let")
               ($push-parent 'let $exp))
@@ -1916,7 +1958,8 @@ TODO: take into account if/match branches"
     (setq $markers (fem-get-pos-markers))
     (setq $p0 (point))
     (when $markers (goto-char (fem-pair-fst $markers)))
-    ;; Find in which region the term to process is
+    ;; Find the region containing the term to process
+    ;; TODO: use control-flow parsing functions
     (setq $delimiters (fem-find-region-delimiters-or-markers))
     (setq $p1 (fem-pair-fst $delimiters) $p2 (fem-pair-snd $delimiters))
     ;; Ignore the region to ignore comments/spaces and try to reach line extrema
