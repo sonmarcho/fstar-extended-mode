@@ -1500,24 +1500,33 @@ TODO: use overlays."
 (defun fem-parse-identifier-p ()
   "Parse an identifier and return a pair of positions if successful.
 Note that we consider valids incomplete identifiers of the form 'Foo.' (which
-might be used to use a specific namespace in a parenthesized expression)."
+might be used to use a specific namespace in a parenthesized expression).
+Also, we check back ticks in a very lax manner."
 ;;  (fem-parse-re-p "[#]?[']?[_[:alpha:]][[:alpha:]0-9_']*\\(\\.[[:alpha:]_][[:alpha:]0-9_']*\\)*"))
-  (fem-parse-re-p "[#]?[']?[_[:alpha:]][[:alpha:]0-9_']*[\\?]?\\(\\.[[:alpha:]0-9_']*[\\?]?\\)*"))
+  (fem-parse-re-p "[`]*[#]?[']?[_[:alpha:]][[:alpha:]0-9_']*[\\?]?\\(\\.[[:alpha:]0-9_']*[\\?]?\\)*[`]*"))
 
 (defun fem-parse-number-p ()
   "Parse a number, in a very broad sense (might be hexadecimal, etc.)."
   (fem-parse-re-p "[0-9][a-zA-Z0-9]*"))
 
-(defun fem-looking-at-open-parenthesis-p ()
-  "Return t if looking at an open parenthesis (in a wide sense: '(', '[' or '{')."
-  (looking-at "[\\[({]+"))
+(defun fem-looking-at-open-bracket-p ()
+  "Return a bracket type if looking at an open bracket (in a wide sense: '(', '[' or '{')."
+  (cond
+   ((looking-at "(") 'open-bracket)
+   ((looking-at "{") 'open-curly)
+   ((looking-at "\\[") 'open-square)
+   (t nil)))
+
+(defun t1 ()
+  (interactive)
+  (message "%s" (fem-looking-at-open-bracket-p)))
 
 (defun fem-parse-parenthesized-exp-p ()
   "Parse a balanced parenthesized expression."
   (save-excursion
     (save-match-data
       (ignore-errors ;; the call to forward-sexp may fail
-        (if (fem-looking-at-open-parenthesis-p)
+        (if (fem-looking-at-open-bracket-p)
             (let (($p0 (point)))
               (forward-sexp) ;; This may fail
               (make-fem-pair :fst $p0 :snd (point)))
@@ -1713,7 +1722,7 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
   (fem-log-dbg "[> fem-cfp-parse-one-token")
   (let (($beg (fem-cfp-state-pos STATE))
         ($end (or END (point-max)))
-        $exp $exp-str $ident)
+        $exp $exp-str $ident $bracket-type)
     (goto-char $beg)
     (save-restriction
       (narrow-to-region $beg $end)
@@ -1770,7 +1779,7 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
         'number)
 
        ;; PARENTHESES
-       ((fem-looking-at-open-parenthesis-p)
+       ((setq $bracket-type (fem-looking-at-open-bracket-p))
         ;; Try to parse a well-balanced group
         (setq $exp (fem-parse-parenthesized-exp-p))
         (if $exp
@@ -1784,12 +1793,12 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
           ;; Otherwise: update the stack to dive in
           (fem-log-dbg "[> parsed an unbalanced open parenthesis: diving in")
           (forward-char)
-          (fem-cfp-state-push STATE 'open-parenthesis
+          (fem-cfp-state-push STATE $bracket-type
                               (make-fem-pair :fst (point) :snd (+ (point) 1))
                               nil DEBUG_INSERT)
           (when DEBUG_INSERT (insert " (* '(' *) "))
           (fem-cfp-state-move-p STATE)
-          'open-parenthesis))
+          'open-bracket))
 
        ;; STRINGS
        ((setq $exp (fem-parse-string-p))
