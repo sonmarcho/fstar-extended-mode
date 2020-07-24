@@ -1495,12 +1495,14 @@ TODO: use overlays."
 ;; TODO: we might need to put "'"
 (defun fem-parse-special-symbols-p ()
   "Try to parse special symbols and return a pair of positions if successful."
-  (fem-parse-re-p "[\\^*\+-/=\|=\$:><]+"))
+  (fem-parse-re-p "[\\^*\+-/=\|=\$:><!]+"))
 
 (defun fem-parse-identifier-p ()
   "Parse an identifier and return a pair of positions if successful.
-Identifiers are of the form 'Foo.Bar....' and may contain alphanumerical symbols, \"_\" and \"'\'."
-  (fem-parse-re-p "[']?[_[:alpha:]][[:alpha:]0-9_']*\\(\\.[[:alpha:]_][[:alpha:]0-9_']*\\)*"))
+Note that we consider valids incomplete identifiers of the form 'Foo.' (which
+might be used to use a specific namespace in a parenthesized expression)."
+;;  (fem-parse-re-p "[#]?[']?[_[:alpha:]][[:alpha:]0-9_']*\\(\\.[[:alpha:]_][[:alpha:]0-9_']*\\)*"))
+  (fem-parse-re-p "[#]?[']?[_[:alpha:]][[:alpha:]0-9_']*[\\?]?\\(\\.[[:alpha:]0-9_']*[\\?]?\\)*"))
 
 (defun fem-parse-number-p ()
   "Parse a number, in a very broad sense (might be hexadecimal, etc.)."
@@ -1520,6 +1522,25 @@ Identifiers are of the form 'Foo.Bar....' and may contain alphanumerical symbols
               (forward-sexp) ;; This may fail
               (make-fem-pair :fst $p0 :snd (point)))
           nil)))))
+
+(defun fem-looking-at-string-p ()
+  "Return t if looking at the beginning of a string."
+  (looking-at "\""))
+
+(defun fem-parse-string-p ()
+  "Parse a string."
+  (save-excursion
+    (save-match-data
+      (ignore-errors ;; the call to forward-sexp may fail
+        (if (fem-looking-at-string-p)
+            (let (($p0 (point)))
+              (forward-sexp) ;; This may fail
+              (make-fem-pair :fst $p0 :snd (point)))
+          nil)))))
+
+(defun t2 ()
+  (interactive)
+  (message "%s" (fem-looking-at-string-p)))
 
 ;; TODO: use more
 (defun fem-substring-from-pos-pair (POS_PAIR)
@@ -1649,6 +1670,7 @@ If $exp-str is not equal to NAME, return nil. Otherwise return IDENT"
             ;; Push
             (when PUSH
               (fem-cfp-state-push STATE IDENT $exp $parent DEBUG_INSERT))
+            (when DEBUG_INSERT (insert " (* id *) "))
             ;; Update the state position
             (fem-cfp-state-move-p STATE)
             ;; Return the identifier
@@ -1678,6 +1700,7 @@ If $exp-str is not equal to NAME, return nil. Otherwise return IDENT"
        (fem-cfp-handle-ident "in" 'in 'let nil)
        ;; Otherwise: just update the state position
        (progn
+         (when DEBUG_INSERT (insert " (* id *) "))
          (fem-cfp-state-move-p STATE)
          'unknown-identifier)))))
 
@@ -1710,20 +1733,21 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
        ((setq $exp (fem-parse-special-delimiter-p))
         ;; Read
         (setq $exp-str (fem-substring-from-pos-pair $exp))
-        (fem-log-dbg "[> parsed special symbols: %s" $exp-str)
+        (fem-log-dbg "[> parsed special delimiters: %s" $exp-str)
         ;; Move forward - as we might insert comments in the code, we update the
         ;; state position later
         (goto-char (fem-pair-snd $exp))
         ;; If it is a ';':
         ;; Check if we are in the branch of an 'if ... then ... else ...
         (when (string= $exp-str ";")
-          (fem-log-dbg "[> special symbol is a ';'")
+          (fem-log-dbg "[> special delimiter is a ';'")
           ;; If inside a 'then': it should have only one branch (of type unit): pop it
           ;; ;; If inside an 'else": this is the end of this branch (pop it)
           (when (or (fem-cfp-state-top-is STATE 'then)
                     (fem-cfp-state-top-is STATE 'else))
             (fem-cfp-state-pop STATE DEBUG_INSERT)))
         ;; Update the state position and return
+        (when DEBUG_INSERT (insert " (* spec. delim. *)"))
         (fem-cfp-state-move-p STATE)
         'special-delimiters)
 
@@ -1732,6 +1756,7 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
         ;; Just move forward
         (fem-log-dbg "[> parsed special symbols: %s" (fem-substring-from-pos-pair $exp))
         (goto-char (fem-pair-snd $exp))
+        (when DEBUG_INSERT (insert " (* spec. symb. *) "))
         (fem-cfp-state-move-p STATE)
         'special-symbols)
 
@@ -1740,6 +1765,7 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
         ;; Just move forward
         (fem-log-dbg "[> parsed a number: %s" (fem-substring-from-pos-pair $exp))
         (goto-char (fem-pair-snd $exp))
+        (when DEBUG_INSERT (insert " (* num *) "))
         (fem-cfp-state-move-p STATE)
         'number)
 
@@ -1752,6 +1778,7 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
             (progn
               (fem-log-dbg "[> parsed a well-balanced parenthesized expression")
               (goto-char (fem-pair-snd $exp))
+              (when DEBUG_INSERT (insert " (* (...) *) "))
               (fem-cfp-state-move-p STATE)
               'parentheses)
           ;; Otherwise: update the stack to dive in
@@ -1760,8 +1787,18 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
           (fem-cfp-state-push STATE 'open-parenthesis
                               (make-fem-pair :fst (point) :snd (+ (point) 1))
                               nil DEBUG_INSERT)
+          (when DEBUG_INSERT (insert " (* '(' *) "))
           (fem-cfp-state-move-p STATE)
           'open-parenthesis))
+
+       ;; STRINGS
+       ((setq $exp (fem-parse-string-p))
+        ;; Just move forward
+        (fem-log-dbg "[> parsed a string: %s" (fem-substring-from-pos-pair $exp))
+        (goto-char (fem-pair-snd $exp))
+        (when DEBUG_INSERT (insert " (* str *) "))
+        (fem-cfp-state-move-p STATE)
+        'number)
 
        ;; IDENTIFIERS: 'if', 'then', 'else', 'begin', 'match', etc.
        ((setq $ident (fem-cfp-parse-update-identifier STATE DEBUG_INSERT))
