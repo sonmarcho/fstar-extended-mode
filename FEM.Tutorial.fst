@@ -18,12 +18,6 @@ open FEM.Process
 /// alternatively if you want to prevent shadowing:
 /// module FEMProcess = open FEM.Process
 
-/// Precondition, postcondition, goal, global precondition
-/// Unfold, split
-/// (goal, global precondition)
-/// Stack + normalization
-/// Big precondition + split + unfold + split
-
 #push-options "--z3rlimit 100 --fuel 0 --ifuel 0"
 
 /// Some dummy functions used for the below examples
