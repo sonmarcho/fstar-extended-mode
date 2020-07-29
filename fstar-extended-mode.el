@@ -54,6 +54,7 @@
 (cl-defstruct fem-triple
   fst snd thd)
 
+;; TODO: this is not useful anymore
 (cl-defstruct fem-letb-term
   "A parsed let binded term of the form: 'let b = exp in'"
   beg end ;; delimiters for the whole expression
@@ -1924,10 +1925,10 @@ Return a pair (filtered stack, filtered the top-level let)."
       (cond
        ;; If it is a let, check if it is the first one (the top-level let): in this
        ;; case, filter it. Otherwise, keep it
-       ((string= $symbol "let")
+       ((string= $symbol 'let)
         (if $filtered-let
             (make-fem-pair :fst (cons $tk $stack) :snd t)
-          (make-fem-pair :fst $stack :snd nil)))
+          (make-fem-pair :fst $stack :snd t)))
        ;; If 'if, 'then, 'begin, 'match or open bracket: keep the token
        ((or (string= $symbol 'if)
             (string= $symbol 'then)
@@ -1938,7 +1939,8 @@ Return a pair (filtered stack, filtered the top-level let)."
             (string= $symbol 'open-square))
         (make-fem-pair :fst (cons $tk $stack) :snd $filtered-let))
        ;; Otherwise:filter
-       (t (make-fem-pair :fst $stack :snd $filtered-let))))))    
+       (t
+        (make-fem-pair :fst $stack :snd $filtered-let))))))               
 
 (defun fem-cfp-state-filter-state-stack (STACK)
   "Filter the STATE stack to remove the first 'let, which is  top-level, and the
@@ -1951,8 +1953,8 @@ tokens which will be ignored for control-flow"
 Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
 PP_INSTR is the post-processing instruction to insert for F*."
 ;;  (let ($beg $p0 $str1 $str2 $str3 $attr-beg $original-length $new-length $shift $res)
-  (let ($beg $p0 $str1 $str2 $str3 $shift $new-length $original-length $focus-shift
-             $prev-buffer $stack ($continue t))
+  (let ($p0 $str1 $str2 $str3 $shift $new-length $original-length $focus-shift
+             $prev-buffer $stack $symbol $res)
     (goto-char BEG)
     ;; - copy to the destination buffer. We do the parsing to remove the current
     ;;   attributes inside the F* buffer, which is why we copy the content
@@ -1981,7 +1983,7 @@ PP_INSTR is the post-processing instruction to insert for F*."
     ;; Compute the current shift: the shift is just the difference of length between the
     ;; content in the destination buffer and the original content, because all
     ;; the deletion/insertion so far should have happened before the points of interest
-    (setq $original-length (- END $beg)
+    (setq $original-length (- END BEG)
           $new-length (- (point-max) (point-min)))
     (setq $shift (- $new-length $original-length))
     (setq $shift (+ (- $shift BEG) 1))
@@ -1989,7 +1991,7 @@ PP_INSTR is the post-processing instruction to insert for F*."
     ;; Insert admits to fill the function holes
     (when INSERT_ADMITS
       ;; Define utility functions, to insert text and update the shift at the same time
-      (let
+      (let*
           ;; Insert text and update the focused term shift at the same time
           ((insert-shift
             (lambda (TEXT)
@@ -2006,7 +2008,7 @@ PP_INSTR is the post-processing instruction to insert for F*."
                 (setq $indent (fem-compute-local-indent-p (fem-pair-fst (fem-cfp-tk-pos TK))))
                 (switch-to-buffer DEST_BUFFER)
                 $indent)))
-           ;; Compute the indentation for a specific position in the original buffer
+           ;; Compute the indentation for a specific position in the ORIGINAL buffer
            (compute-indent
             (lambda (POS)
               (let ($indent)
@@ -2014,88 +2016,124 @@ PP_INSTR is the post-processing instruction to insert for F*."
                 (setq $indent (fem-compute-local-indent-p POS))
                 (switch-to-buffer DEST_BUFFER)
                 $indent)))
-           ;; Go to the beginning of a specific token in the target buffer
+           ;; Go to the beginning of a specific token in the TARGET buffer
            (target-goto-token
             (lambda (TK)
               (goto-char (- (fem-pair-fst (fem-cfp-tk-pos TK)) $shift))))
+           ;; Insert some text before a token and at the end of the target buffer,
+           ;; and use the same indentation for the text at the end
+           (insert-same-indent
+            (lambda (TK TEXT_BEFORE TEXT_AFTER &optional USE_PARENT_INDENT)
+              ;; Insert at the end
+              (when TEXT_AFTER
+                (let* (($tk-indent (if USE_PARENT_INDENT (fem-cfp-tk-parent TK) TK))
+                       ($indent (funcall compute-token-indent $tk-indent)))
+                  (goto-char (point-max))
+                  (funcall insert-shift "\n")
+                  (funcall insert-shift $indent)
+                  (funcall insert-shift TEXT_AFTER)))
+              ;; Insert before the token
+              (when TEXT_BEFORE
+                (funcall target-goto-token TK)
+                (funcall insert-shift TEXT_BEFORE))))
            )
         ;; Start filling the holes
         ;; First: if the focused expression ends with 'in or 'semicol we need to insert
         ;; an ``admit()``
-        (when (or (fem-subexpr-is-let SUBEXPR) (fem-subexpr-has-semicol SUBEXPR))
+        (when (or (fem-subexpr-is-let-in SUBEXPR)
+                  (fem-subexpr-has-semicol SUBEXPR))
           (goto-char (point-max))
-          (insert-shift "admit()"))
+          (funcall insert-shift " admit()"))
         ;; Then, we need to use the stack to determine where to insert admit
         ;; First, filter the stack in order to remove the first 'let (which is
         ;; at the top level declaring the current definition)
         (setq $stack (fem-cfp-state-filter-state-stack PARSE_STATE))
         ;; Then, whenever we encounter 'let, 'match, 'then, 'begin or an open bracket,
         ;; we fill the hole
-        (while (and $continue $stack)
-          )
-        ))))
-        
-      
-      
-    ;; Introduce the admit (note that the admit is at the very end of the query)
-    (when INSERT_ADMITS
-      (newline)
-      (indent-according-to-mode) ;; buffer's mode is not F*, but don't care
-      (insert "admit()"))
+        (while $stack
+          (let (($tk (car $stack)))
+            (setq $stack (cdr $stack)
+                  $symbol (fem-cfp-tk-symbol $tk))
+            ;; Switch on the token
+            (cond
+             ((string= $symbol 'let)
+              (funcall insert-same-indent $tk nil "in admit()"))
+             ;; Note: the user shouldn't use the command inside the condition
+             ;; of an if, but it costs nothing to implement this part for now.
+             ((string= $symbol 'if)
+              (funcall insert-same-indent $tk nil "then admit() else admit()"))
+             ((string= $symbol 'then)
+              (funcall insert-same-indent $tk nil "else admit()" t))
+             ((string= $symbol 'begin)
+              (funcall insert-same-indent $tk nil "end"))
+             ((string= $symbol 'match)
+              (funcall insert-same-indent $tk "begin " "| _ -> admit() end"))
+             ((string= $symbol 'open-bracket)
+              (funcall insert-same-indent $tk nil ")"))
+             ((string= $symbol 'open-curly)
+              (funcall insert-same-indent $tk nil "}"))
+             ((string= $symbol 'open-square)
+              (funcall insert-same-indent $tk nil "]"))
+             ;; Default case: do nothing
+             (t nil)))))) ;; end of (when INSERT_ADMITS ...)
     ;; Shift and return the parsing information
     (setq $res (copy-fem-subexpr SUBEXPR))
     (when (fem-subexpr-bterm SUBEXPR)
       (setf (fem-subexpr-bterm $res) (copy-fem-letb-term (fem-subexpr-bterm SUBEXPR))))
-    (fem-shift-subexpr-pos $shift $res)))
+    (fem-shift-subexpr-pos $focus-shift $res)))
 
-;; TODO: remove
-(defun fem-copy-def-for-meta-process (END INSERT_ADMITS SUBEXPR DEST_BUFFER PP_INSTR)
-  "Copy code for meta-processing and update the parsed result positions.
-Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
-PP_INSTR is the post-processing instruction to insert just before the definition."
-  (let ($beg $p0 $str1 $str2 $str3 $attr-beg $original-length $new-length $shift $res)
-    (goto-char (fstar-subp--untracked-beginning-position))
-    (setq $beg (point))
-    ;; - copy to the destination buffer. We do the parsing to remove the current
-    ;;   attributes inside the F* buffer, which is why we copy the content
-    ;;   in several steps. TODO: I don't manage to confifure the parsing for the
-    ;;   destination buffer correctly.
-    (fem-skip-forward-comments-pragmas-spaces)
-    (setq $str1 (buffer-substring $beg (point)))
-    (fem-skip-forward-square-brackets) ;; (optionally) go over the attribute
-    (setq $p0 (point))
-    (fem-skip-forward-comments-pragmas-spaces)
-    (setq $str2 (buffer-substring $p0 (point)))
-    (setq $str3 (buffer-substring (point) END))
-    (switch-to-buffer DEST_BUFFER)
-    (erase-buffer)
-    (insert $str1)
-    (insert $str2)
-    ;; Insert an option to deactivate the proof obligations
-    (insert "#push-options \"--admit_smt_queries true\"\n")
-    ;; Insert the post-processing instruction
-    (insert "[@(FStar.Tactics.postprocess_with (")
-    (insert PP_INSTR)
-    (insert "))]\n")
-    ;; Insert the function code
-    (insert $str3)
-    ;; Compute the shift: the shift is just the difference of length between the
-    ;; content in the destination buffer and the original content, because all
-    ;; the deletion/insertion so far should have happened before the points of interest
-    (setq $original-length (- END $beg)
-          $new-length (- (point-max) (point-min)))
-    (setq $shift (- $new-length $original-length))
-    (setq $shift (+ (- $shift $beg) 1))
-    ;; Introduce the admit (note that the admit is at the very end of the query)
-    (when INSERT_ADMITS
-      (newline)
-      (indent-according-to-mode) ;; buffer's mode is not F*, but don't care
-      (insert "admit()"))
-    ;; Shift and return the parsing information
-    (setq $res (copy-fem-subexpr SUBEXPR))
-    (when (fem-subexpr-bterm SUBEXPR)
-      (setf (fem-subexpr-bterm $res) (copy-fem-letb-term (fem-subexpr-bterm SUBEXPR))))
-    (fem-shift-subexpr-pos $shift $res)))
+(defun t2 ()
+  (interactive)
+  (insert nil))
+
+;; ;; TODO: remove
+;; (defun fem-copy-def-for-meta-process (END INSERT_ADMITS SUBEXPR DEST_BUFFER PP_INSTR)
+;;   "Copy code for meta-processing and update the parsed result positions.
+;; Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
+;; PP_INSTR is the post-processing instruction to insert just before the definition."
+;;   (let ($beg $p0 $str1 $str2 $str3 $attr-beg $original-length $new-length $shift $res)
+;;     (goto-char (fstar-subp--untracked-beginning-position))
+;;     (setq $beg (point))
+;;     ;; - copy to the destination buffer. We do the parsing to remove the current
+;;     ;;   attributes inside the F* buffer, which is why we copy the content
+;;     ;;   in several steps. TODO: I don't manage to confifure the parsing for the
+;;     ;;   destination buffer correctly.
+;;     (fem-skip-forward-comments-pragmas-spaces)
+;;     (setq $str1 (buffer-substring $beg (point)))
+;;     (fem-skip-forward-square-brackets) ;; (optionally) go over the attribute
+;;     (setq $p0 (point))
+;;     (fem-skip-forward-comments-pragmas-spaces)
+;;     (setq $str2 (buffer-substring $p0 (point)))
+;;     (setq $str3 (buffer-substring (point) END))
+;;     (switch-to-buffer DEST_BUFFER)
+;;     (erase-buffer)
+;;     (insert $str1)
+;;     (insert $str2)
+;;     ;; Insert an option to deactivate the proof obligations
+;;     (insert "#push-options \"--admit_smt_queries true\"\n")
+;;     ;; Insert the post-processing instruction
+;;     (insert "[@(FStar.Tactics.postprocess_with (")
+;;     (insert PP_INSTR)
+;;     (insert "))]\n")
+;;     ;; Insert the function code
+;;     (insert $str3)
+;;     ;; Compute the shift: the shift is just the difference of length between the
+;;     ;; content in the destination buffer and the original content, because all
+;;     ;; the deletion/insertion so far should have happened before the points of interest
+;;     (setq $original-length (- END $beg)
+;;           $new-length (- (point-max) (point-min)))
+;;     (setq $shift (- $new-length $original-length))
+;;     (setq $shift (+ (- $shift $beg) 1))
+;;     ;; Introduce the admit (note that the admit is at the very end of the query)
+;;     (when INSERT_ADMITS
+;;       (newline)
+;;       (indent-according-to-mode) ;; buffer's mode is not F*, but don't care
+;;       (insert "admit()"))
+;;     ;; Shift and return the parsing information
+;;     (setq $res (copy-fem-subexpr SUBEXPR))
+;;     (when (fem-subexpr-bterm SUBEXPR)
+;;       (setf (fem-subexpr-bterm $res) (copy-fem-letb-term (fem-subexpr-bterm SUBEXPR))))
+;;     (fem-shift-subexpr-pos $shift $res)))
 
 (defun fem-query-fstar-on-buffer-content (OVERLAY_END PAYLOAD CONTINUATION)
   "Send PAYLOAD to F* and call CONTINUATION on the result.
