@@ -1340,15 +1340,15 @@ after the focused term, nil otherwise. comment is an optional comment"
     ;; If we are before the studied term: insert a newline
     (when (not after-term) (insert "\n"))))
 
-(defun fem-insert-assert-pre-post--continuation (indent-str p1 p2 PARSE_RESULT overlay
-                                                 status response)
+(defun fem-insert-assert-pre-post--continuation (INDENT_STR TERM_BEG TERM_END
+                                                 OVERLAY STATUS RESPONSE)
   "Process the information output by F* to add it to the user code.
 If F* succeeded, extract the information and add it to the proof."
-  (unless (eq status 'interrupted)
+  (unless (eq STATUS 'interrupted)
     ;; Delete the overlay
-    (delete-overlay overlay)
+    (delete-overlay OVERLAY)
     ;; Display the message and exit if error
-    (if (eq status 'success)
+    (if (eq STATUS 'success)
         (progn
           (fem-log-dbg "F* succeeded")
           ;; The sent query "counts for nothing" so we need to pop it to reset
@@ -1373,13 +1373,13 @@ If F* succeeded, extract the information and add it to the proof."
         (error "F* failed"))
       ;; Print the information
       ;; - before the focused term
-      (goto-char p1)
+      (goto-char TERM_BEG)
       (dolist (a (fem-result-pres result))
-        (fem-generate-assert-from-term indent-str nil a))
+        (fem-generate-assert-from-term INDENT_STR nil a))
       ;; - after the focused term
-      (forward-char (- p2 p1))
+      (forward-char (- TERM_END TERM_BEG))
       (dolist (a (fem-result-posts result))
-        (fem-generate-assert-from-term indent-str t a))
+        (fem-generate-assert-from-term INDENT_STR t a))
       )))
 
 (defun fem-same-opt-num (P1 P2)
@@ -1672,7 +1672,7 @@ If INCLUSIVE is t, also pop the token satisfying PRED."
   "Find the token delimiting the end of the previous declaration"
   ;; If there is previous declaration, it must be ended by a 'semicolon or a 'in.
   ;; Otherwise, look for: 'equal1, 'begin, 'open-bracket, 'open-curly, 'open-square,
-  ;; 'if, 'then, 'else
+  ;; 'if, 'then, 'else, 'arrow
   (let (($pred (lambda (TK)
                  (let (($symbol (fem-cfp-tk-symbol TK)))
                    (or (string= $symbol 'in)
@@ -1682,6 +1682,7 @@ If INCLUSIVE is t, also pop the token satisfying PRED."
                        (string= $symbol 'if)
                        (string= $symbol 'then)
                        (string= $symbol 'else)
+                       (string= $symbol 'arrow)
                        (string= $symbol 'open-bracket)
                        (string= $symbol 'open-curly)
                        (string= $symbol 'open-square))))))
@@ -1826,10 +1827,17 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
         (fem-log-dbg "[> parsed special symbols: %s" (fem-substring-from-pos-pair $tk))
         (goto-char (fem-pair-snd $tk))
         (setq $tk-str (fem-substring-from-pos-pair $tk))
-        ;; If "=" push 'equal1, otherwise push 'special-symbols
-        (if (string= $tk-str "=")
-            (fem-cfp-state-push STATE 'equal1 $tk nil DEBUG_INSERT)
-          (fem-cfp-state-push STATE 'special-symbols $tk nil DEBUG_INSERT))
+        ;; Disjunction on the symbol
+        (cond
+         ;; If "=" push 'equal1
+         ((string= $tk-str "=")
+          (fem-cfp-state-push STATE 'equal1 $tk nil DEBUG_INSERT))
+         ;; If "->": push 'arrow
+         ((string= $tk-str "->")
+          (fem-cfp-state-push STATE 'arrow $tk nil DEBUG_INSERT))
+         ;; Otherwise push 'special-symbols
+         (t
+          (fem-cfp-state-push STATE 'special-symbols $tk nil DEBUG_INSERT)))
         (when DEBUG_INSERT (insert " (* spec. symb. *) "))
         (fem-cfp-state-move-p STATE)
         'special-symbols)
@@ -1934,6 +1942,7 @@ Return a pair (filtered stack, filtered the top-level let)."
             (string= $symbol 'then)
             (string= $symbol 'begin)
             (string= $symbol 'match)
+            (string= $symbol 'with)
             (string= $symbol 'open-bracket)
             (string= $symbol 'open-curly)
             (string= $symbol 'open-square))
@@ -2019,23 +2028,24 @@ PP_INSTR is the post-processing instruction to insert for F*."
            ;; Go to the beginning of a specific token in the TARGET buffer
            (target-goto-token
             (lambda (TK)
-              (goto-char (- (fem-pair-fst (fem-cfp-tk-pos TK)) $shift))))
+              (goto-char (+ (fem-pair-fst (fem-cfp-tk-pos TK)) $shift))))
            ;; Insert some text before a token and at the end of the target buffer,
            ;; and use the same indentation for the text at the end
            (insert-same-indent
-            (lambda (TK TEXT_BEFORE TEXT_AFTER &optional USE_PARENT_INDENT)
-              ;; Insert at the end
-              (when TEXT_AFTER
-                (let* (($tk-indent (if USE_PARENT_INDENT (fem-cfp-tk-parent TK) TK))
-                       ($indent (funcall compute-token-indent $tk-indent)))
+            (lambda (TK TEXT_BEFORE TEXT_AFTER &optional USE_PARENT)
+              (let* (($tk (if USE_PARENT (fem-cfp-tk-parent TK) TK))
+                     ($indent (funcall compute-token-indent $tk)))
+                ;; Insert at the end
+                (when TEXT_AFTER
                   (goto-char (point-max))
                   (funcall insert-shift "\n")
                   (funcall insert-shift $indent)
-                  (funcall insert-shift TEXT_AFTER)))
-              ;; Insert before the token
-              (when TEXT_BEFORE
-                (funcall target-goto-token TK)
-                (funcall insert-shift TEXT_BEFORE))))
+                  (funcall insert-shift
+                           (fem-replace-in-string "\n" (concat "\n" $indent) TEXT_AFTER)))
+                ;; Insert before the token
+                (when TEXT_BEFORE
+                  (funcall target-goto-token $tk)
+                  (funcall insert-shift TEXT_BEFORE)))))
            )
         ;; Start filling the holes
         ;; First: if the focused expression ends with 'in or 'semicol we need to insert
@@ -2066,8 +2076,12 @@ PP_INSTR is the post-processing instruction to insert for F*."
               (funcall insert-same-indent $tk nil "else admit()" t))
              ((string= $symbol 'begin)
               (funcall insert-same-indent $tk nil "end"))
+             ;; Note: same as for 'if: shouldn't use the command inside the
+             ;; scrutinee of a match
              ((string= $symbol 'match)
-              (funcall insert-same-indent $tk "begin " "| _ -> admit() end"))
+              (funcall insert-same-indent $tk "begin " "with | _ -> admit()\nend"))
+             ((string= $symbol 'with)
+              (funcall insert-same-indent $tk "begin " "| _ -> admit()\nend" t))
              ((string= $symbol 'open-bracket)
               (funcall insert-same-indent $tk nil ")"))
              ((string= $symbol 'open-curly)
@@ -2081,59 +2095,6 @@ PP_INSTR is the post-processing instruction to insert for F*."
     (when (fem-subexpr-bterm SUBEXPR)
       (setf (fem-subexpr-bterm $res) (copy-fem-letb-term (fem-subexpr-bterm SUBEXPR))))
     (fem-shift-subexpr-pos $focus-shift $res)))
-
-(defun t2 ()
-  (interactive)
-  (insert nil))
-
-;; ;; TODO: remove
-;; (defun fem-copy-def-for-meta-process (END INSERT_ADMITS SUBEXPR DEST_BUFFER PP_INSTR)
-;;   "Copy code for meta-processing and update the parsed result positions.
-;; Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
-;; PP_INSTR is the post-processing instruction to insert just before the definition."
-;;   (let ($beg $p0 $str1 $str2 $str3 $attr-beg $original-length $new-length $shift $res)
-;;     (goto-char (fstar-subp--untracked-beginning-position))
-;;     (setq $beg (point))
-;;     ;; - copy to the destination buffer. We do the parsing to remove the current
-;;     ;;   attributes inside the F* buffer, which is why we copy the content
-;;     ;;   in several steps. TODO: I don't manage to confifure the parsing for the
-;;     ;;   destination buffer correctly.
-;;     (fem-skip-forward-comments-pragmas-spaces)
-;;     (setq $str1 (buffer-substring $beg (point)))
-;;     (fem-skip-forward-square-brackets) ;; (optionally) go over the attribute
-;;     (setq $p0 (point))
-;;     (fem-skip-forward-comments-pragmas-spaces)
-;;     (setq $str2 (buffer-substring $p0 (point)))
-;;     (setq $str3 (buffer-substring (point) END))
-;;     (switch-to-buffer DEST_BUFFER)
-;;     (erase-buffer)
-;;     (insert $str1)
-;;     (insert $str2)
-;;     ;; Insert an option to deactivate the proof obligations
-;;     (insert "#push-options \"--admit_smt_queries true\"\n")
-;;     ;; Insert the post-processing instruction
-;;     (insert "[@(FStar.Tactics.postprocess_with (")
-;;     (insert PP_INSTR)
-;;     (insert "))]\n")
-;;     ;; Insert the function code
-;;     (insert $str3)
-;;     ;; Compute the shift: the shift is just the difference of length between the
-;;     ;; content in the destination buffer and the original content, because all
-;;     ;; the deletion/insertion so far should have happened before the points of interest
-;;     (setq $original-length (- END $beg)
-;;           $new-length (- (point-max) (point-min)))
-;;     (setq $shift (- $new-length $original-length))
-;;     (setq $shift (+ (- $shift $beg) 1))
-;;     ;; Introduce the admit (note that the admit is at the very end of the query)
-;;     (when INSERT_ADMITS
-;;       (newline)
-;;       (indent-according-to-mode) ;; buffer's mode is not F*, but don't care
-;;       (insert "admit()"))
-;;     ;; Shift and return the parsing information
-;;     (setq $res (copy-fem-subexpr SUBEXPR))
-;;     (when (fem-subexpr-bterm SUBEXPR)
-;;       (setf (fem-subexpr-bterm $res) (copy-fem-letb-term (fem-subexpr-bterm SUBEXPR))))
-;;     (fem-shift-subexpr-pos $shift $res)))
 
 (defun fem-query-fstar-on-buffer-content (OVERLAY_END PAYLOAD CONTINUATION)
   "Send PAYLOAD to F* and call CONTINUATION on the result.
@@ -2439,7 +2400,7 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
         ;;                    $is-let-in $has-semicol $current-buffer $insert-admit
         ;;                    $cbuffer $pp-instr $subexpr1 $payload
         $p0 $markers $state $parse-beg $parse-end $term $term-beg $term-end $indent-str
-            $insert-beg $insert-end $insert-admits $cbuffer $pp-instr)
+            $insert-beg $insert-end $insert-admits $cbuffer $pp-instr $term1 $payload)
     (setq $parse-beg (fstar-subp--untracked-beginning-position))
     (setq $state (fem-create-cfp-state $parse-beg))
     ;; Find markers
@@ -2492,54 +2453,6 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
     (setq $term1 (fem-copy-def-for-meta-process $parse-beg $parse-end $insert-admits
                                                 $term $state fem-process-buffer1
                                                 $pp-instr))
-    ))
-
-    (setq $term1 (fem-copy-def-for-meta-process $p3 $insert-admit $subexpr fem-process-buffer1
-                                                $pp-instr))
-
-))
-
-fem-copy-def-for-meta-process (BEG END INSERT_ADMITS SUBEXPR PARSE_STATE
-                                          DEST_BUFFER PP_INSTR)
-
-    
-    
-    
-
-    (setq $delimiters (fem-find-region-delimiters-or-markers))
-    (setq $p1 (fem-pair-fst $delimiters) $p2 (fem-pair-snd $delimiters))
-    ;; Ignore the region to ignore comments/spaces and try to reach line extrema
-    ;; - beginning:
-    (goto-char $p1)
-    (fem-skip-comments-and-spaces nil (point-at-bol))
-    (setq $p1 (point))
-    ;; - end: same
-    (goto-char $p2)
-    (fem-skip-comments-and-spaces t (point-at-eol))
-    (setq $p2 (point))
-    ;; Parse the term
-    (setq $subexpr (fem-parse-subexpr $p1 $p2))
-    (setq $cp1 (fem-subexpr-beg $subexpr))
-    ;; Debug information
-    (cond ((fem-subexpr-is-let-in $subexpr) (fem-log-dbg "Parsed expression: 'let _ = _ in'"))
-          ((fem-subexpr-has-semicol $subexpr) (fem-log-dbg "Parsed expression: '_;'"))
-          (t (fem-log-dbg "Parsed expression: '_'")))
-    ;; Compute the indentation
-    (setq $indent-str (fem-compute-local-indent-p $cp1))
-    ;; Compute where is the end of the region to send to F*
-    (setq $p3 (if $markers $p0 $p2))
-    (setq $insert-admit (and (not $markers)
-                             (or (fem-subexpr-is-let-in $subexpr)
-                                 (fem-subexpr-has-semicol $subexpr))))
-    ;; Remember which is the original buffer
-    (setq $cbuffer (current-buffer))
-    ;; Copy and start processing the content
-    (setq $pp-instr (concat "FEM.Process.pp_analyze_effectful_term "
-                         (bool-to-string fem-debug) " "
-                         (bool-to-string WITH_GPRE) " "
-                         (bool-to-string WITH_GPOST)))
-    (setq $subexpr1 (fem-copy-def-for-meta-process $p3 $insert-admit $subexpr fem-process-buffer1
-                                                  $pp-instr))
     ;; We are now in the destination buffer
     ;; Modify the copied content and leave the pointer at the end of the region
     ;; to send to F*
@@ -2548,16 +2461,16 @@ fem-copy-def-for-meta-process (BEG END INSERT_ADMITS SUBEXPR PARSE_STATE
     ;; with an admit after the focused term.
     ;; Note that we don't need to keep track of the positions modifications:
     ;; we will send the whole buffer to F*.
-    (goto-char (fem-subexpr-beg $subexpr1))
+    (goto-char (fem-subexpr-beg $term1))
     (insert "let _ = FEM.Process.focus_on_term in ")
     ;; Copy the buffer content
     (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
     ;; We need to switch back to the original buffer to query the F* process
     (switch-to-buffer $cbuffer)
     ;; Query F*
-    (fem-query-fstar-on-buffer-content $p3 $payload
+    (fem-query-fstar-on-buffer-content $insert-end $payload
                                    (apply-partially #'fem-insert-assert-pre-post--continuation
-                                                    $indent-str $p1 $p2 $subexpr))))
+                                                    $indent-str $insert-beg $insert-end))))
 
 (defun fem-analyze-effectful-term-no-goal ()
   "Insert assertions with proof obligations and postconditions around a term."
