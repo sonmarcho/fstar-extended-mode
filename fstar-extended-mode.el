@@ -1495,7 +1495,7 @@ TODO: use overlays."
 ;; TODO: we might need to put "'"
 (defun fem-parse-special-symbols-p ()
   "Try to parse special symbols and return a pair of positions if successful."
-  (fem-parse-re-p "[\\^*\+-/=\|=\$:><!]+"))
+  (fem-parse-re-p "[\\^*\+-/=\|=\$:><!&]+"))
 
 (defun fem-parse-identifier-p ()
   "Parse an identifier and return a pair of positions if successful.
@@ -1516,10 +1516,6 @@ Also, we check back ticks in a very lax manner."
    ((looking-at "{") 'open-curly)
    ((looking-at "\\[") 'open-square)
    (t nil)))
-
-(defun t1 ()
-  (interactive)
-  (message "%s" (fem-looking-at-open-bracket-p)))
 
 (defun fem-parse-parenthesized-exp-p ()
   "Parse a balanced parenthesized expression."
@@ -1547,18 +1543,14 @@ Also, we check back ticks in a very lax manner."
               (make-fem-pair :fst $p0 :snd (point)))
           nil)))))
 
-(defun t2 ()
-  (interactive)
-  (message "%s" (fem-looking-at-string-p)))
-
 ;; TODO: use more
 (defun fem-substring-from-pos-pair (POS_PAIR)
   "Return the substring delimited by the field of the fem-pair POS_PAIR"
   (buffer-substring-no-properties (fem-pair-fst POS_PAIR)
                                   (fem-pair-snd POS_PAIR)))  
 
-;; Control-flow parsing: expression
-(cl-defstruct fem-cfp-exp
+;; Control-flow parsing: token
+(cl-defstruct fem-cfp-tk
   symbol ;; the parsed symbol
   pos ;; fem-pair indicating the beginning and the end positions
   index ;; unique index identifying this symbol - mostly used for debugging
@@ -1568,8 +1560,9 @@ Also, we check back ticks in a very lax manner."
 ;; Control-flow parsing: state
 (cl-defstruct fem-cfp-state
   pos ;; the pointer position
-  stack ;; the stack of expressions/symbols
-  counter ;; stack elements counter - used to give a unique identifier to the elements
+  stack ;; the current stack of tokens
+  counter ;; stack tokens counter - used to give a unique identifier to each token
+  all-tokens ;; all the tokens encountered so far (contrary to stack, we don't pop items)
   )
 
 (defun fem-create-cfp-state (&optional POS)
@@ -1579,24 +1572,24 @@ POS is the optional position to use as the starting point."
 
 ;; Utility functions to manipulate a CFP state
 (defun fem-cfp-state-top-is (STATE SYMBOL)
-  "Check if the first element on the STATE stack is equal to SYMBOL.
+  "Check if the first token on the STATE stack is equal to SYMBOL.
 Return nil if the stack is empty."
   (fem-log-dbg "[> fem-cfp-state-top-is (%s)" SYMBOL)
   (let (($stack (fem-cfp-state-stack STATE)))
     (if $stack
         (progn
-          (fem-log-dbg "%s" (fem-cfp-exp-symbol (car $stack)))
-          (string= SYMBOL (fem-cfp-exp-symbol (car $stack))))
+          (fem-log-dbg "%s" (fem-cfp-tk-symbol (car $stack)))
+          (string= SYMBOL (fem-cfp-tk-symbol (car $stack))))
       nil)))
 
 (defun fem-cfp-state-pop (STATE &optional DEBUG_INSERT)
-  "Pop the first element of the STATE stack and return it.
+  "Pop the first token of the STATE stack and return it.
 If DEBUG_INSERT is t, insert a comment in the code for debugging."
   (let* (($stack (fem-cfp-state-stack STATE))
          ($p (car $stack))
-         ($symbol (fem-cfp-exp-symbol $p))
-         ($index (fem-cfp-exp-index $p))
-         ($msg (format " (* pop: %s (%s) *) " $symbol $index)))
+         ($symbol (fem-cfp-tk-symbol $p))
+         ($index (fem-cfp-tk-index $p))
+         ($msg (format " (* pop: %s {#%s} *) " $symbol $index)))
     (fem-log-dbg "[> fem-cfp-state-pop")
     (setq $stack (cdr $stack))
     (setf (fem-cfp-state-stack STATE) $stack)
@@ -1613,31 +1606,91 @@ construct.
 If DEBUG_INSERT is t, insert a comment in the code for debugging."
   (let* (($counter (fem-cfp-state-counter STATE))
          ($stack (fem-cfp-state-stack STATE))
-         ($msg (format " (* push: %s (%s) *) " SYMBOL $counter)))
+         ($all-tokens (fem-cfp-state-all-tokens STATE))
+         ($tk (make-fem-cfp-tk :symbol SYMBOL :pos POS_PAIR
+                               :index $counter :parent PARENT))
+         $msg)
+    ;; If the token has a parent: print it in the message number
+    (if (not PARENT)
+        (setq $msg (format " (* push: %s {#%s} *) " SYMBOL $counter))
+      (setq $msg (format " [parent: %s {#%s}] "
+                         (fem-cfp-tk-symbol PARENT)
+                         (fem-cfp-tk-index PARENT)))
+      (setq $msg (format " (* push: %s {#%s} %s *) " SYMBOL $counter $msg)))
     ;; Debugging
     (fem-log-dbg $msg)
     (when DEBUG_INSERT (insert $msg))
-    ;; Update the state
-    (setq $stack (cons (make-fem-cfp-exp :symbol SYMBOL :pos POS_PAIR
-                                         :index $counter :parent PARENT)
-                       $stack))
+    ;; Update the stacks
+    (setq $stack (cons $tk $stack))
+    (setq $all-tokens (cons $tk $all-tokens))
     (setq $counter (+ $counter 1))
     (setf (fem-cfp-state-stack STATE) $stack)
+    (setf (fem-cfp-state-all-tokens STATE) $all-tokens)
     (setf (fem-cfp-state-counter STATE) $counter)))
 
-;; TODO: the below function is not super safe. Try to list the meaningful cases.
-(defun fem-cfp-state-pop-until (STATE SYMBOL DEBUG_INSERT)
-  "Pop all the STATE stack symbols up to (and including) the first occurrence of SYMBOL."
-  (let (($stack (fem-cfp-state-stack STATE))
-        ($continue t))
-    (fem-log-dbg "[> fem-cfp-state-pop-until: %s" SYMBOL)
+(defun fem-cfp-state-pop-until-pred (STATE PRED INCLUSIVE &optional DEBUG_INSERT)
+  "Pop all the STATE stack tokens up to the first occurrence satisfying PRED.
+If INCLUSIVE is t, also pop the token satisfying PRED."
+  (let (($continue t)
+        ($ret nil))
+    (fem-log-dbg "[> fem-cfp-state-pop-until-pred")
     (while $continue
-      (if (or (fem-cfp-state-top-is STATE SYMBOL) (not (fem-cfp-state-stack STATE)))
+      (if (or (not (fem-cfp-state-stack STATE))
+              (funcall PRED (car (fem-cfp-state-stack STATE))))
           ;; Last pop
           (progn
-            (when (fem-cfp-state-stack STATE) (fem-cfp-state-pop STATE DEBUG_INSERT))
-            (setq $continue nil))
-        (fem-cfp-state-pop STATE DEBUG_INSERT)))))
+            (setq $continue nil)
+            (when (fem-cfp-state-stack STATE)
+              (if INCLUSIVE
+                  (setq $ret (fem-cfp-state-pop STATE DEBUG_INSERT))
+                (setq $ret (car (fem-cfp-state-stack STATE))))))
+        (fem-cfp-state-pop STATE DEBUG_INSERT)))
+    $ret))
+
+(defun fem-cfp-state-pop-until (STATE SYMBOL &optional DEBUG_INSERT)
+  "Pop all the STATE stack tokens up to (and including) the first occurrence of SYMBOL."
+  (fem-cfp-state-pop-until-pred STATE
+                                (lambda (TK) (string= (fem-cfp-tk-symbol TK) SYMBOL))
+                                t DEBUG_INSERT))
+
+(defun fem-cfp-state-find-first-pred (STATE PRED)
+  "Find the first token in the STATE stack satisfying PRED."
+  (let (($stack (fem-cfp-state-stack STATE))
+        ($continue t)
+        ($ret nil))
+    (fem-log-dbg "[> fem-cfp-state-find-first-pred")
+    (while (and $stack $continue)
+      (if (funcall PRED (car $stack))
+          (progn
+            (setq $continue nil)
+            (setq $ret (car $stack)))
+        (setq $stack (cdr $stack))))
+    $ret))
+
+(defun fem-cfp-state-find-prev-decl-end-token (STATE)
+  "Find the token delimiting the end of the previous declaration"
+  ;; If there is previous declaration, it must be ended by a 'semicolon or a 'in.
+  ;; Otherwise, look for: 'equal1, 'begin, 'open-bracket, 'open-curly, 'open-square,
+  ;; 'if, 'then, 'else
+  (let (($pred (lambda (TK)
+                 (let (($symbol (fem-cfp-tk-symbol TK)))
+                   (or (string= $symbol 'in)
+                       (string= $symbol 'semicol)
+                       (string= $symbol 'equal1)
+                       (string= $symbol 'begin)
+                       (string= $symbol 'if)
+                       (string= $symbol 'then)
+                       (string= $symbol 'else)
+                       (string= $symbol 'open-bracket)
+                       (string= $symbol 'open-curly)
+                       (string= $symbol 'open-square))))))
+  (fem-cfp-state-find-first-pred STATE $pred)))
+
+(defun fem-cfp-state-top (STATE)
+  "Return the last token parsed by STATE."
+  (fem-log-dbg "[> fem-cfp-state-top")
+  (let (($stack (fem-cfp-state-all-tokens STATE)))
+    (if $stack (car $stack) nil)))
 
 (defun fem-cfp-state-move-p (STATE &optional POS)
   "Move the pos field in fem-cfp-state STATE to POS or (point)."
@@ -1648,16 +1701,16 @@ If DEBUG_INSERT is t, insert a comment in the code for debugging."
 If DEBUG_INSERT is t insert comments in the code for debugging.
 In case of success, return the symbol which was found, or 'unknown-identifier.
 Otherwise, return nil."
-  (let (($exp (fem-parse-identifier-p))
-        $exp-str
+  (let (($tk (fem-parse-identifier-p))
+        $tk-str
         fem-cfp-handle-ident)
-    (if (not $exp) nil
+    (if (not $tk) nil
       ;; Read the identifier
-      (setq $exp-str (fem-substring-from-pos-pair $exp))
-      (fem-log-dbg "[> parsed an identifier: \"%s\"" $exp-str)
+      (setq $tk-str (fem-substring-from-pos-pair $tk))
+      (fem-log-dbg "[> parsed an identifier: \"%s\"" $tk-str)
       ;; Move forward - note that as we might insert debugging information in
       ;; code, we update the state position later
-      (goto-char (fem-pair-snd $exp))
+      (goto-char (fem-pair-snd $tk))
       ;; Small helper
       (defun fem-cfp-handle-ident (NAME IDENT POP_UNTIL PUSH &optional PARENT_OF_PARENT)
         "Handle one case.
@@ -1667,18 +1720,18 @@ POP_UNTIL: symbol to which to pop the stack, or nil. Will be used as parent if w
 PUSH: t if push the current symbol.
 PARENT_OF_PARENT: if t, together with POP_UNTIL and PUSH, use the parent of the last popped
 identifier as parent when pushing.
-If $exp-str is not equal to NAME, return nil. Otherwise return IDENT"
-        (if (not (string-equal NAME $exp-str)) nil
+If $tk-str is not equal to NAME, return nil. Otherwise return IDENT"
+        (if (not (string-equal NAME $tk-str)) nil
           ;; Equal to NAME
           (let (($parent nil))
             ;; Pop until
             (when POP_UNTIL
               (setq $parent (fem-cfp-state-pop-until STATE POP_UNTIL DEBUG_INSERT))
               (when (and $parent PARENT_OF_PARENT)
-                (setq $parent (fem-cfp-exp-parent $parent))))
+                (setq $parent (fem-cfp-tk-parent $parent))))
             ;; Push
             (when PUSH
-              (fem-cfp-state-push STATE IDENT $exp $parent DEBUG_INSERT))
+              (fem-cfp-state-push STATE IDENT $tk $parent DEBUG_INSERT))
             (when DEBUG_INSERT (insert " (* id *) "))
             ;; Update the state position
             (fem-cfp-state-move-p STATE)
@@ -1690,7 +1743,7 @@ If $exp-str is not equal to NAME, return nil. Otherwise return IDENT"
        ;; BEGIN
        (fem-cfp-handle-ident "begin" 'begin nil t)
        ;; END: this delimiter might end several expressions at once
-       (fem-cfp-handle-ident "end" 'end 'begin nil)
+       (fem-cfp-handle-ident "end" 'end 'begin t)
        ;; MATCH
        (fem-cfp-handle-ident "match" 'match nil t)
        ;; WITH
@@ -1701,14 +1754,14 @@ If $exp-str is not equal to NAME, return nil. Otherwise return IDENT"
        (fem-cfp-handle-ident "then" 'then 'if t)
        ;; ELSE: might end several expressions at once
        ;; Also note that we want to use the 'if as parent, not the 'else
-       (fem-cfp-handle-ident "else" 'else 'then t t)
+       (fem-cfp-handle-ident "else" 'else 'then t)
        ;; LET
        (fem-cfp-handle-ident "let" 'let nil t)
        ;; IN: might end several expressions at once
-       ;; We don't push this one
-       (fem-cfp-handle-ident "in" 'in 'let nil)
+       (fem-cfp-handle-ident "in" 'in 'let t)
        ;; Otherwise: just update the state position
        (progn
+         (fem-cfp-state-push STATE 'ident $tk nil DEBUG_INSERT)
          (when DEBUG_INSERT (insert " (* id *) "))
          (fem-cfp-state-move-p STATE)
          'unknown-identifier)))))
@@ -1722,7 +1775,7 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
   (fem-log-dbg "[> fem-cfp-parse-one-token")
   (let (($beg (fem-cfp-state-pos STATE))
         ($end (or END (point-max)))
-        $exp $exp-str $ident $bracket-type)
+        $tk $tk-str $ident $bracket-type $parent)
     (goto-char $beg)
     (save-restriction
       (narrow-to-region $beg $end)
@@ -1739,41 +1792,53 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
         'eob)
 
        ;; SPECIAL DELIMITERS (which can't be composed): ';', ','
-       ((setq $exp (fem-parse-special-delimiter-p))
+       ((setq $tk (fem-parse-special-delimiter-p))
         ;; Read
-        (setq $exp-str (fem-substring-from-pos-pair $exp))
-        (fem-log-dbg "[> parsed special delimiters: %s" $exp-str)
+        (setq $tk-str (fem-substring-from-pos-pair $tk))
+        (fem-log-dbg "[> parsed special delimiters: %s" $tk-str)
         ;; Move forward - as we might insert comments in the code, we update the
         ;; state position later
-        (goto-char (fem-pair-snd $exp))
-        ;; If it is a ';':
-        ;; Check if we are in the branch of an 'if ... then ... else ...
-        (when (string= $exp-str ";")
+        (goto-char (fem-pair-snd $tk))
+        ;; Case disjunction
+        (cond
+         ;; CASE1: If it is a ';':
+         ;; Check if we are in the branch of an 'if ... then ... else ...
+         ((string= $tk-str ";")
           (fem-log-dbg "[> special delimiter is a ';'")
           ;; If inside a 'then': it should have only one branch (of type unit): pop it
           ;; ;; If inside an 'else": this is the end of this branch (pop it)
-          (when (or (fem-cfp-state-top-is STATE 'then)
-                    (fem-cfp-state-top-is STATE 'else))
-            (fem-cfp-state-pop STATE DEBUG_INSERT)))
+          (if (or (fem-cfp-state-top-is STATE 'then)
+                  (fem-cfp-state-top-is STATE 'else))
+              (setq $parent (fem-cfp-state-pop STATE DEBUG_INSERT))
+            (setq $parent (fem-cfp-state-find-prev-decl-end-token STATE)))
+          ;; Push the semicol because it delimits a (sugarized) let binding
+          (fem-cfp-state-push STATE 'semicol $tk $parent DEBUG_INSERT))
+         ;; OTHERWISE: push a 'special-delimiters
+         (t (fem-cfp-state-push STATE 'special-delimiters $tk nil DEBUG_INSERT)))
         ;; Update the state position and return
         (when DEBUG_INSERT (insert " (* spec. delim. *)"))
         (fem-cfp-state-move-p STATE)
         'special-delimiters)
 
        ;; SPECIAL SYMBOLS (which can be composed): '=', '|', '+', etc.
-       ((setq $exp (fem-parse-special-symbols-p))
-        ;; Just move forward
-        (fem-log-dbg "[> parsed special symbols: %s" (fem-substring-from-pos-pair $exp))
-        (goto-char (fem-pair-snd $exp))
+       ((setq $tk (fem-parse-special-symbols-p))
+        (fem-log-dbg "[> parsed special symbols: %s" (fem-substring-from-pos-pair $tk))
+        (goto-char (fem-pair-snd $tk))
+        (setq $tk-str (fem-substring-from-pos-pair $tk))
+        ;; If "=" push 'equal1, otherwise push 'special-symbols
+        (if (string= $tk-str "=")
+            (fem-cfp-state-push STATE 'equal1 $tk nil DEBUG_INSERT)
+          (fem-cfp-state-push STATE 'special-symbols $tk nil DEBUG_INSERT))
         (when DEBUG_INSERT (insert " (* spec. symb. *) "))
         (fem-cfp-state-move-p STATE)
         'special-symbols)
 
        ;; NUMBERS
-       ((setq $exp (fem-parse-number-p))
+       ((setq $tk (fem-parse-number-p))
         ;; Just move forward
-        (fem-log-dbg "[> parsed a number: %s" (fem-substring-from-pos-pair $exp))
-        (goto-char (fem-pair-snd $exp))
+        (fem-log-dbg "[> parsed a number: %s" (fem-substring-from-pos-pair $tk))
+        (goto-char (fem-pair-snd $tk))
+        (fem-cfp-state-push STATE 'number $tk nil DEBUG_INSERT)
         (when DEBUG_INSERT (insert " (* num *) "))
         (fem-cfp-state-move-p STATE)
         'number)
@@ -1781,13 +1846,14 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
        ;; PARENTHESES
        ((setq $bracket-type (fem-looking-at-open-bracket-p))
         ;; Try to parse a well-balanced group
-        (setq $exp (fem-parse-parenthesized-exp-p))
-        (if $exp
+        (setq $tk (fem-parse-parenthesized-exp-p))
+        (if $tk
             ;; If success: move forward
             (progn
               (fem-log-dbg "[> parsed a well-balanced parenthesized expression")
-              (goto-char (fem-pair-snd $exp))
+              (goto-char (fem-pair-snd $tk))
               (when DEBUG_INSERT (insert " (* (...) *) "))
+              (fem-cfp-state-push STATE 'balanced-brackets $tk nil DEBUG_INSERT)
               (fem-cfp-state-move-p STATE)
               'parentheses)
           ;; Otherwise: update the stack to dive in
@@ -1801,10 +1867,11 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
           'open-bracket))
 
        ;; STRINGS
-       ((setq $exp (fem-parse-string-p))
+       ((setq $tk (fem-parse-string-p))
         ;; Just move forward
-        (fem-log-dbg "[> parsed a string: %s" (fem-substring-from-pos-pair $exp))
-        (goto-char (fem-pair-snd $exp))
+        (fem-log-dbg "[> parsed a string: %s" (fem-substring-from-pos-pair $tk))
+        (goto-char (fem-pair-snd $tk))
+        (fem-cfp-state-push STATE 'string $tk nil DEBUG_INSERT)
         (when DEBUG_INSERT (insert " (* str *) "))
         (fem-cfp-state-move-p STATE)
         'number)
@@ -1843,7 +1910,146 @@ If STATE is nil, initialize a parsing STATE from the current pointer position."
             (fem-log-dbg "[> fem-cfp-parse-tokens: parsing errors")
             (error "fem-cfp-parse-tokens: parsing errors")))))))
 
-(defun fem-copy-def-for-meta-process (END INSERT_ADMIT SUBEXPR DEST_BUFFER PP_INSTR)
+(defun fem-cfp-state-filter-stack (STACK)
+  "Filter a token STACK to remove the first 'let, which is  top-level, and the
+tokens which will be ignored for control-flow.
+Return a pair (filtered stack, filtered the top-level let)."
+  (let ($tk $symbol $stack $r $filtered-let)
+    (if (not STACK)
+        (make-fem-pair :fst nil :snd nil)
+      (setq $tk (car STACK) $r (fem-cfp-state-filter-stack (cdr STACK)))
+      (setq $symbol (fem-cfp-tk-symbol $tk))
+      (setq $stack (fem-pair-fst $r) $filtered-let (fem-pair-snd $r))
+      ;; Case disjunction on the current symbol
+      (cond
+       ;; If it is a let, check if it is the first one (the top-level let): in this
+       ;; case, filter it. Otherwise, keep it
+       ((string= $symbol "let")
+        (if $filtered-let
+            (make-fem-pair :fst (cons $tk $stack) :snd t)
+          (make-fem-pair :fst $stack :snd nil)))
+       ;; If 'if, 'then, 'begin, 'match or open bracket: keep the token
+       ((or (string= $symbol 'if)
+            (string= $symbol 'then)
+            (string= $symbol 'begin)
+            (string= $symbol 'match)
+            (string= $symbol 'open-bracket)
+            (string= $symbol 'open-curly)
+            (string= $symbol 'open-square))
+        (make-fem-pair :fst (cons $tk $stack) :snd $filtered-let))
+       ;; Otherwise:filter
+       (t (make-fem-pair :fst $stack :snd $filtered-let))))))    
+
+(defun fem-cfp-state-filter-state-stack (STACK)
+  "Filter the STATE stack to remove the first 'let, which is  top-level, and the
+tokens which will be ignored for control-flow"
+  (fem-pair-fst (fem-cfp-state-filter-stack (fem-cfp-state-stack STACK))))
+
+(defun fem-copy-def-for-meta-process (BEG END INSERT_ADMITS SUBEXPR PARSE_STATE
+                                          DEST_BUFFER PP_INSTR)
+  "Copy code for meta-processing and update the parsed result positions.
+Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
+PP_INSTR is the post-processing instruction to insert for F*."
+;;  (let ($beg $p0 $str1 $str2 $str3 $attr-beg $original-length $new-length $shift $res)
+  (let ($beg $p0 $str1 $str2 $str3 $shift $new-length $original-length $focus-shift
+             $prev-buffer $stack ($continue t))
+    (goto-char BEG)
+    ;; - copy to the destination buffer. We do the parsing to remove the current
+    ;;   attributes inside the F* buffer, which is why we copy the content
+    ;;   in several steps. TODO: I don't manage to confifure the parsing for the
+    ;;   destination buffer correctly.
+    (fem-skip-forward-comments-pragmas-spaces)
+    (setq $str1 (buffer-substring BEG (point)))
+    (fem-skip-forward-square-brackets) ;; (optionally) go over the attribute
+    (setq $p0 (point))
+    (fem-skip-forward-comments-pragmas-spaces)
+    (setq $str2 (buffer-substring $p0 (point)))
+    (setq $str3 (buffer-substring (point) END))
+    (setq $prev-buffer (current-buffer))
+    (switch-to-buffer DEST_BUFFER)
+    (erase-buffer)
+    (insert $str1)
+    (insert $str2)
+    ;; Insert an option to deactivate the proof obligations
+    (insert "#push-options \"--admit_smt_queries true\"\n")
+    ;; Insert the post-processing instruction
+    (insert "[@(FStar.Tactics.postprocess_with (")
+    (insert PP_INSTR)
+    (insert "))]\n")
+    ;; Insert the function code
+    (insert $str3)
+    ;; Compute the current shift: the shift is just the difference of length between the
+    ;; content in the destination buffer and the original content, because all
+    ;; the deletion/insertion so far should have happened before the points of interest
+    (setq $original-length (- END $beg)
+          $new-length (- (point-max) (point-min)))
+    (setq $shift (- $new-length $original-length))
+    (setq $shift (+ (- $shift BEG) 1))
+    (setq $focus-shift $shift) ;; the $shift for the focused expression
+    ;; Insert admits to fill the function holes
+    (when INSERT_ADMITS
+      ;; Define utility functions, to insert text and update the shift at the same time
+      (let
+          ;; Insert text and update the focused term shift at the same time
+          ((insert-shift
+            (lambda (TEXT)
+              ;; If before the term under focus: update the shift
+              (when (<= (point) (+ $focus-shift (fem-subexpr-beg SUBEXPR)))
+                (setq $focus-shift (+ $focus-shift (length TEXT))))
+              ;; Insert the text
+              (insert TEXT)))
+           ;; Compute the indentation for a token in the original buffer
+           (compute-token-indent
+            (lambda (TK)
+              (let ($indent)
+                (switch-to-buffer $prev-buffer)
+                (setq $indent (fem-compute-local-indent-p (fem-pair-fst (fem-cfp-tk-pos TK))))
+                (switch-to-buffer DEST_BUFFER)
+                $indent)))
+           ;; Compute the indentation for a specific position in the original buffer
+           (compute-indent
+            (lambda (POS)
+              (let ($indent)
+                (switch-to-buffer $prev-buffer)
+                (setq $indent (fem-compute-local-indent-p POS))
+                (switch-to-buffer DEST_BUFFER)
+                $indent)))
+           ;; Go to the beginning of a specific token in the target buffer
+           (target-goto-token
+            (lambda (TK)
+              (goto-char (- (fem-pair-fst (fem-cfp-tk-pos TK)) $shift))))
+           )
+        ;; Start filling the holes
+        ;; First: if the focused expression ends with 'in or 'semicol we need to insert
+        ;; an ``admit()``
+        (when (or (fem-subexpr-is-let SUBEXPR) (fem-subexpr-has-semicol SUBEXPR))
+          (goto-char (point-max))
+          (insert-shift "admit()"))
+        ;; Then, we need to use the stack to determine where to insert admit
+        ;; First, filter the stack in order to remove the first 'let (which is
+        ;; at the top level declaring the current definition)
+        (setq $stack (fem-cfp-state-filter-state-stack PARSE_STATE))
+        ;; Then, whenever we encounter 'let, 'match, 'then, 'begin or an open bracket,
+        ;; we fill the hole
+        (while (and $continue $stack)
+          )
+        ))))
+        
+      
+      
+    ;; Introduce the admit (note that the admit is at the very end of the query)
+    (when INSERT_ADMITS
+      (newline)
+      (indent-according-to-mode) ;; buffer's mode is not F*, but don't care
+      (insert "admit()"))
+    ;; Shift and return the parsing information
+    (setq $res (copy-fem-subexpr SUBEXPR))
+    (when (fem-subexpr-bterm SUBEXPR)
+      (setf (fem-subexpr-bterm $res) (copy-fem-letb-term (fem-subexpr-bterm SUBEXPR))))
+    (fem-shift-subexpr-pos $shift $res)))
+
+;; TODO: remove
+(defun fem-copy-def-for-meta-process (END INSERT_ADMITS SUBEXPR DEST_BUFFER PP_INSTR)
   "Copy code for meta-processing and update the parsed result positions.
 Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
 PP_INSTR is the post-processing instruction to insert just before the definition."
@@ -1881,7 +2087,7 @@ PP_INSTR is the post-processing instruction to insert just before the definition
     (setq $shift (- $new-length $original-length))
     (setq $shift (+ (- $shift $beg) 1))
     ;; Introduce the admit (note that the admit is at the very end of the query)
-    (when INSERT_ADMIT
+    (when INSERT_ADMITS
       (newline)
       (indent-according-to-mode) ;; buffer's mode is not F*, but don't care
       (insert "admit()"))
@@ -1897,16 +2103,16 @@ CONTINUATION must an overlay, a status and a response as arguments.
 OVERLAY_END gives the position at which to stop the overlay."
   (let* (($beg (fstar-subp--untracked-beginning-position))
          $overlay)
-  ;; Create the overlay
-  (setq $overlay (make-overlay (fstar-subp--untracked-beginning-position)
-                                OVERLAY_END (current-buffer) nil nil))
-  (fstar-subp-remove-orphaned-issue-overlays (point-min) (point-max))
-  (overlay-put $overlay 'fstar-subp--lax nil)
-  (fstar-subp-set-status $overlay 'busy)
-  ;; Query F*
-  (fem-log-dbg "sending query to F*:[\n%s\n]" PAYLOAD)
-  (fstar-subp--query (fstar-subp--push-query $beg `full PAYLOAD)
-                     (apply-partially CONTINUATION $overlay))))
+    ;; Create the overlay
+    (setq $overlay (make-overlay (fstar-subp--untracked-beginning-position)
+                                 OVERLAY_END (current-buffer) nil nil))
+    (fstar-subp-remove-orphaned-issue-overlays (point-min) (point-max))
+    (overlay-put $overlay 'fstar-subp--lax nil)
+    (fstar-subp-set-status $overlay 'busy)
+    ;; Query F*
+    (fem-log-dbg "sending query to F*:[\n%s\n]" PAYLOAD)
+    (fstar-subp--query (fstar-subp--push-query $beg `full PAYLOAD)
+                       (apply-partially CONTINUATION $overlay))))
 
 (defun fem-generate-fstar-check-conditions ()
   "Check that it is safe to run some F* meta-processing."
@@ -1949,180 +2155,319 @@ Otherwise, the string is made of a number of spaces equal to the column position
   "Split the conjunctions in an assertion/assumption."
   (interactive)
   (let ($markers $p0 $tbeg $passert $a-beg $a-end $p-beg $p-end
-        $subexpr $instr $subexpr1 $indent-str $beg $end $query-end $insert-admit
-        $cbuffer $prefix $prefix-length $payload)
-  (fem-log-dbg "split-assert-conjuncts")
-  ;; Sanity check
-  (fem-generate-fstar-check-conditions)
-  ;; Look for position markers
-  (setq $markers (fem-get-pos-markers))
-  (setq $p0 (point))
-  (when $markers (goto-char (fem-pair-fst $markers)))
-  ;; Parse the assertion/assumption. Note that we may be at the beginning of a
-  ;; line with an assertion/assumption, or just after the assertion/assumption.
-  ;; so we first try to move.
-  (setq $tbeg (fstar-subp--untracked-beginning-position))
-  ;; First: we are inside or before the assert: move forward
-  (when (or (fem-is-in-spaces-p) (fstar-in-comment-p)) (fem-skip-comments-and-spaces t))  
-  (setq $passert (fem-find-assert-assume-p (point) $tbeg))
-  ;; If not found: move backward and eventually ignore a ';'
-  (when (not $passert)
-    (goto-char $p0)
+                 $subexpr $instr $subexpr1 $indent-str $beg $end $query-end $insert-admit
+                 $cbuffer $prefix $prefix-length $payload)
+    (fem-log-dbg "split-assert-conjuncts")
+    ;; Sanity check
+    (fem-generate-fstar-check-conditions)
+    ;; Look for position markers
+    (setq $markers (fem-get-pos-markers))
+    (setq $p0 (point))
+    (when $markers (goto-char (fem-pair-fst $markers)))
+    ;; Parse the assertion/assumption. Note that we may be at the beginning of a
+    ;; line with an assertion/assumption, or just after the assertion/assumption.
+    ;; so we first try to move.
+    (setq $tbeg (fstar-subp--untracked-beginning-position))
+    ;; First: we are inside or before the assert: move forward
+    (when (or (fem-is-in-spaces-p) (fstar-in-comment-p)) (fem-skip-comments-and-spaces t))  
+    (setq $passert (fem-find-assert-assume-p (point) $tbeg))
+    ;; If not found: move backward and eventually ignore a ';'
+    (when (not $passert)
+      (goto-char $p0)
+      (fem-skip-comments-and-spaces nil (point-at-bol))
+      (when (fem-previous-char-is-semicol-p)
+        (backward-char))
+      (setq $passert (fem-find-assert-assume-p (point) $tbeg)))
+    (when (not $passert) (error "Pointer not over an assert/assert_norm/assume"))
+    ;; Parse the encompassing let (if there is)
+    (setq $a-beg (fem-pair-fst (fem-pair-fst $passert))
+          $a-end (fem-pair-snd (fem-pair-fst $passert))
+          $p-beg (fem-pair-fst (fem-pair-snd $passert))
+          $p-end (fem-pair-snd (fem-pair-snd $passert)))
+    (setq $subexpr (fem-find-encompassing-let-in $a-beg $p-end))
+    (when (not $subexpr) (error "Could not parse the enclosing expression"))
+    ;; Compute the indentation
+    (setq $indent-str (fem-compute-local-indent-p (fem-subexpr-beg $subexpr)))
+    ;; Expand the region to ignore comments
+    (goto-char (fem-subexpr-beg $subexpr))
     (fem-skip-comments-and-spaces nil (point-at-bol))
-    (when (fem-previous-char-is-semicol-p)
-      (backward-char))
-    (setq $passert (fem-find-assert-assume-p (point) $tbeg)))
-  (when (not $passert) (error "Pointer not over an assert/assert_norm/assume"))
-  ;; Parse the encompassing let (if there is)
-  (setq $a-beg (fem-pair-fst (fem-pair-fst $passert))
-        $a-end (fem-pair-snd (fem-pair-fst $passert))
-        $p-beg (fem-pair-fst (fem-pair-snd $passert))
-        $p-end (fem-pair-snd (fem-pair-snd $passert)))
-  (setq $subexpr (fem-find-encompassing-let-in $a-beg $p-end))
-  (when (not $subexpr) (error "Could not parse the enclosing expression"))
-  ;; Compute the indentation
-  (setq $indent-str (fem-compute-local-indent-p (fem-subexpr-beg $subexpr)))
-  ;; Expand the region to ignore comments
-  (goto-char (fem-subexpr-beg $subexpr))
-  (fem-skip-comments-and-spaces nil (point-at-bol))
-  (setq $beg (point))
-  (goto-char (fem-subexpr-end $subexpr))
-  (fem-skip-comments-and-spaces t (point-at-eol))
-  (setq $end (point))
-  ;; Remember which is the original buffer
-  (setq $cbuffer (current-buffer))
-  ;; Copy and start processing the content
-  (setq $query-end (if $markers $p0 $end))
-  (setq $insert-admit (and (not $markers)
-                           (or (fem-subexpr-is-let-in $subexpr)
-                               (fem-subexpr-has-semicol $subexpr))))
-  (setq $instr (concat "FEM.Process.pp_split_assert_conjs " (bool-to-string fem-debug)))
-  (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit $subexpr
-                                                 fem-process-buffer1
-                                                 $instr))
-  ;; We are now in the destination buffer
-  ;; Insert the ``focus_on_term`` indicator at the proper place, together
-  ;; with an admit after the focused term.
-  ;; Note that we don't need to keep track of the positions modifications:
-  ;; we will send the whole buffer to F*.
-  ;; Prefix
-  (goto-char (fem-subexpr-beg $subexpr1))
-  (setq $prefix "let _ = FEM.Process.focus_on_term in ")
-  (setq $prefix-length (length $prefix))
-  (insert $prefix)
-  ;; Suffix
-  (goto-char (+ (fem-subexpr-end $subexpr1) $prefix-length))
-  ;; Copy the buffer content
-  (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
-  ;; We need to switch back to the original buffer to query the F* process
-  (switch-to-buffer $cbuffer)
-  ;; Query F*
-  (fem-query-fstar-on-buffer-content $query-end $payload
-                                     (apply-partially #'fem-insert-assert-pre-post--continuation
-                                                      $indent-str $beg $end $subexpr))))
+    (setq $beg (point))
+    (goto-char (fem-subexpr-end $subexpr))
+    (fem-skip-comments-and-spaces t (point-at-eol))
+    (setq $end (point))
+    ;; Remember which is the original buffer
+    (setq $cbuffer (current-buffer))
+    ;; Copy and start processing the content
+    (setq $query-end (if $markers $p0 $end))
+    (setq $insert-admit (and (not $markers)
+                             (or (fem-subexpr-is-let-in $subexpr)
+                                 (fem-subexpr-has-semicol $subexpr))))
+    (setq $instr (concat "FEM.Process.pp_split_assert_conjs " (bool-to-string fem-debug)))
+    (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit $subexpr
+                                                   fem-process-buffer1
+                                                   $instr))
+    ;; We are now in the destination buffer
+    ;; Insert the ``focus_on_term`` indicator at the proper place, together
+    ;; with an admit after the focused term.
+    ;; Note that we don't need to keep track of the positions modifications:
+    ;; we will send the whole buffer to F*.
+    ;; Prefix
+    (goto-char (fem-subexpr-beg $subexpr1))
+    (setq $prefix "let _ = FEM.Process.focus_on_term in ")
+    (setq $prefix-length (length $prefix))
+    (insert $prefix)
+    ;; Suffix
+    (goto-char (+ (fem-subexpr-end $subexpr1) $prefix-length))
+    ;; Copy the buffer content
+    (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
+    ;; We need to switch back to the original buffer to query the F* process
+    (switch-to-buffer $cbuffer)
+    ;; Query F*
+    (fem-query-fstar-on-buffer-content $query-end $payload
+                                       (apply-partially #'fem-insert-assert-pre-post--continuation
+                                                        $indent-str $beg $end $subexpr))))
 
 (defun fem-unfold-in-assert-assume ()
   "Unfold an identifier in an assertion/assumption."
   (interactive)
   (let ($markers $p0 $id $tbeg $passert $a-beg $a-end $p-beg $p-end
-        $subexpr $instr $subexpr1 $shift $indent-str $beg $end $cbuffer
-        $query-end $insert-admit $payload $insert-shift $insert-and-shift)
-  (fem-log-dbg "unfold-in-assert-assume")
-  ;; Sanity check
-  (fem-generate-fstar-check-conditions)
-  ;; Look for position markers
-  (setq $markers (fem-get-pos-markers))
-  (setq $p0 (point))
-  (when $markers (goto-char (fem-pair-fst $markers)))
-  ;; Find the identifier by computing its delimiting positions
-  (if (and $markers (fem-pair-snd $markers))
-      ;; There is a second marker: use it as the end of the identifier
-      (setq $id $markers)
-    ;; Otherwise: use the active selection if there is one
-    (if (use-region-p)
-        ;; Use the selected region
-        (setq $id (make-fem-pair :fst (region-beginning) :snd (region-end)))
-      ;; Last case: parse the sexp under the pointer
-      (setq $id (fem-sexp-at-p))
-      (when (not $id) (error "Pointer not over a term"))))
-  ;; Parse the assertion/assumption.
-  (setq $tbeg (fstar-subp--untracked-beginning-position))
-  (setq $passert (fem-find-assert-assume-p (point) $tbeg))
-  (when (not $passert) (error "Pointer not over an assert/assert_norm/assume"))
-  ;; Parse the encompassing let (if there is)
-  (setq $a-beg (fem-pair-fst (fem-pair-fst $passert))
-        $a-end (fem-pair-snd (fem-pair-fst $passert))
-        $p-beg (fem-pair-fst (fem-pair-snd $passert))
-        $p-end (fem-pair-snd (fem-pair-snd $passert)))
-  (setq $subexpr (fem-find-encompassing-let-in $a-beg $p-end))
-  (when (not $subexpr) (error "Could not parse the enclosing expression"))
-  ;; Compute the indentation
-  (setq $indent-str (fem-compute-local-indent-p (fem-subexpr-beg $subexpr)))
-  ;; Expand the region to ignore comments
-  (goto-char (fem-subexpr-beg $subexpr))
-  (fem-skip-comments-and-spaces nil (point-at-bol))
-  (setq $beg (point))
-  (goto-char (fem-subexpr-end $subexpr))
-  (fem-skip-comments-and-spaces t (point-at-eol))
-  (setq $end (point))
-  ;; Remember which is the original buffer
-  (setq $cbuffer (current-buffer))
-  ;; Copy and start processing the content
-  (setq $query-end (if $markers $p0 $end))
-  (setq $insert-admit (and (not $markers)
-                           (or (fem-subexpr-is-let-in $subexpr)
-                               (fem-subexpr-has-semicol $subexpr))))
-  (setq $instr (concat "FEM.Process.pp_unfold_in_assert_or_assume " (bool-to-string fem-debug)))
-  (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit
-                                                 $subexpr fem-process-buffer1
-                                                 $instr))
-  ;; We are now in the destination buffer
-  ;; Insert the ``focus_on_term`` indicators at the proper places, together
-  ;; with an admit after the focused term.
-  ;; Prefixes:
-  (setq $insert-shift 0)
-  (defun $insert-and-shift (STR)
-    (setq $insert-shift (+ $insert-shift (length STR)))
-    (insert STR))
-  ;; - for the identifier - note that we need to compute the shift between the
-  ;;   buffers
-  (setq $shift (- (fem-subexpr-beg $subexpr1) (fem-subexpr-beg $subexpr)))
-  (goto-char (+ (fem-pair-snd $id) $shift))
-  ($insert-and-shift "))")
-  (goto-char (+ (fem-pair-fst $id) $shift))
-  ($insert-and-shift "(let _ = FEM.Process.focus_on_term in (")
-  ;; - for the assert/assume - note that the above insertion should have been made
-  ;;   below the point where we now insert
-  (goto-char (fem-subexpr-beg $subexpr1))
-  ($insert-and-shift "let _ = FEM.Process.focus_on_term in\n")
-  ;; Copy the buffer content
-  (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
-  ;; We need to switch back to the original buffer to query the F* process
-  (switch-to-buffer $cbuffer)
-  ;; Query F*
-  (fem-query-fstar-on-buffer-content $query-end $payload
-                                 (apply-partially #'fem-insert-assert-pre-post--continuation
-                                                  $indent-str $beg $end $subexpr))))
+                 $subexpr $instr $subexpr1 $shift $indent-str $beg $end $cbuffer
+                 $query-end $insert-admit $payload $insert-shift $insert-and-shift)
+    (fem-log-dbg "unfold-in-assert-assume")
+    ;; Sanity check
+    (fem-generate-fstar-check-conditions)
+    ;; Look for position markers
+    (setq $markers (fem-get-pos-markers))
+    (setq $p0 (point))
+    (when $markers (goto-char (fem-pair-fst $markers)))
+    ;; Find the identifier by computing its delimiting positions
+    (if (and $markers (fem-pair-snd $markers))
+        ;; There is a second marker: use it as the end of the identifier
+        (setq $id $markers)
+      ;; Otherwise: use the active selection if there is one
+      (if (use-region-p)
+          ;; Use the selected region
+          (setq $id (make-fem-pair :fst (region-beginning) :snd (region-end)))
+        ;; Last case: parse the sexp under the pointer
+        (setq $id (fem-sexp-at-p))
+        (when (not $id) (error "Pointer not over a term"))))
+    ;; Parse the assertion/assumption.
+    (setq $tbeg (fstar-subp--untracked-beginning-position))
+    (setq $passert (fem-find-assert-assume-p (point) $tbeg))
+    (when (not $passert) (error "Pointer not over an assert/assert_norm/assume"))
+    ;; Parse the encompassing let (if there is)
+    (setq $a-beg (fem-pair-fst (fem-pair-fst $passert))
+          $a-end (fem-pair-snd (fem-pair-fst $passert))
+          $p-beg (fem-pair-fst (fem-pair-snd $passert))
+          $p-end (fem-pair-snd (fem-pair-snd $passert)))
+    (setq $subexpr (fem-find-encompassing-let-in $a-beg $p-end))
+    (when (not $subexpr) (error "Could not parse the enclosing expression"))
+    ;; Compute the indentation
+    (setq $indent-str (fem-compute-local-indent-p (fem-subexpr-beg $subexpr)))
+    ;; Expand the region to ignore comments
+    (goto-char (fem-subexpr-beg $subexpr))
+    (fem-skip-comments-and-spaces nil (point-at-bol))
+    (setq $beg (point))
+    (goto-char (fem-subexpr-end $subexpr))
+    (fem-skip-comments-and-spaces t (point-at-eol))
+    (setq $end (point))
+    ;; Remember which is the original buffer
+    (setq $cbuffer (current-buffer))
+    ;; Copy and start processing the content
+    (setq $query-end (if $markers $p0 $end))
+    (setq $insert-admit (and (not $markers)
+                             (or (fem-subexpr-is-let-in $subexpr)
+                                 (fem-subexpr-has-semicol $subexpr))))
+    (setq $instr (concat "FEM.Process.pp_unfold_in_assert_or_assume " (bool-to-string fem-debug)))
+    (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit
+                                                   $subexpr fem-process-buffer1
+                                                   $instr))
+    ;; We are now in the destination buffer
+    ;; Insert the ``focus_on_term`` indicators at the proper places, together
+    ;; with an admit after the focused term.
+    ;; Prefixes:
+    (setq $insert-shift 0)
+    (defun $insert-and-shift (STR)
+      (setq $insert-shift (+ $insert-shift (length STR)))
+      (insert STR))
+    ;; - for the identifier - note that we need to compute the shift between the
+    ;;   buffers
+    (setq $shift (- (fem-subexpr-beg $subexpr1) (fem-subexpr-beg $subexpr)))
+    (goto-char (+ (fem-pair-snd $id) $shift))
+    ($insert-and-shift "))")
+    (goto-char (+ (fem-pair-fst $id) $shift))
+    ($insert-and-shift "(let _ = FEM.Process.focus_on_term in (")
+    ;; - for the assert/assume - note that the above insertion should have been made
+    ;;   below the point where we now insert
+    (goto-char (fem-subexpr-beg $subexpr1))
+    ($insert-and-shift "let _ = FEM.Process.focus_on_term in\n")
+    ;; Copy the buffer content
+    (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
+    ;; We need to switch back to the original buffer to query the F* process
+    (switch-to-buffer $cbuffer)
+    ;; Query F*
+    (fem-query-fstar-on-buffer-content $query-end $payload
+                                       (apply-partially #'fem-insert-assert-pre-post--continuation
+                                                        $indent-str $beg $end $subexpr))))
 
+(defun fem-parse-until-decl (STATE P0 &optional P1)
+  "Parse until P0 and return the declaration under P0.
+Use STATE as the parsing state.
+If P1 is nil, parse until P0.
+If P1 is not nil, parse until P0 and consider the term is delimited by P0 and P1.
+Return a fem-subexpr."
+  (let ($state $parent $last-tk $last-symbol $last-tk-pos $tk-beg $tk-end
+        $is-let-in $has-semicol)
+;;    (setq $state (fem-create-cfp-state BEG))
+    (setq $state STATE)
+    (cond
+
+     ;; If P1 is not nil
+     (P1
+      ;; Parse until P0
+      (fem-cfp-parse-tokens P0 $state)
+      ;; Retrieve the top token
+      (setq $parent (fem-cfp-state-top $state))
+      ;; Parse until the end of P1
+      (fem-cfp-parse-tokens P1 $state)
+      ;; Retrieve the last token
+      (setq $last-tk (fem-cfp-state-top $state))
+      (setq $last-symbol (fem-cfp-tk-symbol $last-tk))
+      ;; Switch on the last token
+      (cond
+       ;; Case 1: 'in
+       ((string= $last-symbol 'in)
+        (setq $is-let-in t))
+       ;; Case 2: 'semicol
+       ((string= $last-symbol 'semicol)
+        (setq $has-semicol t))
+       (t nil)))
+
+     ;; If P1 is nil
+     (t
+      (fem-cfp-parse-tokens P0 $state)
+      ;; Check the parsing result
+      (setq $last-tk (fem-cfp-state-top $state))
+      (when (not $last-tk) (error "Could not parse the current function"))
+      (setq $last-tk (fem-cfp-state-top $state))
+      (setq $last-tk-pos (fem-cfp-tk-pos $last-tk))
+      (setq $last-symbol (fem-cfp-tk-symbol $last-tk))
+      (cond
+       ;; Case 1: last symbol is 'in
+       ((string= $last-symbol 'in)
+        (setq $is-let-in t)
+        ;; There should be a parent 'let
+        (setq $parent (fem-cfp-tk-parent $last-tk))
+        ;; Retrieve the beginning and end delimiters
+        (setq $tk-beg (fem-pair-fst (fem-cfp-tk-pos $parent))
+              $tk-end (fem-pair-snd $last-tk-pos)))
+       ;; Case 2: last symbol is 'semicol
+       ((string= $last-symbol 'semicol)
+        (setq $has-semicol t)
+        ;; There should be a parent
+        (setq $parent (fem-cfp-tk-parent $last-tk))
+        ;; Retrieve the beginning and end delimiters - notice that we don't
+        ;; include the parent delimiter
+        (goto-char (fem-pair-snd (fem-cfp-tk-pos $parent)))
+        (fem-skip-comments-and-spaces t)
+        (setq $tk-beg (point)
+              $tk-end (fem-pair-snd $last-tk-pos)))
+       ;; Case 3: unknown last symbol: the studied term is a return value
+       (t
+        ;; Look for the beginning of the current token
+        (setq $parent (fem-cfp-state-find-prev-decl-end-token $state))
+        ;; Retrieve the beginning and end delimiters - notice that we don't
+        ;; include the parent delimiter
+        (goto-char (fem-pair-snd (fem-cfp-tk-pos $parent)))
+        (fem-skip-comments-and-spaces t)
+        (setq $tk-beg (point)
+              $tk-end (fem-pair-snd $last-tk-pos))))))
+
+     ;; Return
+     (make-fem-subexpr :beg $tk-beg :end $tk-end :is-let-in $is-let-in
+                       :has-semicol $has-semicol :bterm nil)))
+
+;; TODO HERE
 (defun fem-analyze-effectful-term (WITH_GPRE WITH_GPOST)
   "Insert assertions with proof obligations and postconditions around a term.
-If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
-TODO: take into account if/match branches"
+If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition."
   (interactive)
   (fem-log-dbg "insert-assert-pre-post")
   ;; Sanity check
   (fem-generate-fstar-check-conditions)
-  (let ($next-point $beg $markers $p0 $allow-selection $delimiters $indent $indent-str
-        $p1 $p2 $p3 $subexpr $cp1 $cp2
-        $is-let-in $has-semicol $current-buffer $insert-admit
-        $cbuffer $pp-instr $subexpr1 $payload)
-    (setq $beg (fstar-subp--untracked-beginning-position))
+  (let (
+        ;;        $next-point $beg $markers $p0 $allow-selection $delimiters $indent $indent-str
+        ;;                    $p1 $p2 $p3 $subexpr $cp1 $cp2
+        ;;                    $is-let-in $has-semicol $current-buffer $insert-admit
+        ;;                    $cbuffer $pp-instr $subexpr1 $payload
+        $p0 $markers $state $parse-beg $parse-end $term $term-beg $term-end $indent-str
+            $insert-beg $insert-end $insert-admits $cbuffer $pp-instr)
+    (setq $parse-beg (fstar-subp--untracked-beginning-position))
+    (setq $state (fem-create-cfp-state $parse-beg))
     ;; Find markers
     (setq $markers (fem-get-pos-markers))
-    (setq $p0 (point))
+    (setq $p0 (point)) ;; save the current position
     (when $markers (goto-char (fem-pair-fst $markers)))
-    ;; Find the region containing the term to process
-    ;; TODO: use control-flow parsing functions
+    ;; Do a different parsing depending on the presence of markers or not
+    (cond
+     ;; If there are no markers: check if there is a selection
+     ((not $markers)
+      ;; If there is a selection: use it
+      (if (use-region-p)
+          (progn
+            (setq $parse-end (region-end))
+            (setq $term (fem-parse-until-decl $state (region-beginning) $parse-end)))
+        ;; Otherwise: parse until the current position
+        (setq $parse-end $p0)
+        (setq $term (fem-parse-until-decl $state $parse-end))))
+     ;; If there are two markers, they delimit a region: parse until the beginning,
+     ;; then parse until the end of the region, then check the shape of the binding
+     ;; (semicol declaration, let-binding or unknown and thus return value)
+     ((and (fem-pair-fst $markers) (fem-pair-snd $markers))
+      (setq $parse-end (fem-pair-snd $markers))
+      (setq $term (fem-parse-until-decl $state (fem-pair-fst $markers) $parse-end)))
+     ;; If there is only one marker: just parse until there
+     (t
+      (setq $parse-end (fem-pair-fst $markers))
+      (setq $term (fem-parse-until-decl $state $parse-end))))
+    (setq $term-beg (fem-subexpr-beg $term) $term-end (fem-subexpr-end $term))
+    ;; Find the points where to insert the generated assertions (go at the
+    ;; beginning of the term and try to reach the beginning of the line,
+    ;; go at the end of the term and try to reach the end of the line)
+    (goto-char $term-beg)
+    (fem-skip-comments-and-spaces nil (point-at-bol))
+    (setq $insert-beg (point))
+    (goto-char $term-end)
+    (fem-skip-comments-and-spaces t (point-at-eol))
+    (setq $insert-end (point))
+    ;; Compute the local indent
+    (setq $indent-str (fem-compute-local-indent-p $term-beg))
+    ;; Options for the copying function: insert admits only if there are no markers
+    (setq $insert-admits (not $markers))
+    ;; Remember the current buffer in order to be able to switch back
+    (setq $cbuffer (current-buffer))
+    ;; Copy and start processing the content
+    (setq $pp-instr (concat "FEM.Process.pp_analyze_effectful_term "
+                            (bool-to-string fem-debug) " "
+                            (bool-to-string WITH_GPRE) " "
+                            (bool-to-string WITH_GPOST)))
+    (setq $term1 (fem-copy-def-for-meta-process $parse-beg $parse-end $insert-admits
+                                                $term $state fem-process-buffer1
+                                                $pp-instr))
+    ))
+
+    (setq $term1 (fem-copy-def-for-meta-process $p3 $insert-admit $subexpr fem-process-buffer1
+                                                $pp-instr))
+
+))
+
+fem-copy-def-for-meta-process (BEG END INSERT_ADMITS SUBEXPR PARSE_STATE
+                                          DEST_BUFFER PP_INSTR)
+
+    
+    
+    
+
     (setq $delimiters (fem-find-region-delimiters-or-markers))
     (setq $p1 (fem-pair-fst $delimiters) $p2 (fem-pair-snd $delimiters))
     ;; Ignore the region to ignore comments/spaces and try to reach line extrema
@@ -2215,3 +2560,12 @@ TODO: take into account if/match branches"
 
 (provide 'fstar-extended-mode)
 ;;; fstar-extended-mode.el ends here
+
+
+
+;; TODO: remove
+(defun t1 ()
+  (interactive)
+  (fem-cfp-parse-tokens (point)
+                        (fem-create-cfp-state (fstar-subp--untracked-beginning-position))
+                        t))
