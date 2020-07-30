@@ -1329,7 +1329,7 @@ after the focused term, nil otherwise. comment is an optional comment"
       (insert indent-str)
       (insert comment)
       (insert "\n"))
-    (insert indent-str)
+    (when after-term (insert indent-str))
     (insert "assert(")
     (when (> (fem-count-lines-in-string data) 1)
       (insert "\n")
@@ -1338,7 +1338,7 @@ after the focused term, nil otherwise. comment is an optional comment"
     (fem-insert-with-indent (concat indent-str "  ") data)
     (insert ");")
     ;; If we are before the studied term: insert a newline
-    (when (not after-term) (insert "\n"))))
+    (when (not after-term) (insert "\n") (insert indent-str))))
 
 (defun fem-insert-assert-pre-post--continuation (INDENT_STR TERM_BEG TERM_END
                                                  OVERLAY STATUS RESPONSE)
@@ -1919,6 +1919,16 @@ If STATE is nil, initialize a parsing STATE from the current pointer position."
             (fem-log-dbg "[> fem-cfp-parse-tokens: parsing errors")
             (error "fem-cfp-parse-tokens: parsing errors")))))))
 
+(defun fem-parse-tokens-debug ()
+  "Parse the unprocessed part of the buffer up to the current position.
+Insert parsing information in the code at the same time.
+This function is mainly used for debugging the parser."
+  (interactive)
+  (fem-cfp-parse-tokens (point)
+                        (fem-create-cfp-state
+                         (fstar-subp--untracked-beginning-position))
+                        t))
+
 (defun fem-cfp-state-filter-stack (STACK)
   "Filter a token STACK to remove the first 'let, which is  top-level, and the
 tokens which will be ignored for control-flow.
@@ -2386,7 +2396,6 @@ Return a fem-subexpr."
      (make-fem-subexpr :beg $tk-beg :end $tk-end :is-let-in $is-let-in
                        :has-semicol $has-semicol :bterm nil)))
 
-;; TODO HERE
 (defun fem-analyze-effectful-term (WITH_GPRE WITH_GPOST)
   "Insert assertions with proof obligations and postconditions around a term.
 If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition."
@@ -2414,10 +2423,17 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
       ;; If there is a selection: use it
       (if (use-region-p)
           (progn
-            (setq $parse-end (region-end))
-            (setq $term (fem-parse-until-decl $state (region-beginning) $parse-end)))
+            (goto-char (region-beginning))
+            (fem-skip-comments-and-spaces t (region-end))
+            (setq $term-beg (point))
+            (goto-char (region-end))
+            (fem-skip-comments-and-spaces nil $term-beg)
+            (setq $parse-end (point))
+            (setq $term (fem-parse-until-decl $state $term-beg $parse-end)))
         ;; Otherwise: parse until the current position
-        (setq $parse-end $p0)
+        (goto-char $p0)
+        (fem-skip-comments-and-spaces nil $parse-beg)        
+        (setq $parse-end (point))
         (setq $term (fem-parse-until-decl $state $parse-end))))
      ;; If there are two markers, they delimit a region: parse until the beginning,
      ;; then parse until the end of the region, then check the shape of the binding
@@ -2434,7 +2450,7 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
     ;; beginning of the term and try to reach the beginning of the line,
     ;; go at the end of the term and try to reach the end of the line)
     (goto-char $term-beg)
-    (fem-skip-comments-and-spaces nil (point-at-bol))
+;;    (fem-skip-comments-and-spaces nil (point-at-bol))
     (setq $insert-beg (point))
     (goto-char $term-end)
     (fem-skip-comments-and-spaces t (point-at-eol))
