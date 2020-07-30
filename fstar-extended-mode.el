@@ -535,7 +535,7 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
     (setq $p (point))
     ;; Find the region delimiters
     (progn (forward-paragraph) (setq $p2 (point))
-	   (backward-paragraph) (setq $p1 (point))
+	   (backward-paragraph) (progn (goto-char $p) (setq $p1 (point)))
 	   (goto-char $p))
     ;; Delete forward
     (setq $s (fem-roll-delete-term "admit()" t $p1 $p2))
