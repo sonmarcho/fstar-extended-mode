@@ -2253,6 +2253,10 @@ Otherwise, the string is made of a number of spaces equal to the column position
     (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
     ;; We need to switch back to the original buffer to query the F* process
     (switch-to-buffer $cbuffer)
+    ;; Go back to the original point to prevent screen movements
+    (goto-char $p0)
+    ;; Deactivate the mark to prevent it from appearing on top of the overlay (it is ugly)
+    (setq deactivate-mark t)
     ;; Query F*
     (fem-query-fstar-on-buffer-content $insert-end $payload
                                        (apply-partially #'fem-insert-assert-pre-post--continuation
@@ -2333,6 +2337,10 @@ Otherwise, the string is made of a number of spaces equal to the column position
     (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
     ;; We need to switch back to the original buffer to query the F* process
     (switch-to-buffer $cbuffer)
+    ;; Go back to the original point to prevent screen movements
+    (goto-char $p0)
+    ;; Deactivate the mark to prevent it from appearing on top of the overlay (it is ugly)
+    (setq deactivate-mark t)
     ;; Query F*
     (fem-query-fstar-on-buffer-content $insert-end $payload
                                        (apply-partially #'fem-insert-assert-pre-post--continuation
@@ -2498,11 +2506,16 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
     ;; Note that we don't need to keep track of the positions modifications:
     ;; we will send the whole buffer to F*.
     (goto-char (fem-subexpr-beg $term1))
-    (insert "let _ = FEM.Process.focus_on_term in ")
+    (insert "let _ = FEM.Process.focus_on_term in\n")
+    (insert $indent-str)
     ;; Copy the buffer content
     (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
     ;; We need to switch back to the original buffer to query the F* process
     (switch-to-buffer $cbuffer)
+    ;; Go back to the original point to prevent screen movements
+    (goto-char $p0)
+    ;; Deactivate the mark to prevent it from appearing on top of the overlay (it is ugly)
+    (setq deactivate-mark t)
     ;; Query F*
     (fem-query-fstar-on-buffer-content $insert-end $payload
                                    (apply-partially #'fem-insert-assert-pre-post--continuation
