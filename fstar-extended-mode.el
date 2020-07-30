@@ -2160,12 +2160,18 @@ Otherwise, the string is made of a number of spaces equal to the column position
   "Return 'false' if B is nil, 'true' otherwise."
   (if B "true" "false"))
 
+;; TODO HERE
 (defun fem-split-assert-assume-conjuncts ()
   "Split the conjunctions in an assertion/assumption."
   (interactive)
-  (let ($markers $p0 $tbeg $passert $a-beg $a-end $p-beg $p-end
-                 $subexpr $instr $subexpr1 $indent-str $beg $end $query-end $insert-admit
-                 $cbuffer $prefix $prefix-length $payload)
+  (let ($markers $p0 $parse-beg $parse-end
+                 $passert $assert-beg $assert-end $state
+                 $subexpr $indent-str $insert-beg $insert-end
+                 $cbuffer $insert-admits $pp-instr $subexpr1
+                 $prefix $prefix-length $payload
+;;                 $instr $subexpr1  $beg $end $query-end $insert-admit
+;;                 $cbuffer $prefix $prefix-length $payload)
+                 )
     (fem-log-dbg "split-assert-conjuncts")
     ;; Sanity check
     (fem-generate-fstar-check-conditions)
@@ -2176,45 +2182,46 @@ Otherwise, the string is made of a number of spaces equal to the column position
     ;; Parse the assertion/assumption. Note that we may be at the beginning of a
     ;; line with an assertion/assumption, or just after the assertion/assumption.
     ;; so we first try to move.
-    (setq $tbeg (fstar-subp--untracked-beginning-position))
+    (setq $parse-beg (fstar-subp--untracked-beginning-position))
     ;; First: we are inside or before the assert: move forward
     (when (or (fem-is-in-spaces-p) (fstar-in-comment-p)) (fem-skip-comments-and-spaces t))  
-    (setq $passert (fem-find-assert-assume-p (point) $tbeg))
+    (setq $passert (fem-find-assert-assume-p (point) $parse-beg))
     ;; If not found: move backward and eventually ignore a ';'
     (when (not $passert)
       (goto-char $p0)
       (fem-skip-comments-and-spaces nil (point-at-bol))
       (when (fem-previous-char-is-semicol-p)
         (backward-char))
-      (setq $passert (fem-find-assert-assume-p (point) $tbeg)))
+      (setq $passert (fem-find-assert-assume-p (point) $parse-beg)))
     (when (not $passert) (error "Pointer not over an assert/assert_norm/assume"))
     ;; Parse the encompassing let (if there is)
-    (setq $a-beg (fem-pair-fst (fem-pair-fst $passert))
-          $a-end (fem-pair-snd (fem-pair-fst $passert))
-          $p-beg (fem-pair-fst (fem-pair-snd $passert))
-          $p-end (fem-pair-snd (fem-pair-snd $passert)))
-    (setq $subexpr (fem-find-encompassing-let-in $a-beg $p-end))
-    (when (not $subexpr) (error "Could not parse the enclosing expression"))
+    (setq $assert-beg (fem-pair-fst (fem-pair-fst $passert))
+          $assert-end (fem-pair-snd (fem-pair-snd $passert)))
+    (setq $subexpr (fem-find-encompassing-let-in $assert-beg $assert-end))
+    (when (not $subexpr) (error "Could not parse the expression around the assertion/assumption"))
+    ;; Parse the function up to (and including) the assertion
+    (setq $state (fem-create-cfp-state $parse-beg))
+    (setq $parse-end (fem-subexpr-end $subexpr))
+    (fem-cfp-parse-tokens $parse-end $state)
     ;; Compute the indentation
     (setq $indent-str (fem-compute-local-indent-p (fem-subexpr-beg $subexpr)))
     ;; Expand the region to ignore comments
     (goto-char (fem-subexpr-beg $subexpr))
-    (fem-skip-comments-and-spaces nil (point-at-bol))
-    (setq $beg (point))
+;;    (fem-skip-comments-and-spaces nil (point-at-bol))
+    (setq $insert-beg (point))
     (goto-char (fem-subexpr-end $subexpr))
     (fem-skip-comments-and-spaces t (point-at-eol))
-    (setq $end (point))
+    (when (fem-in-general-comment-p) (goto-char (fem-subexpr-end $subexpr)))
+    (setq $insert-end (point))
     ;; Remember which is the original buffer
     (setq $cbuffer (current-buffer))
     ;; Copy and start processing the content
-    (setq $query-end (if $markers $p0 $end))
-    (setq $insert-admit (and (not $markers)
-                             (or (fem-subexpr-is-let-in $subexpr)
-                                 (fem-subexpr-has-semicol $subexpr))))
-    (setq $instr (concat "FEM.Process.pp_split_assert_conjs " (bool-to-string fem-debug)))
-    (setq $subexpr1 (fem-copy-def-for-meta-process $query-end $insert-admit $subexpr
-                                                   fem-process-buffer1
-                                                   $instr))
+;;    (setq $query-end (if $markers $p0 $end))
+    (setq $insert-admits (not $markers))
+    (setq $pp-instr (concat "FEM.Process.pp_split_assert_conjs " (bool-to-string fem-debug)))
+    (setq $subexpr1 (fem-copy-def-for-meta-process $parse-beg $parse-end $insert-admits
+                                                   $subexpr $state fem-process-buffer1
+                                                   $pp-instr))
     ;; We are now in the destination buffer
     ;; Insert the ``focus_on_term`` indicator at the proper place, together
     ;; with an admit after the focused term.
@@ -2222,7 +2229,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
     ;; we will send the whole buffer to F*.
     ;; Prefix
     (goto-char (fem-subexpr-beg $subexpr1))
-    (setq $prefix "let _ = FEM.Process.focus_on_term in ")
+    (setq $prefix (concat "let _ = FEM.Process.focus_on_term in\n" $indent-str))
     (setq $prefix-length (length $prefix))
     (insert $prefix)
     ;; Suffix
@@ -2232,14 +2239,14 @@ Otherwise, the string is made of a number of spaces equal to the column position
     ;; We need to switch back to the original buffer to query the F* process
     (switch-to-buffer $cbuffer)
     ;; Query F*
-    (fem-query-fstar-on-buffer-content $query-end $payload
+    (fem-query-fstar-on-buffer-content $insert-end $payload
                                        (apply-partially #'fem-insert-assert-pre-post--continuation
-                                                        $indent-str $beg $end $subexpr))))
+                                                        $indent-str $insert-beg $insert-end))))
 
 (defun fem-unfold-in-assert-assume ()
   "Unfold an identifier in an assertion/assumption."
   (interactive)
-  (let ($markers $p0 $id $tbeg $passert $a-beg $a-end $p-beg $p-end
+  (let ($markers $p0 $id $tbeg $passert $a-beg $a-end
                  $subexpr $instr $subexpr1 $shift $indent-str $beg $end $cbuffer
                  $query-end $insert-admit $payload $insert-shift $insert-and-shift)
     (fem-log-dbg "unfold-in-assert-assume")
@@ -2266,10 +2273,8 @@ Otherwise, the string is made of a number of spaces equal to the column position
     (when (not $passert) (error "Pointer not over an assert/assert_norm/assume"))
     ;; Parse the encompassing let (if there is)
     (setq $a-beg (fem-pair-fst (fem-pair-fst $passert))
-          $a-end (fem-pair-snd (fem-pair-fst $passert))
-          $p-beg (fem-pair-fst (fem-pair-snd $passert))
-          $p-end (fem-pair-snd (fem-pair-snd $passert)))
-    (setq $subexpr (fem-find-encompassing-let-in $a-beg $p-end))
+          $a-end (fem-pair-snd (fem-pair-fst $passert)))
+    (setq $subexpr (fem-find-encompassing-let-in $a-beg $a-end))
     (when (not $subexpr) (error "Could not parse the enclosing expression"))
     ;; Compute the indentation
     (setq $indent-str (fem-compute-local-indent-p (fem-subexpr-beg $subexpr)))
@@ -2321,7 +2326,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
 
 (defun fem-parse-until-decl (STATE P0 &optional P1)
   "Parse until P0 and return the declaration under P0.
-Use STATE as the parsing state.
+Use STATE as the parsing STATE and update it during parsing.
 If P1 is nil, parse until P0.
 If P1 is not nil, parse until P0 and consider the term is delimited by P0 and P1.
 Return a fem-subexpr."
@@ -2454,6 +2459,7 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
     (setq $insert-beg (point))
     (goto-char $term-end)
     (fem-skip-comments-and-spaces t (point-at-eol))
+    (when (fem-in-general-comment-p) (goto-char $term-end))
     (setq $insert-end (point))
     ;; Compute the local indent
     (setq $indent-str (fem-compute-local-indent-p $term-beg))
@@ -2527,12 +2533,3 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
 
 (provide 'fstar-extended-mode)
 ;;; fstar-extended-mode.el ends here
-
-
-
-;; TODO: remove
-(defun t1 ()
-  (interactive)
-  (fem-cfp-parse-tokens (point)
-                        (fem-create-cfp-state (fstar-subp--untracked-beginning-position))
-                        t))
