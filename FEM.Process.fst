@@ -1760,7 +1760,7 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
     in
     let ret_refin_prop = opt_mk_app_norm ge2 (get_opt_refinment einfo.ei_ret_type) ret_values in
     (* Concatenate, revert and return *)
-    let pres = opt_cons gpre_prop (List.Tot.rev (opt_cons pre_prop params_props)) in
+    let pres = opt_cons gpre_prop (List.append params_props (opt_cons pre_prop [])) in
     let pres = append gparams_props pres in
     let posts = opt_cons ret_has_type_prop
                 (opt_cons ret_refin_prop (opt_cons post_prop
