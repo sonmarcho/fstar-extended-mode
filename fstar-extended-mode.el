@@ -2362,14 +2362,14 @@ Return a fem-subexpr."
      (P1
       ;; Parse until P0
       (fem-cfp-parse-tokens P0 $state)
-      ;; Retrieve the top token
-      (setq $parent (fem-cfp-state-top $state))
+;;      ;; Retrieve the top token
+;;      (setq $parent (fem-cfp-state-top $state))
       ;; Parse until the end of P1
       (fem-cfp-parse-tokens P1 $state)
       ;; Retrieve the last token
       (setq $last-tk (fem-cfp-state-top $state))
       (setq $last-symbol (fem-cfp-tk-symbol $last-tk))
-      ;; Switch on the last token
+      ;; Switch on the last token to figure out the expression type
       (cond
        ;; Case 1: 'in
        ((string= $last-symbol 'in)
@@ -2377,7 +2377,16 @@ Return a fem-subexpr."
        ;; Case 2: 'semicol
        ((string= $last-symbol 'semicol)
         (setq $has-semicol t))
-       (t nil)))
+       (t nil))
+      ;; Compute the begining and end positions
+      (goto-char P0)
+      (fem-skip-comments-and-spaces t P1)
+      (setq $tk-beg (point))
+      (goto-char P1)
+;;      (setq $tk-end (fem-pair-snd (fem-cfp-tk-pos $last-tk)))
+      (fem-skip-comments-and-spaces nil $tk-beg)
+      (setq $tk-end (point))
+      )
 
      ;; If P1 is nil
      (t
@@ -2450,14 +2459,17 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
       ;; If there is a selection: use it
       (if (use-region-p)
           (progn
-            (goto-char (region-beginning))
-            (fem-skip-comments-and-spaces t (region-end))
+            (message "use region")
+            (setq $term-beg (region-beginning) $parse-end (region-end))
+            (goto-char $term-beg)
+            (fem-skip-comments-and-spaces t $parse-end)
             (setq $term-beg (point))
-            (goto-char (region-end))
+            (goto-char $parse-end)
             (fem-skip-comments-and-spaces nil $term-beg)
             (setq $parse-end (point))
             (setq $term (fem-parse-until-decl $state $term-beg $parse-end)))
         ;; Otherwise: parse until the current position
+        (message "don't use region")
         (goto-char $p0)
         (fem-skip-comments-and-spaces nil $parse-beg)        
         (setq $parse-end (point))
