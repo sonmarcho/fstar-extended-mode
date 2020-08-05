@@ -221,7 +221,7 @@ The expression can also of the form: '...;', which is syntactic sugar for 'let _
             (setq $p (point))
             (fem-skip-comments-and-spaces nil $limit)
             (if (fem-previous-char-is-semicol-p)
-                ;; Semicol: stop here
+                ;; Semicol: stop here, but ignore the comments
                 (setq $p1 (point) $continue nil)
               ;; Otherwise: parse the next sexp
               (setq $exp (fem-parse-previous-sexp-as-string-p))
@@ -232,6 +232,9 @@ The expression can also of the form: '...;', which is syntactic sugar for 'let _
                 (when (string-equal "in" $exp)
                   (setq $p1 $p $continue nil)))))
           ;; Return
+          (goto-char $p1)
+          (fem-skip-comments-and-spaces t)
+          (setq $p1 (point))
           (if $p1 (make-fem-pair :fst $p1 :snd $p0) nil))
       ;; Check if previous is 'in': if so find next occurrence of 'let'
       (setq $exp (fem-parse-previous-sexp-as-string-p))
@@ -283,7 +286,7 @@ The expression can also of the form: '...;', which is syntactic sugar for 'let _
         (goto-char $p1))
       ;; Compute the indent
       (beginning-of-line)
-      (fem-skip-comments-and-spaces t (point-at-eol))
+      (fem-skip-spaces t (point-at-eol))
       (setq $indent-str (make-string (- (point) (point-at-bol)) ? ))
       ;; Go to the original position
       (goto-char $p0)
@@ -534,17 +537,20 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
     (setq $p (point))
     ;; Find the region delimiters
     (progn (forward-paragraph) (setq $p2 (point))
-	   (backward-paragraph) (progn (goto-char $p) (setq $p1 (point)))
+	   (progn (goto-char $p) (backward-paragraph) (setq $p1 (point)))
 	   (goto-char $p))
     ;; Delete forward
     (setq $s (fem-roll-delete-term "admit()" t $p1 $p2))
     ;; Delete backward
     (when (not (cdr (assoc 'opt_shift $s)))
-          (setq $s (fem-roll-delete-term "admit()" nil $p1 $p2)))
+      (message "second case")
+      (goto-char $p1))
+))
+      (setq $s (fem-roll-delete-term "admit()" nil $p1 $p2)))
     ;; Insert the admit
     (if (cdr (assoc 'semicol $s))
         (fem-insert-newline-term-smart-indent "admit();")
-        (fem-insert-newline-term-smart-indent "admit()"))))
+      (fem-insert-newline-term-smart-indent "admit()"))))
 
 ;;; Parsing commands
 
@@ -631,6 +637,18 @@ FORWARD controls the direction, LIMIT controls where to stop."
   (if FORWARD
       (skip-chars-forward CHARS LIMIT)
       (skip-chars-backward CHARS LIMIT)))
+
+(defun fem-skip-spaces (FORWARD &optional LIMIT)
+  "Move the cursor until there are no spaces.
+FORWARD controls the direction, LIMIT delimits the region."
+  (let ($continue $p1 $p2 $limit $reached-limit)
+    (if FORWARD (setq $p1 (point) $p2 (or LIMIT (point-max)))
+                (setq $p2 (point) $p1 (or LIMIT (point-min))))
+    (if FORWARD (setq $limit $p2) (setq $limit $p1))
+    (save-restriction
+      (narrow-to-region $p1 $p2)
+      (fem-skip-chars FORWARD fstar--spaces))
+    (point)))
 
 (defun fem-skip-comments-and-spaces (FORWARD &optional LIMIT)
   "Move the cursor until we are out of a comment and there are no spaces.
