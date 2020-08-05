@@ -37,5 +37,3 @@ let update_last #ga s last total_len =
   assert(FStar.UInt64.v total_len - FStar.UInt64.v last_len <= (Prims.pow2 64 - 1 <: Prims.Tot Prims.int));
   let _ = FEM.Process.focus_on_term in
   Math.Lemmas.modulo_range_lemma (U64.v total_len) (block_length a); admit()
-
-- switch assert assume: if no selection, only switch the assert on the current line

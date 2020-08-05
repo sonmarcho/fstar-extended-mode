@@ -544,8 +544,6 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
     ;; Delete backward
     (when (not (cdr (assoc 'opt_shift $s)))
       (message "second case")
-      (goto-char $p1))
-))
       (setq $s (fem-roll-delete-term "admit()" nil $p1 $p2)))
     ;; Insert the admit
     (if (cdr (assoc 'semicol $s))
@@ -2561,7 +2559,8 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
 ;;(global-set-key (kbd "C-x C-a") 'fem-roll-admit)
 ;;(global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
 
-(global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-in-above-paragraph)
+;;(global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-in-above-paragraph)
+(global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-in-current-line)
 ;;(global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
 ;;(global-set-key (kbd "C-c C-e C-a") 'fem-switch-assert-assume-in-above-paragraph)
 
