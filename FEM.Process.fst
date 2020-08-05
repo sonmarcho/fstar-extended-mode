@@ -2503,6 +2503,13 @@ let rec replace_term_in dbg from_term to_term tm =
     (* Unknown *)
     tm
 
+val strip_implicit_parameters : term -> Tac term
+let rec strip_implicit_parameters tm =
+  match inspect tm with
+  | Tv_App hd (a,qualif) ->
+    if Q_Implicit? qualif then strip_implicit_parameters hd else tm
+  | _ -> tm
+
 val unfold_in_assert_or_assume : bool -> exploration_result term -> Tac unit
 let unfold_in_assert_or_assume dbg ares =
   print_dbg dbg ("[> unfold_in_assert_or_assume:\n" ^ term_to_string ares.res);
@@ -2560,7 +2567,7 @@ let unfold_in_assert_or_assume dbg ares =
                  "- focused term: " ^ term_to_string unf_res.res);
   (* Unfold the term *)
   let res_view = inspect unf_res.res in
-  let ge1, unf_tm =
+  let ge1, opt_unf_tm =
     match res_view with
     | Tv_FVar fv ->
       print_dbg dbg ("The focused term is a top identifier: " ^ fv_to_string fv);
@@ -2568,7 +2575,7 @@ let unfold_in_assert_or_assume dbg ares =
       let fname = flatten_name (inspect_fv fv) in
       let subterm' = norm_term_env ares.ge.env [delta_only [fname]] subterm in
       print_dbg dbg ("Normalized subterm: " ^ term_to_string subterm');
-      ares.ge, subterm'
+      ares.ge, Some subterm'
     | _ ->
       (* Look for an equality given by a previous post-condition. In the case
        * the term is a bv, we can also use the let-binding which introduces it,
@@ -2588,21 +2595,46 @@ let unfold_in_assert_or_assume dbg ares =
       in
       let ge1, eq_tm = find_context_equality dbg ares.ge unf_res.res parents [] in
       (* Check if we found an equality *)
-      let eq_tm =
+      let opt_eq_tm =
         match eq_tm with
-        | Some eq_tm -> eq_tm
-        | _ ->
-          mfail ("unfold_in_assert_or_assume: " ^
-                 "couldn't find equalities with which to rewrite: " ^
-                 term_to_string unf_res.res)
+        | Some eq_tm -> Some eq_tm
+        | _ -> None
       in
       (* Apply it *)
       let subterm' =
-        match opt_bv with
-        | Some bv -> apply_subst ge1.env subterm [(bv, eq_tm)]
-        | None -> replace_term_in dbg unf_res.res eq_tm subterm
+        match opt_bv, opt_eq_tm with
+        | Some bv, Some eq_tm -> Some (apply_subst ge1.env subterm [(bv, eq_tm)])
+        | None, Some eq_tm -> Some (replace_term_in dbg unf_res.res eq_tm subterm)
+        | _ -> None
       in
       ge1, subterm'
+  in
+  (* If we couldn't unfold the term, check if it is a top-level identifier with
+   * implicit parameters (it may happen that the user calls the command on a
+   * top-level identifier which has implicit parameters without providing
+   * those parameters, in which case the focused term is the identifier applied
+   * to those implicits inferred by F*, and thus an app and not an fvar).
+   * Note that so far we have no way to check if the implicit parameters have
+   * been explicitly provided by the user or not, which is why we can't do better
+   * than greedy tests.*)
+  let ge2, unf_tm =
+    match opt_unf_tm with
+    | Some unf_tm -> ge1, unf_tm
+    | None ->
+      begin match inspect (strip_implicit_parameters unf_res.res) with
+      | Tv_FVar fv ->
+        print_dbg dbg ("The focused term is a top identifier with implicit parameters: "
+                       ^ fv_to_string fv);
+        (* The easy case: just use the normalizer *)
+        let fname = flatten_name (inspect_fv fv) in
+        let subterm' = norm_term_env ge1.env [delta_only [fname]] subterm in
+        print_dbg dbg ("Normalized subterm: " ^ term_to_string subterm');
+        ge1, subterm'
+      | _ ->        
+        mfail ("unfold_in_assert_or_assume: " ^
+               "couldn't find equalities with which to rewrite: " ^
+               term_to_string unf_res.res)
+      end
   in
   (* Create the assertions to output *)
   let final_assert = rebuild unf_tm in
@@ -2611,9 +2643,9 @@ let unfold_in_assert_or_assume dbg ares =
     if insert_before then mk_assertions [final_assert] [] else mk_assertions [] [final_assert]
   in
   (* Introduce fresh variables for the shadowed ones and substitute *)
-  let ge2, asserts = subst_shadowed_with_abs_in_assertions dbg ge1 None asserts in
+  let ge3, asserts = subst_shadowed_with_abs_in_assertions dbg ge2 None asserts in
   (* Output *)
-  printout_success ge2 asserts
+  printout_success ge3 asserts
 
 [@plugin]
 val pp_unfold_in_assert_or_assume : bool -> unit -> Tac unit
