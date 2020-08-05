@@ -486,7 +486,7 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
   (interactive)
   "In the current line, check if there are occurrences of 'assert' or 'assert_norm'.
    If so, replace them with 'assume'. Otherwise, replace all the 'assume' with 'assert'."
-  (fem-switch-assert-assume-in-current-region nil t nil nil))
+  (fem-switch-assert-assume-in-current-region t t nil nil))
 
 (defun fem-roll-delete-term (TERM FORWARD BEGIN END)
   (interactive)
@@ -672,6 +672,7 @@ FORWARD controls the direction, LIMIT delimits the region."
     "Skip a pragma instruction (#push-options, #pop-options...).
 If we are at the beginning of a #push-options or #pop-options instruction,
 move forward until we are out of it or reach LIMIT.
+Don't move if there isn't such an instruction.
 Returns the position where the pointer is left."
   (save-restriction
     (narrow-to-region (point) (if LIMIT LIMIT (point-max)))
@@ -685,13 +686,41 @@ Returns the position where the pointer is left."
             ((go "#push-options") ())
             ((go "#pop-options") ())
             ((go "#restart-solver") ())
-            ((go "#ligth") ())
+            ((go "#light") ())
             (t (setq $continue nil)))
       ;; Skip the parameters (the string) - note that there may be comments
       ;; between the pragma and the paramters
       (when $continue
         (fem-skip-comments-and-spaces t)
         (forward-sexp)))))
+
+(defun fem-skip-forward-open-module ()
+  "Skip an 'open ...' instruction.
+Don't move if there isn't such an instruction."
+  ;; TODO: so far, doesn't ignore comments
+  (save-match-data
+    (when (looking-at  "open[\t\n\r ]+[a-zA-Z0-9]+\\(\\.[a-zA-Z0-9]+\\)*")
+      (goto-char (match-end 0)))
+    (point)))
+
+(defun fem-skip-forward-open-rename-module ()
+  "Skip a 'module ... = ...' instruction.
+Don't move if there isn't such an instruction."
+  ;; TODO: so far, doesn't ignore comments
+  (save-match-data
+    (when (looking-at  "module[\t\n\r ]+[a-zA-Z0-9]+[\t\n\r ]+=[\t\n\r ]+[a-zA-Z0-9]+\\(\\.[a-zA-Z0-9]+\\)*")
+      (goto-char (match-end 0)))
+    (point)))
+
+(defun fem-skip-forward-module ()
+  "Skip a 'open ...' or 'module ... = ...' instruction"
+  ;; TODO: so far, doesn't ignore comments
+  (fem-skip-forward-open-module)
+  (fem-skip-forward-open-rename-module))
+
+(defun fem-parse-number-p ()
+  "Parse a number, in a very broad sense (might be hexadecimal, etc.)."
+  (fem-parse-re-p "[0-9][a-zA-Z0-9]*"))
 
 (defun fem-skip-forward-square-brackets (&optional LIMIT)
   "If look at '[', go after the closing ']'.
@@ -702,8 +731,8 @@ LIMIT delimits the end of the search."
       (forward-sexp)))
   (point))
 
-(defun fem-skip-forward-comments-pragmas-spaces (&optional LIMIT)
-  "Go forward until there are no comments and pragma instructions.
+(defun fem-skip-forward-comments-pragmas-modules-spaces (&optional LIMIT)
+  "Go forward until there are no comments, pragma instructions or module openings instructions.
 Stop at LIMIT."
   (save-restriction
     (narrow-to-region (point) (or LIMIT (point-max)))
@@ -712,6 +741,7 @@ Stop at LIMIT."
       (while $continue
         (fem-skip-comments-and-spaces t)
         (fem-skip-forward-pragma)
+        (fem-skip-forward-module)
         (when (or (= (point) $p) (= (point) (point-max)))
           (setq $continue nil))
         (setq $p (point))))))
@@ -1518,7 +1548,6 @@ TODO: use overlays."
 Note that we consider valids incomplete identifiers of the form 'Foo.' (which
 might be used to use a specific namespace in a parenthesized expression).
 Also, we check back ticks in a very lax manner."
-;;  (fem-parse-re-p "[#]?[']?[_[:alpha:]][[:alpha:]0-9_']*\\(\\.[[:alpha:]_][[:alpha:]0-9_']*\\)*"))
   (fem-parse-re-p "[`]*[#]?[']?[_[:alpha:]][[:alpha:]0-9_']*[\\?]?\\(\\.[[:alpha:]0-9_']*[\\?]?\\)*[`]*"))
 
 (defun fem-parse-number-p ()
@@ -1994,11 +2023,11 @@ PP_INSTR is the post-processing instruction to insert for F*."
     ;;   attributes inside the F* buffer, which is why we copy the content
     ;;   in several steps. TODO: I don't manage to confifure the parsing for the
     ;;   destination buffer correctly.
-    (fem-skip-forward-comments-pragmas-spaces)
+    (fem-skip-forward-comments-pragmas-modules-spaces)
     (setq $str1 (buffer-substring BEG (point)))
     (fem-skip-forward-square-brackets) ;; (optionally) go over the attribute
     (setq $p0 (point))
-    (fem-skip-forward-comments-pragmas-spaces)
+    (fem-skip-forward-comments-pragmas-modules-spaces)
     (setq $str2 (buffer-substring $p0 (point)))
     (setq $str3 (buffer-substring (point) END))
     (setq $prev-buffer (current-buffer))
