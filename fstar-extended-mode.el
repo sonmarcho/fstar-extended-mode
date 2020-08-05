@@ -922,12 +922,14 @@ Returns a fem-subexpr."
       ;; Check if the narrowed region matches: 'let _ = _ in'
       (goto-char (point-min))      
       (setq $is-let-in
+            ;; TODO: rewrite the regexp
             (re-search-forward "\\`let[[:ascii:][:nonascii:]]+in\\'" (point-max) t 1))
       (when $is-let-in (setq $bterm (fem-parse-letb-term $beg $end)))
       ;; Check if the narrowed region matches: '_ ;'
       (goto-char (point-min))
       (setq $has-semicol
             ;; We could just check if the character before last is ';'
+            ;; TODO: rewrite the regexp
             (re-search-forward "\\`[[:ascii:][:nonascii:]]+;\\'" (point-max) t 1))
       ;; Otherwise: it is a return value (end of function)
       ) ;; end of regexp matching
@@ -1543,12 +1545,18 @@ TODO: use overlays."
   "Try to parse special symbols and return a pair of positions if successful."
   (fem-parse-re-p "[\\^*\+-/=\|=\$:><!&]+"))
 
+(defconst fem-identifier-regexp
+  "[`]*[#]?[']?[_[:alpha:]][[:alpha:]0-9_']*[\\?]?\\(\\.[[:alpha:]0-9_']*[\\?]?\\)*[`]*")
+
+(defconst fem-identifier-charset
+  "`#[:alpha:]0-9_'\\?\\.")
+
 (defun fem-parse-identifier-p ()
   "Parse an identifier and return a pair of positions if successful.
 Note that we consider valids incomplete identifiers of the form 'Foo.' (which
 might be used to use a specific namespace in a parenthesized expression).
 Also, we check back ticks in a very lax manner."
-  (fem-parse-re-p "[`]*[#]?[']?[_[:alpha:]][[:alpha:]0-9_']*[\\?]?\\(\\.[[:alpha:]0-9_']*[\\?]?\\)*[`]*"))
+  (fem-parse-re-p fem-identifier-regexp))
 
 (defun fem-parse-number-p ()
   "Parse a number, in a very broad sense (might be hexadecimal, etc.)."
@@ -2306,6 +2314,19 @@ Otherwise, the string is made of a number of spaces equal to the column position
                                        (apply-partially #'fem-insert-assert-pre-post--continuation
                                                         $indent-str $insert-beg $insert-end))))
 
+(defun fem-identifier-at-p (&optional POS)
+  "Find the identifier under the pointer or POS.
+Return a pair of positions delimiting the beginning and end of the identifier."
+  (save-match-data
+    (save-excursion
+      (let ($p0 $p1)
+        (skip-chars-backward fem-identifier-charset)
+        (setq $p0 (point))
+        (if (not (looking-at fem-identifier-regexp))
+            nil
+          (setq $p1 (match-end 0))
+          (make-fem-pair :fst $p0 :snd $p1))))))
+
 (defun fem-unfold-in-assert-assume ()
   "Unfold an identifier in an assertion/assumption."
   (interactive)
@@ -2329,8 +2350,8 @@ Otherwise, the string is made of a number of spaces equal to the column position
       (if (use-region-p)
           ;; Use the selected region
           (setq $id (make-fem-pair :fst (region-beginning) :snd (region-end)))
-        ;; Last case: parse the sexp under the pointer
-        (setq $id (fem-sexp-at-p))
+        ;; Last case: parse the identifier under the pointer
+        (setq $id (fem-identifier-at-p))
         (when (not $id) (error "Pointer not over a term"))))
     ;; Parse the assertion/assumption.
     ;; Parse the assertion
