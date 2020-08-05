@@ -89,7 +89,7 @@ let simpl_ex1 (x : nat) =
   let w' = 2 * w + z in
   w'
 
-let test1 b l =
+let test1 b (l : list int) =
   if b then
     match l with
     | [] -> true
@@ -99,7 +99,7 @@ let test1 b l =
     | [x] -> true
     | _ -> false
 
-let test2 b l =
+let test2 #a b (l : list a) =
   if b then ()
   else assert(not b);
   let x = 3 in
@@ -112,3 +112,8 @@ let test2 b l =
     end
   in
   x + y
+
+let test3 'a = FEM.ParseTest.test2 'a
+
+let test4 b l =
+  assert(FEM.ParseTest.test2 b l == test2 b l)
