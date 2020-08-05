@@ -1333,7 +1333,7 @@ process-buffer is the buffer to use to copy and process the raw data
         (region nil)
         (result nil)
         (beg-delimiter (concat "[F*] TAC>> " prefix id ":BEGIN"))
-        (end-delimiter (concat "[F*] TAC>> " prefix id ":END")))
+        (end-delimiter (concat "[F*] " prefix id ":END")))
     ;; Copy the data
     (setq region (fem-copy-data-from-messages-to-buffer beg-delimiter end-delimiter
                                                     t process-buffer no-error

@@ -571,10 +571,7 @@ val explore_pattern :
 
 (* TODO: carry around the list of encompassing terms *)
 let rec explore_term dbg dfs #a f x ge0 pl0 c0 t0 =
-  if dbg then
-    begin
-    print ("[> explore_term: " ^ term_construct t0 ^ ":\n" ^ term_to_string t0)
-    end;
+  print_dbg dbg ("[> explore_term: " ^ term_construct t0 ^ ":\n" ^ term_to_string t0);
   let tv0 = inspect t0 in
   let x0, flag = f x ge0 pl0 c0 tv0 in
   let pl1 = (ge0, tv0) :: pl0 in
@@ -654,6 +651,7 @@ let rec explore_term dbg dfs #a f x ge0 pl0 c0 t0 =
   else x0, convert_ctrl_flag flag
 
 and explore_pattern dbg dfs #a f x ge0 pat =
+  print_dbg dbg ("[> explore_pattern:");
   match pat with
   | Pat_Constant _ -> ge0, x, Continue
   | Pat_Cons fv patterns ->
@@ -1854,49 +1852,55 @@ let subst_shadowed_with_abs_in_assertions dbg ge shadowed_bv as =
 /// Output the resulting information
 /// Originally: we output the ``eterm_info`` and let the emacs commands do some
 /// filtering and formatting. Now, we convert ``eterm_info`` to a ``assertions``.
+/// Note that we also convert all the information to a string that we export at
+/// once in order for the output not to be polluted by any other messages
+/// (warning messages from F*, for example).
 
-let printout_string (prefix data:string) : Tac unit =
-  (* Export all at once - actually I'm not sure it is not possible for external
-   * output to be mixed here *)
-  print (prefix ^ ":\n" ^ data ^ "\n")
+let string_to_printout (prefix data:string) : Tot string =
+  prefix ^ ":\n" ^ data ^ "\n"
 
-let printout_term (ge:genv) (prefix:string) (t:term) : Tac unit =
+let term_to_printout (ge:genv) (prefix:string) (t:term) : Tac string =
   (* We need to look for abstract variables and abstract them away *)
   let abs = abs_free_in ge t in
   let abs_binders = List.Tot.map mk_binder abs in
   let abs_terms = map (fun bv -> pack (Tv_Var bv)) abs in
   let t = mk_abs t abs_binders in
   let t = mk_e_app t abs_terms in
-  printout_string prefix (term_to_string t)
+  string_to_printout prefix (term_to_string t)
 
-let printout_opt_term (ge:genv) (prefix:string) (t:option term) : Tac unit =
+let opt_term_to_printout (ge:genv) (prefix:string) (t:option term) : Tac string =
   match t with
-  | Some t' -> printout_term ge prefix t'
-  | None -> printout_string prefix ""
+  | Some t' -> term_to_printout ge prefix t'
+  | None -> string_to_printout prefix ""
 
-let printout_proposition (ge:genv) (prefix:string) (p:proposition) : Tac unit =
-  printout_term ge prefix p
+let proposition_to_printout (ge:genv) (prefix:string) (p:proposition) : Tac string =
+  term_to_printout ge prefix p
 
-let printout_propositions (ge:genv) (prefix:string) (pl:list proposition) : Tac unit =
-  let print_prop i p =
+let propositions_to_printout (ge:genv) (prefix:string) (pl:list proposition) : Tac string =
+  let prop_to_printout i p =
     let prefix' = prefix ^ ":prop" ^ string_of_int i in
-    printout_proposition ge prefix' p
+    proposition_to_printout ge prefix' p
   in
-  printout_string (prefix ^ ":num") (string_of_int (List.Tot.length pl));
-  iteri print_prop pl
+  let str = string_to_printout (prefix ^ ":num") (string_of_int (List.Tot.length pl)) in
+  let concat_prop s_i p : Tac (string & int) =
+    let s, i = s_i in
+    s ^ prop_to_printout i p, i+1
+  in
+  let str, _ = fold_left concat_prop (str,0) pl in
+  str
 
-let printout_error_message (prefix : string) (message : option string) : Tac unit =
+let error_message_to_printout (prefix : string) (message : option string) : Tot string =
   let msg = match message with | Some msg -> msg | _ -> "" in
-  printout_string (prefix ^ ":error") msg
+  string_to_printout (prefix ^ ":error") msg
 
 /// Utility type and function to communicate the results to emacs.
 noeq type export_result =
 | ESuccess : ge:genv -> a:assertions -> export_result
 | EFailure : err:string -> export_result
 
-let printout_result (prefix:string) (res:export_result) :
-  Tac unit =
-  print (prefix ^ ":BEGIN");
+let result_to_printout (prefix:string) (res:export_result) :
+  Tac string =
+  let str = prefix ^ ":BEGIN\n" in
   (* Note that the emacs commands will always look for fields for the error message
    * and the pre/post assertions, so we need to generate them, even though they
    * might be empty. *)
@@ -1908,11 +1912,19 @@ let printout_result (prefix:string) (res:export_result) :
       Some err, ge, [], []
   in
   (* Error message *)
-  printout_error_message prefix err;
+  let str = str ^ error_message_to_printout prefix err in
+//  printout_error_message prefix err;
   (* Assertions *)
-  printout_propositions ge (prefix ^ ":pres") pres;
-  printout_propositions ge (prefix ^ ":posts") posts;
-  print (prefix ^ ":END")
+//  printout_propositions ge (prefix ^ ":pres") pres;
+//  printout_propositions ge (prefix ^ ":posts") posts;
+//  print (prefix ^ ":END")
+  let str = str ^ propositions_to_printout ge (prefix ^ ":pres") pres in
+  let str = str ^ propositions_to_printout ge (prefix ^ ":posts") posts in
+  str ^ prefix ^ ":END"
+
+let printout_result (prefix:string) (res:export_result) :
+  Tac unit =
+  print (result_to_printout prefix res)
 
 /// The function to use to export the results in case of success
 let printout_success (ge:genv) (a:assertions) : Tac unit =
