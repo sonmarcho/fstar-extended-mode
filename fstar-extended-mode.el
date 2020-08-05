@@ -468,7 +468,6 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
              (fem-replace-all-in "assume" "assert" t t))))
       ;; Maintain the selection if there was one
     (when $keep-selection
-      (message "keep selection")
       (setq deactivate-mark nil)
       (exchange-point-and-mark)
       (exchange-point-and-mark))))
@@ -1891,8 +1890,8 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
 
        ;; Last case: parsing error
        (t
-        (fem-log-dbg (message "[> parsing error:\n%s"
-                              (buffer-substring-no-properties (point) (point-max))))
+        (fem-log-dbg "[> parsing error:\n%s"
+                     (buffer-substring-no-properties (point) (point-max)))
         nil)) ;; end of cond
       )))
 
@@ -2269,9 +2268,6 @@ Otherwise, the string is made of a number of spaces equal to the column position
                  $parse-result $parse-beg $parse-end $subexpr $state
                  $indent-str $insert-beg $insert-end $cbuffer $insert-admits
                  $subexpr1 $pp-instr $insert-shift $shift $payload
-                 ;;$tbeg $passert $assert-beg $assert-end
-                 ;;$subexpr $instr $subexpr1 $shift $indent-str $beg $end $cbuffer
-                 ;;$query-end $insert-admit $payload $insert-shift $insert-and-shift
                  )
     (fem-log-dbg "unfold-in-assert-assume")
     ;; Sanity check
@@ -2354,7 +2350,6 @@ If P1 is not nil, parse until P0 and consider the term is delimited by P0 and P1
 Return a fem-subexpr."
   (let ($state $parent $last-tk $last-symbol $last-tk-pos $tk-beg $tk-end
         $is-let-in $has-semicol)
-;;    (setq $state (fem-create-cfp-state BEG))
     (setq $state STATE)
     (cond
 
@@ -2362,8 +2357,6 @@ Return a fem-subexpr."
      (P1
       ;; Parse until P0
       (fem-cfp-parse-tokens P0 $state)
-;;      ;; Retrieve the top token
-;;      (setq $parent (fem-cfp-state-top $state))
       ;; Parse until the end of P1
       (fem-cfp-parse-tokens P1 $state)
       ;; Retrieve the last token
@@ -2383,7 +2376,6 @@ Return a fem-subexpr."
       (fem-skip-comments-and-spaces t P1)
       (setq $tk-beg (point))
       (goto-char P1)
-;;      (setq $tk-end (fem-pair-snd (fem-cfp-tk-pos $last-tk)))
       (fem-skip-comments-and-spaces nil $tk-beg)
       (setq $tk-end (point))
       )
@@ -2440,10 +2432,6 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
   ;; Sanity check
   (fem-generate-fstar-check-conditions)
   (let (
-        ;;        $next-point $beg $markers $p0 $allow-selection $delimiters $indent $indent-str
-        ;;                    $p1 $p2 $p3 $subexpr $cp1 $cp2
-        ;;                    $is-let-in $has-semicol $current-buffer $insert-admit
-        ;;                    $cbuffer $pp-instr $subexpr1 $payload
         $p0 $markers $state $parse-beg $parse-end $term $term-beg $term-end $indent-str
             $insert-beg $insert-end $insert-admits $cbuffer $pp-instr $term1 $payload)
     (setq $parse-beg (fstar-subp--untracked-beginning-position))
@@ -2459,7 +2447,6 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
       ;; If there is a selection: use it
       (if (use-region-p)
           (progn
-            (message "use region")
             (setq $term-beg (region-beginning) $parse-end (region-end))
             (goto-char $term-beg)
             (fem-skip-comments-and-spaces t $parse-end)
@@ -2469,7 +2456,6 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
             (setq $parse-end (point))
             (setq $term (fem-parse-until-decl $state $term-beg $parse-end)))
         ;; Otherwise: parse until the current position
-        (message "don't use region")
         (goto-char $p0)
         (fem-skip-comments-and-spaces nil $parse-beg)        
         (setq $parse-end (point))
