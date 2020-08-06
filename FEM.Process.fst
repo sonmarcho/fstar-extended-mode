@@ -828,9 +828,9 @@ let decompose_application e t =
   hd, List.Tot.rev params
 
 /// Computes an effect type, its return type and its (optional) pre and post
-val comp_view_to_effect_info : comp_view -> Tac (option effect_info)
+val comp_view_to_effect_info : dbg:bool -> comp_view -> Tac (option effect_info)
 
-let comp_view_to_effect_info cv =
+let comp_view_to_effect_info dbg cv =
   match cv with
   | C_Total ret_ty decr ->
     let ret_type_info = get_type_info_from_type ret_ty in
@@ -842,6 +842,7 @@ let comp_view_to_effect_info cv =
     (* We use unit as the return type information *)
     Some (mk_effect_info E_Lemma unit_type_info (Some pre) (Some post))
   | C_Eff univs eff_name ret_ty eff_args ->
+    print_dbg dbg ("comp_view_to_effect_info: C_Eff " ^ flatten_name eff_name);
     let ret_type_info = get_type_info_from_type ret_ty in
     let etype = effect_name_to_type eff_name in
     let mk_res = mk_effect_info etype ret_type_info in
@@ -859,30 +860,30 @@ let comp_view_to_effect_info cv =
     | _ -> None
     end
 
-val comp_to_effect_info : comp -> Tac (option effect_info)
+val comp_to_effect_info : dbg:bool -> comp -> Tac (option effect_info)
 
-let comp_to_effect_info c =
+let comp_to_effect_info dbg c =
   let cv : comp_view = inspect_comp c in
-  comp_view_to_effect_info cv
+  comp_view_to_effect_info dbg cv
 
-val compute_effect_info : env -> term -> Tac (option effect_info)
+val compute_effect_info : dbg:bool -> env -> term -> Tac (option effect_info)
 
-let compute_effect_info e tm =
+let compute_effect_info dbg e tm =
   match safe_tcc e tm with
-  | Some c -> comp_to_effect_info c
+  | Some c -> comp_to_effect_info dbg c
   | None -> None
 
 /// Returns the effectful information about a term
-val compute_eterm_info : env -> term -> Tac eterm_info
+val compute_eterm_info : dbg:bool -> env -> term -> Tac eterm_info
 
 #push-options "--ifuel 2"
-let compute_eterm_info (e:env) (t : term) =
+let compute_eterm_info (dbg : bool) (e : env) (t : term) =
   (* Decompose the term if it is a function application *)
   let hd, parameters = decompose_application e t in
   try
     begin
     let c : comp = tcc e t in
-    let opt_einfo = comp_to_effect_info c in
+    let opt_einfo = comp_to_effect_info dbg c in
     match opt_einfo with
     | None -> mfail ("compute_eterm_info: failed on: " ^ term_to_string t)
     | Some einfo ->
@@ -1034,7 +1035,7 @@ let generate_shadowed_subst ge =
 
 /// Converts a ``typ_or_comp`` to an ``effect_info`` by applying the instantiation
 /// stored in the ``typ_or_comp``.
-let typ_or_comp_to_effect_info (ge : genv) (c : typ_or_comp) :
+let typ_or_comp_to_effect_info (dbg : bool) (ge : genv) (c : typ_or_comp) :
   Tac effect_info =
   (* Prepare the substitution of the variables from m *)
   let m = inst_vars_of_typ_or_comp c in
@@ -1060,7 +1061,7 @@ let typ_or_comp_to_effect_info (ge : genv) (c : typ_or_comp) :
     let tinfo = asubst_in_type_info tinfo in
     mk_effect_info E_Total tinfo None None
   | TC_Comp cv m ->
-    let opt_einfo = comp_to_effect_info cv in
+    let opt_einfo = comp_to_effect_info dbg cv in
     match opt_einfo with
     | None -> mfail ("typ_or_comp_to_effect_info failed on: " ^ acomp_to_string cv)
     | Some einfo ->
@@ -1367,7 +1368,7 @@ let is_let_st_get dbg (t : term_view) =
 /// because we may not be able to retrieve the term computation.
 val term_has_effectful_comp : env -> term -> Tac (option bool)
 let term_has_effectful_comp e tm =
-  let einfo_opt = compute_effect_info e tm in
+  let einfo_opt = compute_effect_info false e tm in
   match einfo_opt with
   | Some einfo -> Some (effect_type_is_pure einfo.ei_type)
   | None -> None
@@ -1621,7 +1622,7 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
       let with_goal : bool = with_gpre || with_gpost in
       begin match opt_c, with_goal with
       | Some c, true ->
-        let ei = typ_or_comp_to_effect_info ge1 c in
+        let ei = typ_or_comp_to_effect_info dbg ge1 c in
         print_dbg dbg ("- target effect: " ^ effect_info_to_string ei);
         print_dbg dbg ("- global unfilt. pre: " ^ option_to_string term_to_string ei.ei_pre);
         print_dbg dbg ("- global unfilt. post: " ^ option_to_string term_to_string ei.ei_post);
@@ -1738,7 +1739,7 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
         (* Some debugging output *)
         print_dbg dbg ("- global pre prop: " ^ option_to_string term_to_string gpre_prop);
         print_dbg dbg ("- global post prop: " ^ option_to_string term_to_string gpost_prop);
-        (* Return type: TODO *)
+        (* Return type: *)
         ge2, gparams_props, gpre_prop, gcast_props, gpost_prop
       | _, _ ->
         ge1, [], None, [], None
@@ -1763,6 +1764,11 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
     let posts = opt_cons ret_has_type_prop
                 (opt_cons ret_refin_prop (opt_cons post_prop
                  (List.append gcast_props (opt_cons gpost_prop [])))) in
+    (* Debugging output *)
+    print_dbg dbg "- generated pres:";
+    if dbg then iter (fun x -> print (term_to_string x)) pres;
+    print_dbg dbg "- generated posts:";
+    if dbg then iter (fun x -> print (term_to_string x)) posts;
     ge2, { pres = pres; posts = posts }
     end
 
@@ -2171,9 +2177,9 @@ let analyze_effectful_term dbg with_gpre with_gpost res =
         then genv_push_fresh_bv ge1 "ret" bvv0.bv_sort
         else ge1, bv0
       in
-      let info = compute_eterm_info ge2.env fterm in
+      let info = compute_eterm_info dbg ge2.env fterm in
       (ge2, fterm, (info <: eterm_info), Some bv1, shadowed_bv, true)
-    | _ -> (ge, res.res, compute_eterm_info ge.env res.res, None, None, false)
+    | _ -> (ge, res.res, compute_eterm_info dbg ge.env res.res, None, None, false)
     end
   in
   print_dbg dbg ("[> Environment information (after effect analysis):\n" ^ genv_to_string ge1);
@@ -2438,7 +2444,7 @@ let rec find_context_equality_aux dbg ge0 tm (opt_bv : option bv)
     match tv with
     | Tv_Let _ _ bv' def _ ->
       print_dbg dbg "Is Tv_Let";
-      let tm_info = compute_eterm_info ge0.env def in
+      let tm_info = compute_eterm_info dbg ge0.env def in
       let einfo = tm_info.einfo in
       (* If the searched term is a bv and the current let is the one which
        * introduces it:
