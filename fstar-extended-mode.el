@@ -217,7 +217,7 @@ The expression can also of the form: '...;', which is syntactic sugar for 'let _
         (progn
           (fem-log-dbg "End delimiter is ';'")
           (backward-char 1)
-          (while $continue
+          (while (and $continue (not (= (point) (point-min))))
             (setq $p (point))
             (fem-skip-comments-and-spaces nil $limit)
             (if (fem-previous-char-is-semicol-p)
@@ -232,10 +232,12 @@ The expression can also of the form: '...;', which is syntactic sugar for 'let _
                 (when (string-equal "in" $exp)
                   (setq $p1 $p $continue nil)))))
           ;; Return
-          (goto-char $p1)
-          (fem-skip-comments-and-spaces t)
-          (setq $p1 (point))
-          (if $p1 (make-fem-pair :fst $p1 :snd $p0) nil))
+          (if (not $p1)
+              nil
+            (goto-char $p1)
+            (fem-skip-comments-and-spaces t)
+            (setq $p1 (point))
+            (if $p1 (make-fem-pair :fst $p1 :snd $p0) nil)))
       ;; Check if previous is 'in': if so find next occurrence of 'let'
       (setq $exp (fem-parse-previous-sexp-as-string-p))
       (if (and $exp (string-equal $exp "in"))
@@ -543,7 +545,6 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
     (setq $s (fem-roll-delete-term "admit()" t $p1 $p2))
     ;; Delete backward
     (when (not (cdr (assoc 'opt_shift $s)))
-      (message "second case")
       (setq $s (fem-roll-delete-term "admit()" nil $p1 $p2)))
     ;; Insert the admit
     (if (cdr (assoc 'semicol $s))
