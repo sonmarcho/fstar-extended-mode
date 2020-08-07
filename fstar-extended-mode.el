@@ -1193,17 +1193,18 @@ If WITH_PARENTHESES is t, look for parenthesized terms."
                        "\\.__uint_to_t" fem-spaces-re "\\([0-9]+\\)")))
       (when WITH_PARENTHESES (setq $re (concat "(" fem-opt-spaces-re $re fem-opt-spaces-re ")")))
       (when
-        ;; Find the term
-        (re-search-forward $re (point-max) t)
-      ;; Find the variables and rewrite
-      (let (($uint (match-string 1)) ($n (match-string 2)))
-        (delete-region (match-beginning 0) (match-end 0))
-        (goto-char (match-beginning 0))
-        ;; Depending on the uint type, we rewrite differently
-        (cond
-         ((string= "UInt32" $uint) (insert (concat $n "ul")))
-         ((string= "UInt64" $uint) (insert (concat $n "UL")))
-         (t (insert (concat $uint ".uint_to_t " $n)))))))))
+          ;; Find the term
+          (re-search-forward $re (point-max) t)
+        ;; Find the variables and rewrite
+        (let (($uint (match-string 1)) ($n (match-string 2)))
+          (delete-region (match-beginning 0) (match-end 0))
+          (goto-char (match-beginning 0))
+          ;; Depending on the uint type, we rewrite differently
+          (cond
+           ((string= "UInt32" $uint) (insert (concat $n "ul")))
+           ((string= "UInt64" $uint) (insert (concat $n "UL")))
+           (t (insert (concat $uint ".uint_to_t " $n))))
+          (point))))))
 
 (defun fem-meta-info-pp-remove-namespace (NAME)
   "Remove a useless namespace"
