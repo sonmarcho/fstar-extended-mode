@@ -1164,8 +1164,53 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
     (when fem-debug
       (let ((res-str (if res (concat "[" res "]") "nil")))
         (fem-log-dbg "extract-info-from-messages:\n- prefix: %s\n- id: %s\n- res: %s "
-                 prefix id res-str)))
+                     prefix id res-str)))
     res)) ;; end of function
+
+(defun fem-meta-info-pp-buffer-as-seq (&optional WITH_PARENTHESES)
+  "Rewrite nicely the next occurrence of h.[|buffer|].
+Such terms are printed by F* as: `( .[||] ) h buffer`.
+If WITH_PARENTHESES is t, look for parenthesized terms."
+  (save-match-data
+    (let (($re (concat "( \\.\\[||\\] )" fem-opt-spaces-re
+                       "\\(" fem-identifier-regexp "\\)"  fem-spaces-re
+                       "\\(" fem-identifier-regexp "\\)")))
+      (when WITH_PARENTHESES (setq $re (concat "(" fem-opt-spaces-re $re fem-opt-spaces-re ")")))
+      (when
+          ;; Find the term
+          (re-search-forward $re (point-max) t)
+        ;; Find the variables and rewrite
+        (let (($v1 (match-string 1)) ($v2 (match-string 3)))
+          (delete-region (match-beginning 0) (match-end 0))
+          (goto-char (match-beginning 0))
+          (insert (concat $v1 ".[|" $v2 "|]"))
+          (point))))))
+
+(defun fem-meta-info-pp-uint_to_t (&optional WITH_PARENTHESES)
+  "Rewrite nicely the next occurrence of FStar.?Int??.__uint_to_t n."
+  (save-match-data
+    (let (($re (concat "FStar\\." "\\([a-zA-Z0-9]+\\)"
+                       "\\.__uint_to_t" fem-spaces-re "\\([0-9]+\\)")))
+      (when WITH_PARENTHESES (setq $re (concat "(" fem-opt-spaces-re $re fem-opt-spaces-re ")")))
+      (when
+        ;; Find the term
+        (re-search-forward $re (point-max) t)
+      ;; Find the variables and rewrite
+      (let (($uint (match-string 1)) ($n (match-string 2)))
+        (delete-region (match-beginning 0) (match-end 0))
+        (goto-char (match-beginning 0))
+        ;; Depending on the uint type, we rewrite differently
+        (cond
+         ((string= "UInt32" $uint) (insert (concat $n "ul")))
+         ((string= "UInt64" $uint) (insert (concat $n "UL")))
+         (t (insert (concat $uint ".uint_to_t " $n)))))))))
+
+(defun fem-meta-info-pp-remove-namespace (NAME)
+  "Remove a useless namespace"
+  (save-match-data
+    (when (re-search-forward (concat "\\(\\`\\|[;,\\[({\t\n\t ]\\)" "\\(" NAME "\\.\\)") (point-max) t)
+      (delete-region (match-beginning 2) (match-end 0))
+      (point))))
 
 (defun fem-meta-info-post-process ()
   "Post-process parsed data.
@@ -1173,6 +1218,15 @@ Replaces some identifiers (Prims.l_True -> True...)."
   ;; Greedy replacements
   (fem-replace-all-in "Prims.l_True" "True")
   (fem-replace-all-in "Prims.l_False" "False")
+  ;; Rewrite the occurrences of h.[|buffer|]
+  (goto-char (point-min)) (while (fem-meta-info-pp-buffer-as-seq t) nil)
+  (goto-char (point-min)) (while (fem-meta-info-pp-buffer-as-seq nil) nil)
+  ;; Rewrite the occurrences of FStar.?Int??.__uint_to_t n
+  (goto-char (point-min)) (while (fem-meta-info-pp-uint_to_t t) nil)
+  (goto-char (point-min)) (while (fem-meta-info-pp-uint_to_t nil) nil)
+  ;; Remove the occurrences of FStar., Prims.
+  (goto-char (point-min)) (while (fem-meta-info-pp-remove-namespace "Prims") nil)
+  (goto-char (point-min)) (while (fem-meta-info-pp-remove-namespace "FStar") nil)
   nil)
 
 (defun fem-extract-string-from-buffer (prefix id &optional no-error LIMIT)
@@ -1528,7 +1582,8 @@ TODO: use overlays."
 ;; - for spaces: use [\t\n\r ] (this includes line breaks) ([:space:] and [:blank:] don't work)
 ;; - to match the empty string at point: \\=
 
-(defconst fem--spaces-re (concat "[" fstar--spaces "]")) ;; [\t\n\r ]
+(defconst fem-spaces-re (concat "[" fstar--spaces "]+")) ;; [\t\n\r ]+
+(defconst fem-opt-spaces-re (concat "[" fstar--spaces "]*")) ;; [\t\n\r ]*
 
 (defun fem-parse-re-p (REGEXP)
   "Parse a regexp and return a pair of position if succeeds, nil otherwise."
