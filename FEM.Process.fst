@@ -74,6 +74,57 @@ let fv_eq_name fv n =
   let fvn = inspect_fv fv in
   name_eq fvn n
 
+(*** Pretty-printing *)
+/// There are many issues linked to terms (pretty) printing.
+/// The first issue is that when parsing terms, F* automatically inserts
+/// abscriptions, which then clutter the terms printed to the user. The current
+/// workaround is to filter those ascriptions in the terms before exploiting them.
+
+val filter_ascriptions : term -> Tac term
+
+let rec filter_ascriptions t =
+  match inspect t with
+  | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> t
+  | Tv_App hd (a,qual) ->
+    let hd = filter_ascriptions hd in
+    let a = filter_ascriptions a in
+    pack (Tv_App hd (a, qual))
+  | Tv_Abs br body ->
+    let body = filter_ascriptions body in
+    pack (Tv_Abs br body)
+  | Tv_Arrow br c0 -> t (* TODO: we might want to explore that *)
+  | Tv_Type () -> t
+  | Tv_Refine bv ref ->
+    (* TODO: also filter the type of the bv *)
+    let ref = filter_ascriptions ref in
+    pack (Tv_Refine bv ref)
+  | Tv_Const _ -> t
+  | Tv_Uvar _ _ -> t
+  | Tv_Let recf attrs bv def body ->
+    (* The attributes shouldn't need to be filtered *)
+    let def = filter_ascriptions def in
+    let body = filter_ascriptions body in
+    pack (Tv_Let recf attrs bv def body)
+  | Tv_Match scrutinee branches ->
+    let scrutinee = filter_ascriptions scrutinee in
+    (* For the branches: we don't need to explore the patterns *)
+    let branches = map (fun (pat, tm) -> (pat, filter_ascriptions tm)) branches in
+    pack (Tv_Match scrutinee branches)
+  | Tv_AscribedT e _ _
+  | Tv_AscribedC e _ _ ->
+    filter_ascriptions e
+  | _ ->
+    (* Unknown *)
+    t
+
+/// Our prettification function. Apply it to all the terms which might be printed
+/// back to the user. Note that the time at which the function is applied is
+/// important: we can't apply it on all the assertions we export to the user, just
+/// before exporting, because we may have inserted ascriptions on purpose, which
+/// would then be filtered away.
+val prettify_term : term -> Tac term
+let prettify_term t = filter_ascriptions t
+
 (*** General utilities *)
 // TODO: use more
 val opt_apply (#a #b : Type) (f : a -> Tot b) (x : option a) : Tot (option b)
@@ -433,10 +484,14 @@ let get_type_info_from_type (ty:typ) : Tac type_info =
   | Tv_Refine bv refin ->
     let bview : bv_view = inspect_bv bv in
     let raw_type : typ = bview.bv_sort in
+    let raw_type = prettify_term raw_type in
     let b : binder = mk_binder bv in
+    let refin = prettify_term refin in
     let refin = pack (Tv_Abs b refin) in
     mk_type_info raw_type (Some refin)
-  | _ -> mk_type_info ty None
+  | _ ->
+    let ty = prettify_term ty in
+    mk_type_info ty None
 
 #push-options "--ifuel 1"
 let get_type_info (e:env) (t:term) : Tac (option type_info) =
@@ -974,12 +1029,15 @@ let comp_view_to_effect_info dbg cv =
     Some (mk_effect_info E_Total ret_type_info None None)
   | C_Lemma pre post patterns ->
     (* We use unit as the return type information *)
+    let pre = prettify_term pre in
+    let post = prettify_term post in
     Some (mk_effect_info E_Lemma unit_type_info (Some pre) (Some post))
   | C_Eff univs eff_name ret_ty eff_args ->
     print_dbg dbg ("comp_view_to_effect_info: C_Eff " ^ flatten_name eff_name);
     let ret_type_info = get_type_info_from_type ret_ty in
     let etype = effect_name_to_type eff_name in
     let mk_res = mk_effect_info etype ret_type_info in
+    let eff_args = map (fun (x,a) -> (prettify_term x, a)) eff_args in
     begin match etype, eff_args with
     | E_PURE, [(pre, _)] -> Some (mk_res (Some pre) None)
     | E_Pure, [(pre, _); (post, _)]
@@ -1021,7 +1079,7 @@ let typ_or_comp_to_effect_info (dbg : bool) (ge : genv) (c : typ_or_comp) :
     | None -> mfail ("typ_or_comp_to_effect_info failed on: " ^ acomp_to_string cv)
     | Some einfo -> einfo
 
-/// `tcc` often returns a lifted effect which is not what we want (ex.: a
+/// ``tcc`` often returns a lifted effect which is not what we want (ex.: a
 /// lemma called inside a Stack function may have been lifted to Stack, but
 /// when studying this term effect, we want to retrieve its non-lifted effect).
 /// The workaround is to decompose the term if it is an application, then retrieve
@@ -1756,12 +1814,8 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
              * added first in the list and is thus last) *)
             let params =
               rev (List.Tot.map (fun x -> (x, type_of_binder x)) (params_of_typ_or_comp c)) in
-//            let param_types = typ_or_comp_to_param_types c in
-//            let params = inst_vars_of_typ_or_comp c in
-//            if dbg then
             iteri (fun i (b, _) -> print ("Global parameter " ^ string_of_int i ^
                                         ": " ^ binder_to_string b)) params;
-//            let params = rev (zip params param_types) in
             (* Filter the shadowed parameters *)
             let params = filter (fun (b, _)-> not (binder_is_shadowed ge1 b)) params in
             (* Generate the propositions *)
@@ -2660,7 +2714,7 @@ let unfold_in_assert_or_assume dbg ares =
   let find_in_whole_term () : Tac _ =
     match find_focused_in_term ares.res with
     | Some res ->
-      ares.res, res, (fun x -> x <: Tot term), true
+      ares.res, res, (fun x -> prettify_term x), true
     | None -> mfail "unfold_in_assert_or_assume: could not find a focused term in the assert"
   in
   (* - subterm: the subterm of the assertion in which we found the focused term
@@ -2671,7 +2725,7 @@ let unfold_in_assert_or_assume dbg ares =
    *   replacing the above subterm with the given term
    * - insert_before: whether to insert the new assertion before or after the
    *   current assertion in the user file *)
-  let subterm, unf_res, rebuild, insert_before =
+  let subterm, unf_res, (rebuild : term -> Tac term), insert_before =
     let _ = print_dbg dbg ("Assertion: " ^ term_to_string ares.res) in
     match is_eq dbg ares.res with
     | Some (kd, l, r) ->
@@ -2682,7 +2736,7 @@ let unfold_in_assert_or_assume dbg ares =
                        "\n- left   : " ^ term_to_string l ^
                        "\n- right  : " ^ term_to_string r ^
                        "\n- focused: " ^ term_to_string res.res);
-        let rebuild t = mk_eq kd t r in
+        let rebuild t = mk_eq kd (prettify_term t) r in
         l, res, rebuild, true
       | None ->
         begin match find_focused_in_term r with
@@ -2691,7 +2745,7 @@ let unfold_in_assert_or_assume dbg ares =
                  "\n- left   : " ^ term_to_string l ^
                  "\n- right  : " ^ term_to_string r ^
                  "\n- focused: " ^ term_to_string res.res);
-          let rebuild t = mk_eq kd l t in
+          let rebuild (t : term) : Tac term = mk_eq kd l (prettify_term t) in
           r, res, rebuild, false
         | None ->
           mfail "unfold_in_assert_or_assume: could not find a focused term in the assert"
