@@ -400,7 +400,7 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
         $exp)
     ;; Replace all the occurrences of FROM
     (goto-char $beg)
-    (while (search-forward FROM $end t)
+    (while (and (< (point) $end) (search-forward FROM $end t))
       ;; Check if we need to replace
       (cond
        ;; Ignore comments
@@ -413,8 +413,8 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
         (if $exp (setq $replace (string-equal $exp FROM))
           (setq $replace nil)))
        (t (setq $replace t)))
-       (goto-char (match-end 0))
-       ;; Replace          
+      (goto-char (match-end 0))
+      ;; Replace          
       (when $replace
         (progn
           ;; Compute the pointer shift: if the current position is smaller or equal
@@ -426,9 +426,9 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
           (replace-match TO))
         ;; Otherwise: just move
         (goto-char (match-end 0))))
-  ;; Move to the shifted position and return the shift
-  (goto-char (+ $p0 $shift))
-  $shift))
+    ;; Move to the shifted position and return the shift
+    (goto-char (+ $p0 $shift))
+    $shift))
 
 (defun fem-replace-in-current-region (FROM TO IGNORE_COMMENTS FULL_SEXP
                                       ALLOW_SELECTION INCLUDE_CURRENT_LINE
@@ -441,14 +441,12 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
 
 ;;; General F* code management commands
 
-;; TODO: make replacement more precise (for instance, check that the identifiers
-;; are not part of bigger identifiers
 (defun fem-switch-assert-assume-in-current-region (ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                                ABOVE_PARAGRAPH BELOW_PARAGRAPH)
   (interactive)
   "Check if there are occurrences of 'assert' or 'assert_norm in the current region.
    If so, replace them with 'assume'. Ohterwise, replace all the 'assume' with 'assert'."
-  (let ($p $p1 $p2 $keep-selection $has-asserts $replace $delimiters $p)
+  (let ($p $p1 $p2 $keep-selection $has-asserts $replace $delimiters)
     ;; Find the region delimiters and restrain the region
     (setq $delimiters (fem-find-region-delimiters ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                                   ABOVE_PARAGRAPH BELOW_PARAGRAPH))
@@ -476,6 +474,50 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
       (setq deactivate-mark nil)
       (exchange-point-and-mark)
       (exchange-point-and-mark))))
+
+(defun fem-switch-assert-assume-p-or-selection ()
+  (interactive)
+  "Switch the assertion/assumption under the pointer, or in the active selection."
+  (let ($p $passert $p1 $p2 $keep-selection $has-asserts $replace $delimiters)
+    (setq $p (point))
+    ;; Find the region delimiters and restrain the region
+    (if (use-region-p)
+        ;; Use selection
+        (setq $p1 (region-beginning) $p2 (region-end) $keep-selection t)
+      ;; Otherwise: look for the assertion/assumption under the pointer
+      (setq $passert (fem-find-assert-assume-p))
+      ;; Use the assertion if we found one, otherwise use the current line
+      (if (not $passert)
+          ;; Use the whole line
+          (setq $p1 (point-at-bol) $p2 (point-at-eol))
+        ;; Use the region containing the assertion
+        (setq $passert (fem-pair-fst $passert))
+        (setq $p1 (fem-pair-fst $passert) $p2 (fem-pair-snd $passert))))
+    (setq $p1 (min $p1 $p) $p2 (max $p2 $p))
+    ;; Replace
+    ;; Check if there are assertions to know whether to replace assertions
+    ;; by assumptions or the revert
+    (goto-char $p1)
+    (setq $has-asserts (fem-search-forward-not-comment "assert" t $p2))
+    (when (not $has-asserts)
+      (goto-char $p1)
+      (setq $has-asserts (fem-search-forward-not-comment "assert_norm" t $p2)))
+    (goto-char $p)
+    ;; Replace
+    (if $has-asserts
+        (progn
+          (fem-replace-all-in "assert_norm" "assume(*norm*)" t t $p1 $p2)
+          (fem-replace-all-in "assert" "assume" t t $p1 $p2))
+      (progn
+        (fem-replace-all-in "assume(*norm*)" "assert_norm" t nil $p1 $p2)
+        (fem-replace-all-in "assume" "assert" t t $p1 $p2)))
+    ;; Maintain the selection if there was one
+    (when $keep-selection
+      (setq deactivate-mark nil)
+      (exchange-point-and-mark)
+      (exchange-point-and-mark))))
+
+(defun fem-replace-all-in (FROM TO &optional IGNORE_COMMENTS FULL_SEXP BEG END)
 
 (defun fem-switch-assert-assume-in-above-paragraph ()
   (interactive)
@@ -2340,7 +2382,6 @@ Otherwise, the string is made of a number of spaces equal to the column position
     ;; Remember which is the original buffer
     (setq $cbuffer (current-buffer))
     ;; Copy and start processing the content
-;;    (setq $query-end (if $markers $p0 $end))
     (setq $insert-admits (not $markers))
     (setq $pp-instr (concat "FEM.Process.pp_split_assert_conjs " (bool-to-string fem-debug)))
     (setq $subexpr1 (fem-copy-def-for-meta-process $parse-beg $parse-end $insert-admits
@@ -2668,6 +2709,7 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
 
 ;;(global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-in-above-paragraph)
 (global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-in-current-line)
+(global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-p-or-selection)
 ;;(global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
 ;;(global-set-key (kbd "C-c C-e C-a") 'fem-switch-assert-assume-in-above-paragraph)
 
