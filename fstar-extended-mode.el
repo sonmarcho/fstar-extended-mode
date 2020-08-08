@@ -486,13 +486,29 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
         (setq $p1 (region-beginning) $p2 (region-end) $keep-selection t)
       ;; Otherwise: look for the assertion/assumption under the pointer
       (setq $passert (fem-find-assert-assume-p))
-      ;; Use the assertion if we found one, otherwise use the current line
+      ;; If we couldn't find the assertion, try to move backward
+      (when (not $passert)
+        ;; Go to the left, check if we find a semicolon
+        (fem-skip-comments-and-spaces nil (point-at-bol))
+        ;; If there is a semicolon, ignore it
+        (when (fem-previous-char-is-semicol-p)
+          (backward-char))
+        ;; Retry the search
+        (setq $passert (fem-find-assert-assume-p)))
+      ;; If still not found, move forward
+      (when (not $passert)
+        (goto-char $p)
+        (fem-skip-comments-and-spaces t (point-at-eol))
+        (setq $passert (fem-find-assert-assume-p)))
+      ;; Use the assertion if we found one, otherwise use an empty search
       (if (not $passert)
-          ;; Use the whole line
-          (setq $p1 (point-at-bol) $p2 (point-at-eol))
-        ;; Use the region containing the assertion
-        (setq $passert (fem-pair-fst $passert))
-        (setq $p1 (fem-pair-fst $passert) $p2 (fem-pair-snd $passert))))
+          ;; Use an empty search
+          (setq $p1 (point) $p2 (point))
+        ;; Use the region containing the assertion - note that we include the
+        ;; assertion parameter, because if we limit ourselves to the head
+        ;; keyword, we might not replace an "assert(*norm*)"
+        (setq $p1 (fem-pair-fst (fem-pair-fst $passert))
+              $p2 (fem-pair-snd (fem-pair-snd $passert)))))
     (setq $p1 (min $p1 $p) $p2 (max $p2 $p))
     ;; Replace
     ;; Check if there are assertions to know whether to replace assertions
