@@ -306,6 +306,21 @@ let genv_push_fresh_bv (ge : genv) (basename : string) (ty : typ) : Tac (genv & 
   let ge', b = genv_push_fresh_binder ge basename ty in
   ge', bv_of_binder b
 
+/// Perform a variable substitution in a term
+val apply_subst : env -> term -> list (bv & term) -> Tac term
+let apply_subst e t subst =
+  let bl, vl = unzip subst in
+  let bl = List.Tot.map mk_binder bl in
+  let t1 = mk_abs t bl in
+  let t2 = mk_e_app t1 vl in
+  norm_term_env e [] t2
+
+val opt_apply_subst : env -> option term -> list (bv & term) -> Tac (option term)
+let opt_apply_subst e opt_t subst =
+  match opt_t with
+  | None -> None
+  | Some t -> Some (apply_subst e t subst)
+
 /// Some constants
 let prims_true_qn = "Prims.l_True"
 let prims_true_term = `Prims.l_True
@@ -449,23 +464,23 @@ let is_total_or_gtotal c =
 
 
 /// This type is used to store typing information.
-/// We use it mostly to track what the target type/computation type is for
-/// a term being explored. It is especially useful to generate post-conditions,
-/// for example.
-/// Whenever we go inside an abstraction, we store how  we instantiated the outer
-/// lambda (in an order reverse to the instantiation order), so that we can correctly
-/// instantiate the pre/post-conditions and type refinements.
+/// We use it mostly to track what the target type/computation is for a term,
+/// while exploring this term. It is especially useful to generate post-conditions,
+/// for example. We store the list of abstractions encountered so far at the
+/// same time.
 // TODO: actually we only need to carry a comp (if typ: consider it total)
 (* TODO: remove the instantiation: instantiate incrementally *)
 noeq type typ_or_comp =
-| TC_Typ : v:typ -> m:list (bv & bv) -> typ_or_comp
-| TC_Comp : v:comp -> m:list (bv & bv) -> typ_or_comp
+| TC_Typ : v:typ -> pl:list binder -> typ_or_comp
+| TC_Comp : v:comp -> pl:list binder -> typ_or_comp
 
-val inst_vars_of_typ_or_comp : typ_or_comp -> Tot (list (bv & bv))
-let inst_vars_of_typ_or_comp c =
-  match c with | TC_Typ _ m | TC_Comp _ m -> m
+/// Return the list of parameters stored in a ``typ_or_comp``
+let params_of_typ_or_comp (c : typ_or_comp) : list binder =
+  match c with
+  | TC_Typ _ pl | TC_Comp _ pl -> pl
 
 /// Compute a ``typ_or_comp`` from the type of a term
+// TODO: try to get a more precise comp
 val safe_typ_or_comp : bool -> env -> term ->
                        Tac (opt:option typ_or_comp{Some? opt ==> TC_Comp? (Some?.v opt)})
 let safe_typ_or_comp dbg e t =
@@ -481,43 +496,133 @@ let safe_typ_or_comp dbg e t =
                    "\n-comp: " ^ acomp_to_string c);
     Some (TC_Comp c [])
 
-/// Update the current ``typ_or_comp`` before going into the body of an abstraction
-/// Any new binder needs to be added to the current environment (otherwise we can't,
-/// for example, normalize the terms containing the binding), hence the ``env``
-/// parameter, which otherwise is useless (consider like as a monadic state). Note
-/// that we don't add this binder to a more general environment, because we don't
-/// need it besides that.
-val abs_update_typ_or_comp : binder -> typ_or_comp -> env -> Tac (env & typ_or_comp)
-let _abs_update_typ (b:binder) (ty:typ) (m:list (bv & bv)) (e:env) :
-  Tac (env & typ_or_comp) =
-  begin match inspect ty with
-  | Tv_Arrow b1 c1 ->
-    push_binder e b1, TC_Comp c1 ((bv_of_binder b1, bv_of_binder b) :: m)
-  | _ ->
-    (* TODO: look for top-level definitions and unfold *)
-    mfail ("abs_update_typ_or_comp: not an arrow: " ^ term_to_string ty)
-  end
+/// Substitute a binder by a term in a comp
+val subst_bv_in_comp : env -> bv -> term -> comp -> Tac comp
+let subst_bv_in_comp e b t c =
+  let subst = [(b,t)] in
+  let subst = (fun x -> apply_subst e x subst) in
+  let subst_in_aqualv a : Tac aqualv =
+    match a with
+    | Q_Implicit
+    | Q_Explicit -> a
+    | Q_Meta t -> Q_Meta (subst t)
+    | Q_Meta_attr t -> Q_Meta_attr (subst t)
+  in
+  match inspect_comp c with
+  | C_Total ret decr ->
+    let ret = subst ret in
+    let decr = opt_tapply subst decr in
+    pack_comp (C_Total ret decr)
+  | C_GTotal ret decr ->
+    let ret = subst ret in
+    let decr = opt_tapply subst decr in
+    pack_comp (C_GTotal ret decr)
+  | C_Lemma pre post patterns ->
+    let pre = subst pre in
+    let post = subst post in
+    let patterns = subst patterns in
+    pack_comp (C_Lemma pre post patterns)
+  | C_Eff us eff_name result eff_args ->
+    let result = subst result in
+    let eff_args = map (fun (x, a) -> (subst x, subst_in_aqualv a)) eff_args in
+    pack_comp (C_Eff us eff_name result eff_args)
 
-let abs_update_typ_or_comp (b:binder) (c : typ_or_comp) (e:env) : Tac (env & typ_or_comp) =
+val subst_binder_in_comp : env -> binder -> term -> comp -> Tac comp
+let subst_binder_in_comp e b t c =
+  subst_bv_in_comp e (bv_of_binder b) t c
+
+/// Utility for computations: unfold a type until it is of the form Tv_Arrow _ _,
+/// fail otherwise
+val unfold_until_arrow : env -> typ -> Tac typ
+let rec unfold_until_arrow e ty =
+  (* Start by normalizing the term *)
+  let ty = norm_term_env e [] ty in
+  (* Helper to unfold top-level identifiers *)
+  let unfold_fv (fv : fv) : Tac term =
+    let ty = pack (Tv_FVar fv) in
+    let fvn = flatten_name (inspect_fv fv) in
+    (* unfold the top level binding, check that it has changed, and recurse *)
+    let ty' = norm_term_env e [delta_only [fvn]] ty in
+    (* I'm not confident about using eq_term here *)
+    begin match inspect ty' with
+    | Tv_FVar fv' ->
+      if flatten_name (inspect_fv fv') = fvn
+      then mfail ("unfold_until_arrow: could not unfold: " ^ term_to_string ty) else ty'
+    | _ -> ty'
+    end
+  in
+  (* Inspect *)
+  match inspect ty with
+  | Tv_Arrow _ _ -> ty
+  | Tv_FVar fv ->
+    (* Try to unfold the top-level identifier and recurse *)
+    let ty' = unfold_fv fv in
+    unfold_until_arrow e ty'
+  | Tv_App _ _ ->
+    (* Strip all the parameters, try to unfold the head and recurse *)
+    let hd, args = collect_app ty in
+    begin match inspect hd with
+    | Tv_FVar fv ->
+      let hd' = unfold_fv fv in
+      let ty' = mk_app hd' args in
+      unfold_until_arrow e ty'
+    | _ -> mfail ("unfold_until_arrow: could not unfold: " ^ term_to_string ty)
+    end
+  | Tv_Refine bv ref ->
+    (* Continue with the type of bv *)
+    let ty' = type_of_bv bv in
+    unfold_until_arrow e ty'
+  | Tv_AscribedT body _ _
+  | Tv_AscribedC body _ _ ->
+    unfold_until_arrow e body
+  | _ ->
+    (* Other situations: don't know what to do *)
+    mfail ("unfold_until_arrow: could not unfold: " ^ term_to_string ty)
+
+/// Update the current ``typ_or_comp`` before going into the body of an abstraction.
+/// Explanations:
+/// In the case we dive into a term of the form:
+/// [> (fun x -> body) : y:ty -> body_type
+/// we need to substitute y with x in body_type to get the proper type for body.
+val abs_update_typ_or_comp : binder -> typ_or_comp -> env -> Tac typ_or_comp
+
+let _abs_update_typ (b:binder) (ty:typ) (pl:list binder) (e:env) :
+  Tac typ_or_comp =
+  (* Try to reveal an arrow *)
+  try
+    let ty' = unfold_until_arrow e ty in
+    begin match inspect ty' with
+    | Tv_Arrow b1 c1 ->
+      let c1' = subst_binder_in_comp e b1 (pack (Tv_Var (bv_of_binder b))) c1 in
+      TC_Comp c1' (b :: pl)
+    | _ -> (* Inconsistent state *)
+      mfail "_abs_update_typ: inconsistent state"
+    end
+  with
+  | MetaAnalysis msg ->
+    mfail ("_abs_update_typ: could not find an arrow in: " ^ term_to_string ty ^ ":\n" ^ msg)
+  | err -> raise err
+
+let abs_update_typ_or_comp (b:binder) (c : typ_or_comp) (e:env) : Tac typ_or_comp =
   match c with
-  | TC_Typ v m -> _abs_update_typ b v m e
-  | TC_Comp v m ->
+  | TC_Typ v pl -> _abs_update_typ b v pl e
+  | TC_Comp v pl ->
     (* Note that the computation is not necessarily pure, in which case we might
      * want to do something with the effect arguments (pre, post...) - for
      * now we just ignore them *)
     let ty = get_comp_ret_type v in
-    _abs_update_typ b ty m e
+    _abs_update_typ b ty pl e
 
 val abs_update_opt_typ_or_comp : binder -> option typ_or_comp -> env ->
-                                 Tac (env & option typ_or_comp)
+                                 Tac (option typ_or_comp)
 let abs_update_opt_typ_or_comp b opt_c e =
   match opt_c with
-  | None -> e, None
+  | None -> None
   | Some c ->
     try
-      let e, c = abs_update_typ_or_comp b c e in
-      e, Some c
-    with | MetaAnalysis msg -> e, None
+      let c = abs_update_typ_or_comp b c e in
+      Some c
+    with | MetaAnalysis msg -> None
          | err -> raise err
 
 /// Exploring a term
@@ -596,9 +701,8 @@ let rec explore_term dbg dfs #a f x ge0 pl0 c0 t0 =
       else x1, convert_ctrl_flag flag1
     | Tv_Abs br body ->
       let ge1 = genv_push_binder ge0 br false None in
-      let e2, c1 = abs_update_opt_typ_or_comp br c0 ge1.env in
-      let ge2 = { ge1 with env = e2 } in
-      explore_term dbg dfs f x0 ge2 pl1 c1 body
+      let c1 = abs_update_opt_typ_or_comp br c0 ge1.env in
+      explore_term dbg dfs f x0 ge1 pl1 c1 body
     | Tv_Arrow br c0 -> x0, Continue (* TODO: we might want to explore that *)
     | Tv_Type () -> x0, Continue
     | Tv_Refine bv ref ->
@@ -992,15 +1096,6 @@ let rec unzip #a #b (l : list (a & b)) : Tot (list a & list b) =
        let (tl1,tl2) = unzip tl in
        (hd1::tl1,hd2::tl2)
 
-/// Perform a variable substitution in a term
-val apply_subst : env -> term -> list (bv & term) -> Tac term
-let apply_subst e t subst =
-  let bl, vl = unzip subst in
-  let bl = List.Tot.map mk_binder bl in
-  let t1 = mk_abs t bl in
-  let t2 = mk_e_app t1 vl in
-  norm_term_env e [] t2
-
 /// Introduce fresh variables to generate a substitution for the variables shadowed
 /// in the current environment.
 val generate_shadowed_subst : genv -> Tac (genv & list (bv & bv))
@@ -1044,49 +1139,22 @@ let generate_shadowed_subst ge =
 /// stored in the ``typ_or_comp``.
 let typ_or_comp_to_effect_info (dbg : bool) (ge : genv) (c : typ_or_comp) :
   Tac effect_info =
-  (* Prepare the substitution of the variables from m *)
-  let m = inst_vars_of_typ_or_comp c in
-  let subst = map (fun (src, tgt) -> (src, pack(Tv_Var tgt))) m in
-  (* We need to revert the list of substitutions: the outer variables are
-   * inserted in the list first and are first at the end *)
-  let subst = rev subst in
-  let asubst x = apply_subst ge.env x subst in
-  let opt_asubst (opt : option term) : Tac (option term) =
-    match opt with
-    | None -> None
-    | Some x -> Some (asubst x)
-  in
-  let asubst_in_type_info tinfo =
-    let ty' = asubst tinfo.ty in
-    let refin' = opt_asubst tinfo.refin in
-    mk_type_info ty' refin'
-  in
-  (* Apply the substitution on the effect *)
   match c with
-  | TC_Typ ty m ->
+  | TC_Typ ty _ ->
     let tinfo = get_type_info_from_type ty in
-    let tinfo = asubst_in_type_info tinfo in
     mk_effect_info E_Total tinfo None None
-  | TC_Comp cv m ->
+  | TC_Comp cv _ ->
     let opt_einfo = comp_to_effect_info dbg cv in
     match opt_einfo with
     | None -> mfail ("typ_or_comp_to_effect_info failed on: " ^ acomp_to_string cv)
-    | Some einfo ->
-      let ret_type_info = asubst_in_type_info einfo.ei_ret_type in
-      let pre = opt_asubst einfo.ei_pre in
-      let post = opt_asubst einfo.ei_post in
-      mk_effect_info einfo.ei_type ret_type_info pre post
+    | Some einfo -> einfo
 
-/// Retrieve the list of types from the parameters stored in ``typ_or_comp``.
+(*/// Retrieve the list of types from the parameters stored in ``typ_or_comp``.
 val typ_or_comp_to_param_types : typ_or_comp -> Tot (list typ)
 
 let typ_or_comp_to_param_types c =
-  (* For now we only retrieve the types from the variables used for instantiation.
-   * Note that we may have to do something more complex (maybe the variables used
-   * for the instantiation don't have a type which exactly macthes the expected
-   * types). *)
-  let m = inst_vars_of_typ_or_comp c in
-  List.Tot.map (fun (_, x) -> type_of_bv x) m
+  let pl = params_of_typ_or_comp c in
+  List.Tot.map type_of_binder pl *)
 
 (**** Step 2 *)
 /// The retrieved type refinements and post-conditions are not instantiated (they
@@ -1644,18 +1712,21 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
             (* Retrieve the types and pair them with the parameters - note that
              * we need to reverse the list of parameters (the outer parameter was
              * added first in the list and is thus last) *)
-            let param_types = typ_or_comp_to_param_types c in
-            let params = inst_vars_of_typ_or_comp c in
-            if dbg then
-              iteri (fun i (_, bv) -> print ("Global parameter " ^ string_of_int i ^
-                                           ": " ^ bv_to_string bv)) params;
-            let params = rev (zip params param_types) in
+            let params =
+              rev (List.Tot.map (fun x -> (x, type_of_binder x)) (params_of_typ_or_comp c)) in
+//            let param_types = typ_or_comp_to_param_types c in
+//            let params = inst_vars_of_typ_or_comp c in
+//            if dbg then
+            iteri (fun i (b, _) -> print ("Global parameter " ^ string_of_int i ^
+                                        ": " ^ binder_to_string b)) params;
+//            let params = rev (zip params param_types) in
             (* Filter the shadowed parameters *)
-            let params = filter (fun ((_, bv), _) -> not (bv_is_shadowed ge1 bv)) params in
+            let params = filter (fun (b, _)-> not (binder_is_shadowed ge1 b)) params in
             (* Generate the propositions *)
-            let param_to_props (x : (bv & bv) & typ) : Tac (list term) =
-              let (_, bv), ty = x in
-              print_dbg dbg ("Generating assertions from global parameter: " ^ bv_to_string bv);
+            let param_to_props (x : (binder & typ)) : Tac (list term) =
+              let b, ty = x in
+              let bv = bv_of_binder b in
+              print_dbg dbg ("Generating assertions from global parameter: " ^ binder_to_string b);
               let tinfo = get_type_info_from_type ty in
               let v = pack (Tv_Var bv) in
               let p1 = mk_has_type v tinfo.ty in
