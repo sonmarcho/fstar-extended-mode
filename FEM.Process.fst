@@ -116,6 +116,7 @@ let print_binder_info (full : bool) (b : binder) : Tac unit =
     | Q_Implicit -> "Implicit"
     | Q_Explicit -> "Explicit"
     | Q_Meta t -> "Meta: " ^ term_to_string t
+    | Q_Meta_attr t -> "Meta attribute: " ^ term_to_string t
   in
   let bview = inspect_bv bv in
   if full then
@@ -455,6 +456,7 @@ let is_total_or_gtotal c =
 /// lambda (in an order reverse to the instantiation order), so that we can correctly
 /// instantiate the pre/post-conditions and type refinements.
 // TODO: actually we only need to carry a comp (if typ: consider it total)
+(* TODO: remove the instantiation: instantiate incrementally *)
 noeq type typ_or_comp =
 | TC_Typ : v:typ -> m:list (bv & bv) -> typ_or_comp
 | TC_Comp : v:comp -> m:list (bv & bv) -> typ_or_comp
@@ -491,7 +493,9 @@ let _abs_update_typ (b:binder) (ty:typ) (m:list (bv & bv)) (e:env) :
   begin match inspect ty with
   | Tv_Arrow b1 c1 ->
     push_binder e b1, TC_Comp c1 ((bv_of_binder b1, bv_of_binder b) :: m)
-  | _ -> mfail ("abs_update_typ_or_comp: not an arrow: " ^ term_to_string ty)
+  | _ ->
+    (* TODO: look for top-level definitions and unfold *)
+    mfail ("abs_update_typ_or_comp: not an arrow: " ^ term_to_string ty)
   end
 
 let abs_update_typ_or_comp (b:binder) (c : typ_or_comp) (e:env) : Tac (env & typ_or_comp) =
@@ -510,8 +514,11 @@ let abs_update_opt_typ_or_comp b opt_c e =
   match opt_c with
   | None -> e, None
   | Some c ->
-    let e, c = abs_update_typ_or_comp b c e in
-    e, Some c
+    try
+      let e, c = abs_update_typ_or_comp b c e in
+      e, Some c
+    with | MetaAnalysis msg -> e, None
+         | err -> raise err
 
 /// Exploring a term
 
