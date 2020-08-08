@@ -579,6 +579,29 @@ let rec unfold_until_arrow e ty =
     (* Other situations: don't know what to do *)
     mfail ("unfold_until_arrow: could not unfold: " ^ term_to_string ty)
 
+/// Instantiate a comp
+val inst_comp_once : env -> comp -> term -> Tac comp
+let inst_comp_once e c t =
+  let ty = get_comp_ret_type c in
+  let ty' = unfold_until_arrow e ty in
+  begin match inspect ty' with
+  | Tv_Arrow b1 c1 ->
+    subst_binder_in_comp e b1 t c1
+  | _ -> (* Inconsistent state *)
+    mfail "inst_comp_once: inconsistent state"
+  end
+
+val inst_comp : env -> comp -> list term -> Tac comp
+let rec inst_comp e c tl =
+  match tl with
+  | [] -> c
+  | t :: tl' ->
+    let c' = try inst_comp_once e c t
+             with | MetaAnalysis msg -> mfail ("inst_comp: error: " ^ msg)
+                  | err -> raise err
+    in
+    inst_comp e c' tl'
+
 /// Update the current ``typ_or_comp`` before going into the body of an abstraction.
 /// Explanations:
 /// In the case we dive into a term of the form:
@@ -984,6 +1007,39 @@ let compute_effect_info dbg e tm =
   | Some c -> comp_to_effect_info dbg c
   | None -> None
 
+/// Converts a ``typ_or_comp`` to an ``effect_info`` by applying the instantiation
+/// stored in the ``typ_or_comp``.
+let typ_or_comp_to_effect_info (dbg : bool) (ge : genv) (c : typ_or_comp) :
+  Tac effect_info =
+  match c with
+  | TC_Typ ty _ ->
+    let tinfo = get_type_info_from_type ty in
+    mk_effect_info E_Total tinfo None None
+  | TC_Comp cv _ ->
+    let opt_einfo = comp_to_effect_info dbg cv in
+    match opt_einfo with
+    | None -> mfail ("typ_or_comp_to_effect_info failed on: " ^ acomp_to_string cv)
+    | Some einfo -> einfo
+
+/// `tcc` often returns a lifted effect which is not what we want (ex.: a
+/// lemma called inside a Stack function may have been lifted to Stack, but
+/// when studying this term effect, we want to retrieve its non-lifted effect).
+/// The workaround is to decompose the term if it is an application, then retrieve
+/// the effect of the head, and reconstruct it.
+/// Note: I tried inspecting then repacking the term before calling ``tcc`` to
+/// see if it allows to "forget" the context: it doesn't work.
+val tcc_no_lift : env -> term -> Tac comp
+
+let tcc_no_lift e t =
+  match inspect t with
+  | Tv_App _ _ ->
+    let hd, args = collect_app t in
+    let c = tcc e hd in
+    inst_comp e c (List.Tot.map fst args)
+  | _ ->
+    (* Fall back to ``tcc`` *)
+    tcc e t
+
 /// Returns the effectful information about a term
 val compute_eterm_info : dbg:bool -> env -> term -> Tac eterm_info
 
@@ -993,7 +1049,7 @@ let compute_eterm_info (dbg : bool) (e : env) (t : term) =
   let hd, parameters = decompose_application e t in
   try
     begin
-    let c : comp = tcc e t in
+    let c : comp = tcc_no_lift e t in
     let opt_einfo = comp_to_effect_info dbg c in
     match opt_einfo with
     | None -> mfail ("compute_eterm_info: failed on: " ^ term_to_string t)
@@ -1134,20 +1190,6 @@ let generate_shadowed_subst ge =
   let bl = List.Tot.map mk_binder bvl in
   let dummy = mk_abs (`()) bl in
   _generate_shadowed_subst ge dummy bvl
-
-/// Converts a ``typ_or_comp`` to an ``effect_info`` by applying the instantiation
-/// stored in the ``typ_or_comp``.
-let typ_or_comp_to_effect_info (dbg : bool) (ge : genv) (c : typ_or_comp) :
-  Tac effect_info =
-  match c with
-  | TC_Typ ty _ ->
-    let tinfo = get_type_info_from_type ty in
-    mk_effect_info E_Total tinfo None None
-  | TC_Comp cv _ ->
-    let opt_einfo = comp_to_effect_info dbg cv in
-    match opt_einfo with
-    | None -> mfail ("typ_or_comp_to_effect_info failed on: " ^ acomp_to_string cv)
-    | Some einfo -> einfo
 
 (*/// Retrieve the list of types from the parameters stored in ``typ_or_comp``.
 val typ_or_comp_to_param_types : typ_or_comp -> Tot (list typ)
@@ -2260,6 +2302,7 @@ let analyze_effectful_term dbg with_gpre with_gpost res =
     | _ -> (ge, res.res, compute_eterm_info dbg ge.env res.res, None, None, false)
     end
   in
+  print_dbg dbg ("[> Focused term constructor: " ^ term_construct studied_term);
   print_dbg dbg ("[> Environment information (after effect analysis):\n" ^ genv_to_string ge1);
   (* Check if the considered term is an assert, in which case we will only
    * display the precondition (otherwise we introduce too many assertions
