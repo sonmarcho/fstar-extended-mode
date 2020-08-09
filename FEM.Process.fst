@@ -51,7 +51,8 @@ let bv_eq (bv1 bv2 : bv) =
   let bvv1 = inspect_bv bv1 in
   let bvv2 = inspect_bv bv2 in
   (* We don't check for type equality: the fact that no two different binders
-   * have the same name and index is an invariant which must be enforced *)
+   * have the same name and index is an invariant which must be enforced -
+   * and actually we could limit ourselves to checking the index *)
   bvv1.bv_ppname = bvv2.bv_ppname && bvv1.bv_index = bvv2.bv_index
 
 val name_eq : name -> name -> Tot bool
@@ -74,45 +75,79 @@ let fv_eq_name fv n =
   let fvn = inspect_fv fv in
   name_eq fvn n
 
+(*** Debugging *)
+/// Some debugging facilities
+val print_dbg : bool -> string -> Tac unit
+let print_dbg debug s =
+  if debug then print s
+
+/// Return the qualifier of a term as a string
+val term_view_construct (t : term_view) : Tac string
+
+let term_view_construct (t : term_view) : Tac string =
+  match t with
+  | Tv_Var _ -> "Tv_Var"
+  | Tv_BVar _ -> "Tv_BVar"
+  | Tv_FVar _ -> "Tv_FVar"
+  | Tv_App _ _ -> "Tv_App"
+  | Tv_Abs _ _ -> "Tv_Abs"
+  | Tv_Arrow _ _ -> "Tv_Arrow"
+  | Tv_Type _ -> "Tv_Type"
+  | Tv_Refine _ _ -> "Tv_Refine"
+  | Tv_Const _ -> "Tv_Const"
+  | Tv_Uvar _ _ -> "Tv_Uvar"
+  | Tv_Let _ _ _ _ _ -> "Tv_Let"
+  | Tv_Match _ _ -> "Tv_Match"
+  | Tv_AscribedT _ _ _ -> "Tv_AscribedT"
+  | Tv_AscribedC _ _ _ -> "Tv_AScribedC"
+  | _ -> "Tv_Unknown"
+
+val term_construct (t : term) : Tac string
+
+let term_construct (t : term) : Tac string =
+  term_view_construct (inspect t)
+
+
 (*** Pretty-printing *)
 /// There are many issues linked to terms (pretty) printing.
 /// The first issue is that when parsing terms, F* automatically inserts
 /// abscriptions, which then clutter the terms printed to the user. The current
 /// workaround is to filter those ascriptions in the terms before exploiting them.
 
-val filter_ascriptions : term -> Tac term
+val filter_ascriptions : bool -> term -> Tac term
 
-let rec filter_ascriptions t =
+let rec filter_ascriptions dbg t =
+  print_dbg dbg ("[> filter_ascriptions: " ^ term_view_construct t ^ ": " ^ term_to_string t );
   match inspect t with
   | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> t
   | Tv_App hd (a,qual) ->
-    let hd = filter_ascriptions hd in
-    let a = filter_ascriptions a in
+    let hd = filter_ascriptions dbg hd in
+    let a = filter_ascriptions dbg a in
     pack (Tv_App hd (a, qual))
   | Tv_Abs br body ->
-    let body = filter_ascriptions body in
+    let body = filter_ascriptions dbg body in
     pack (Tv_Abs br body)
   | Tv_Arrow br c0 -> t (* TODO: we might want to explore that *)
   | Tv_Type () -> t
   | Tv_Refine bv ref ->
     (* TODO: also filter the type of the bv *)
-    let ref = filter_ascriptions ref in
+    let ref = filter_ascriptions dbg ref in
     pack (Tv_Refine bv ref)
   | Tv_Const _ -> t
   | Tv_Uvar _ _ -> t
   | Tv_Let recf attrs bv def body ->
     (* The attributes shouldn't need to be filtered *)
-    let def = filter_ascriptions def in
-    let body = filter_ascriptions body in
+    let def = filter_ascriptions dbg def in
+    let body = filter_ascriptions dbg body in
     pack (Tv_Let recf attrs bv def body)
   | Tv_Match scrutinee branches ->
-    let scrutinee = filter_ascriptions scrutinee in
+    let scrutinee = filter_ascriptions dbg scrutinee in
     (* For the branches: we don't need to explore the patterns *)
-    let branches = map (fun (pat, tm) -> (pat, filter_ascriptions tm)) branches in
+    let branches = map (fun (pat, tm) -> (pat, filter_ascriptions dbg tm)) branches in
     pack (Tv_Match scrutinee branches)
   | Tv_AscribedT e _ _
   | Tv_AscribedC e _ _ ->
-    filter_ascriptions e
+    filter_ascriptions dbg e
   | _ ->
     (* Unknown *)
     t
@@ -122,8 +157,8 @@ let rec filter_ascriptions t =
 /// important: we can't apply it on all the assertions we export to the user, just
 /// before exporting, because we may have inserted ascriptions on purpose, which
 /// would then be filtered away.
-val prettify_term : term -> Tac term
-let prettify_term t = filter_ascriptions t
+val prettify_term : bool -> term -> Tac term
+let prettify_term dbg t = filter_ascriptions dbg t
 
 (*** General utilities *)
 // TODO: use more
@@ -138,11 +173,6 @@ let opt_tapply #a #b f x =
   match x with
   | None -> None
   | Some x' -> Some (f x')
-
-/// Some debugging facilities
-val print_dbg : bool -> string -> Tac unit
-let print_dbg debug s =
-  if debug then print s
 
 val option_to_string : (#a : Type) -> (a -> Tot string) -> option a -> Tot string
 let option_to_string #a f x =
@@ -364,18 +394,13 @@ val apply_subst : env -> term -> list (bv & term) -> Tac term
 // Whenever we encounter a construction which introduces a binder, we need to apply
 // the substitution in the binder type. Note that this gives a new binder, with
 // which we need to replace the old one in what follows
+
 val apply_subst_in_bv : env -> bv -> list (bv & term) -> Tac (bv & list (bv & term))
 val apply_subst_in_binder : env -> binder -> list (bv & term) -> Tac (binder & list (bv & term))
 val apply_subst_in_comp : env -> comp -> list (bv & term) -> Tac comp
 val apply_subst_in_pattern : env -> pattern -> list (bv & term) -> Tac (pattern & list (bv & term))
-(*let apply_subst e t subst =
-  let bl, vl = unzip subst in
-  let bl = List.Tot.map mk_binder bl in
-  let t1 = mk_abs t bl in
-  let t2 = mk_e_app t1 vl in
-  norm_term_env e [] t2 *)
 
-let rec apply_subst e t subst =
+(*let rec apply_subst e t subst =
   match inspect t with
   | Tv_Var b ->
     begin match bind_map_get subst b with
@@ -498,7 +523,43 @@ and apply_subst_in_pattern e pat subst =
   | Pat_Dot_Term bv t ->
     let bv, subst = apply_subst_in_bv e bv subst in
     let t = apply_subst e t subst in
-    Pat_Dot_Term bv t, subst
+    Pat_Dot_Term bv t, subst *)
+
+let apply_subst e t subst =
+  let bl, vl = unzip subst in
+  let bl = List.Tot.map mk_binder bl in
+  let t1 = mk_abs t bl in
+  let t2 = mk_e_app t1 vl in
+  norm_term_env e [] t2
+
+let apply_subst_in_comp e c subst =
+  let subst = (fun x -> apply_subst e x subst) in
+  let subst_in_aqualv a : Tac aqualv =
+    match a with
+    | Q_Implicit
+    | Q_Explicit -> a
+    | Q_Meta t -> Q_Meta (subst t)
+    | Q_Meta_attr t -> Q_Meta_attr (subst t)
+  in
+  match inspect_comp c with
+  | C_Total ret decr ->
+    let ret = subst ret in
+    let decr = opt_tapply subst decr in
+    pack_comp (C_Total ret decr)
+  | C_GTotal ret decr ->
+    let ret = subst ret in
+    let decr = opt_tapply subst decr in
+    pack_comp (C_GTotal ret decr)
+  | C_Lemma pre post patterns ->
+    let pre = subst pre in
+    let post = subst post in
+    let patterns = subst patterns in
+    pack_comp (C_Lemma pre post patterns)
+  | C_Eff us eff_name result eff_args ->
+    let result = subst result in
+    let eff_args = map (fun (x, a) -> (subst x, subst_in_aqualv a)) eff_args in
+    pack_comp (C_Eff us eff_name result eff_args)
+
 
 val opt_apply_subst : env -> option term -> list (bv & term) -> Tac (option term)
 let opt_apply_subst e opt_t subst =
@@ -514,33 +575,6 @@ let pure_effect_qn = "Prims.PURE"
 let pure_hoare_effect_qn = "Prims.Pure"
 let stack_effect_qn = "FStar.HyperStack.ST.Stack"
 let st_effect_qn = "FStar.HyperStack.ST.ST"
-
-
-/// Return the qualifier of a term as a string
-val term_view_construct (t : term_view) : Tac string
-
-let term_view_construct (t : term_view) : Tac string =
-  match t with
-  | Tv_Var _ -> "Tv_Var"
-  | Tv_BVar _ -> "Tv_BVar"
-  | Tv_FVar _ -> "Tv_FVar"
-  | Tv_App _ _ -> "Tv_App"
-  | Tv_Abs _ _ -> "Tv_Abs"
-  | Tv_Arrow _ _ -> "Tv_Arrow"
-  | Tv_Type _ -> "Tv_Type"
-  | Tv_Refine _ _ -> "Tv_Refine"
-  | Tv_Const _ -> "Tv_Const"
-  | Tv_Uvar _ _ -> "Tv_Uvar"
-  | Tv_Let _ _ _ _ _ -> "Tv_Let"
-  | Tv_Match _ _ -> "Tv_Match"
-  | Tv_AscribedT _ _ _ -> "Tv_AscribedT"
-  | Tv_AscribedC _ _ _ -> "Tv_AScribedC"
-  | _ -> "Tv_Unknown"
-
-val term_construct (t : term) : Tac string
-
-let term_construct (t : term) : Tac string =
-  term_view_construct (inspect t)
 
 /// Return the qualifier of a comp as a string
 val comp_qualifier (c : comp) : Tac string
@@ -618,13 +652,13 @@ let get_type_info_from_type (ty:typ) : Tac type_info =
   | Tv_Refine bv refin ->
     let bview : bv_view = inspect_bv bv in
     let raw_type : typ = bview.bv_sort in
-    let raw_type = prettify_term raw_type in
+    let raw_type = prettify_term false raw_type in
     let b : binder = mk_binder bv in
-    let refin = prettify_term refin in
+    let refin = prettify_term false refin in
     let refin = pack (Tv_Abs b refin) in
     mk_type_info raw_type (Some refin)
   | _ ->
-    let ty = prettify_term ty in
+    let ty = prettify_term false ty in
     mk_type_info ty None
 
 #push-options "--ifuel 1"
@@ -657,16 +691,28 @@ let is_total_or_gtotal c =
 /// while exploring this term. It is especially useful to generate post-conditions,
 /// for example. We store the list of abstractions encountered so far at the
 /// same time.
+/// Note that in order to keep track of the type correctly, whenever we encounter
+/// an abstraction in the term, we need to check that the term' type is an arrow,
+/// in which case we need to do a substitution (the arrow takes as first parameter
+/// which is not the same as the abstraction's binder). As the substitution is costly
+/// (we do it by using the normalizer, but the "final" return term is the whole
+/// function's body type, which is often super big) we do it lazily: we count how
+/// many parameters we have encountered and not substituted, and "flush" when we
+/// really need to inspect the typ_or_comp.
 // TODO: actually we only need to carry a comp (if typ: consider it total)
 (* TODO: remove the instantiation: instantiate incrementally *)
 noeq type typ_or_comp =
-| TC_Typ : v:typ -> pl:list binder -> typ_or_comp
-| TC_Comp : v:comp -> pl:list binder -> typ_or_comp
+| TC_Typ : v:typ -> pl:list binder -> num_unflushed:nat -> typ_or_comp
+| TC_Comp : v:comp -> pl:list binder -> num_unflushed:nat -> typ_or_comp
 
 /// Return the list of parameters stored in a ``typ_or_comp``
 let params_of_typ_or_comp (c : typ_or_comp) : list binder =
   match c with
-  | TC_Typ _ pl | TC_Comp _ pl -> pl
+  | TC_Typ _ pl _ | TC_Comp _ pl _ -> pl
+
+let num_unflushed_of_typ_or_comp (c : typ_or_comp) : nat =
+match c with
+  | TC_Typ _ _ n | TC_Comp _ _ n -> n
 
 /// Compute a ``typ_or_comp`` from the type of a term
 // TODO: try to get a more precise comp
@@ -683,7 +729,7 @@ let safe_typ_or_comp dbg e t =
     print_dbg dbg ("[> safe_typ_or_comp:" ^
                    "\n-term: " ^ term_to_string t ^
                    "\n-comp: " ^ acomp_to_string c);
-    Some (TC_Comp c [])
+    Some (TC_Comp c [] 0)
 
 val subst_bv_in_comp : env -> bv -> term -> comp -> Tac comp
 let subst_bv_in_comp e b t c =
@@ -773,6 +819,8 @@ let rec inst_comp e c tl =
 /// In the case we dive into a term of the form:
 /// [> (fun x -> body) : y:ty -> body_type
 /// we need to substitute y with x in body_type to get the proper type for body.
+/// Note that we checked, and in practice the binders are indeed different.
+// TODO: actually, we updated it to do a lazy instantiation
 val abs_update_typ_or_comp : binder -> typ_or_comp -> env -> Tac typ_or_comp
 
 let _abs_update_typ (b:binder) (ty:typ) (pl:list binder) (e:env) :
@@ -783,7 +831,7 @@ let _abs_update_typ (b:binder) (ty:typ) (pl:list binder) (e:env) :
     begin match inspect ty' with
     | Tv_Arrow b1 c1 ->
       let c1' = subst_binder_in_comp e b1 (pack (Tv_Var (bv_of_binder b))) c1 in
-      TC_Comp c1' (b :: pl)
+      TC_Comp c1' (b :: pl) 0
     | _ -> (* Inconsistent state *)
       mfail "_abs_update_typ: inconsistent state"
     end
@@ -794,13 +842,15 @@ let _abs_update_typ (b:binder) (ty:typ) (pl:list binder) (e:env) :
 
 let abs_update_typ_or_comp (b:binder) (c : typ_or_comp) (e:env) : Tac typ_or_comp =
   match c with
-  | TC_Typ v pl -> _abs_update_typ b v pl e
-  | TC_Comp v pl ->
+  (*| TC_Typ v pl n -> _abs_update_typ b v pl e
+  | TC_Comp v pl n ->
     (* Note that the computation is not necessarily pure, in which case we might
      * want to do something with the effect arguments (pre, post...) - for
      * now we just ignore them *)
     let ty = get_comp_ret_type v in
-    _abs_update_typ b ty pl e
+    _abs_update_typ b ty pl e *)
+  | TC_Typ v pl n -> TC_Typ v (b::pl) (n+1)
+  | TC_Comp v pl n -> TC_Comp v (b::pl) (n+1)
 
 val abs_update_opt_typ_or_comp : binder -> option typ_or_comp -> env ->
                                  Tac (option typ_or_comp)
@@ -813,6 +863,51 @@ let abs_update_opt_typ_or_comp b opt_c e =
       Some c
     with | MetaAnalysis msg -> None
          | err -> raise err
+
+/// Flush the instantiation stored in a ``typ_or_comp``
+val flush_typ_or_comp : env -> typ_or_comp ->
+                        Tac (tyc:typ_or_comp{num_unflushed_of_typ_or_comp tyc = 0})
+
+/// Strip all the arrows we can without doing any instantiation. When we can't
+/// strip arrows anymore, do the instantiation at once.
+/// We keep track of two list of binders:
+/// - the remaining binders
+/// - the instantiation corresponding to the arrows we have stripped so far, and
+///   which will be applied all at once
+let rec _flush_typ_or_comp_comp (e:env) (rem : list binder) (inst : list (bv & term))
+                                (c:comp) : Tac comp =
+  let flush c inst =
+    let inst = List.rev inst in
+    apply_subst_in_comp e c inst
+  in
+  match rem with
+  | [] ->
+    (* No more binders: flush *)
+    flush c inst
+  | b :: rem' ->
+    (* Check if the return type is an arrow, if not flush and normalize *)
+    let ty = get_comp_ret_type c in
+    let ty, inst' =
+      if Tv_Arrow? (inspect ty) then ty, inst
+      else get_comp_ret_type (flush c inst), []
+    in
+    match inspect ty with
+    | Tv_Arrow b' c' ->
+      _flush_typ_or_comp_comp e rem' ((bv_of_binder b', pack (Tv_Var (bv_of_binder b)))::inst) c'
+    | _ -> mfail "_flush_typ_or_comp: inconsistant state"
+
+let flush_typ_or_comp e tyc =
+  let flush_comp pl n c : Tac (tyc:typ_or_comp{num_unflushed_of_typ_or_comp tyc = 0})  =
+    let pl', _ = List.Tot.splitAt n pl in
+    let pl' = List.rev pl' in
+    let c = _flush_typ_or_comp_comp e pl' [] c in
+    TC_Comp c pl 0
+  in
+  match tyc with
+  | TC_Typ ty pl n ->
+    let c = pack_comp (C_Total ty None) in
+    flush_comp pl n c
+  | TC_Comp c pl n -> flush_comp pl n c
 
 /// Exploring a term
 
@@ -907,7 +1002,7 @@ let rec explore_term dbg dfs #a f x ge0 pl0 c0 t0 =
       (* Binding definition exploration - for the target computation: initially we
        * used the type of the definition, however it is often unnecessarily complex.
        * Now, we use the type of the binder used for the binding. *)
-      let def_c = Some (TC_Typ (type_of_bv bv) []) in
+      let def_c = Some (TC_Typ (type_of_bv bv) [] 0) in
       let explore_def x = explore_term dbg dfs f x ge0 pl1 def_c def in
       (* Exploration of the following instructions *)
       let ge1 = genv_push_bv ge0 bv false (Some def) in
@@ -936,14 +1031,14 @@ let rec explore_term dbg dfs #a f x ge0 pl0 c0 t0 =
       (* Explore the branches *)
       fold_left explore_branch x1 branches
     | Tv_AscribedT e ty tac ->
-      let c1 = Some (TC_Typ ty []) in
+      let c1 = Some (TC_Typ ty [] 0) in
       let x1, flag = explore_term dbg dfs #a f x0 ge0 pl1 None ty in
       if flag = Continue then
         explore_term dbg dfs #a f x1 ge0 pl1 c1 e
       else x1, convert_ctrl_flag flag
     | Tv_AscribedC e c1 tac ->
       (* TODO: explore the comp *)
-      explore_term dbg dfs #a f x0 ge0 pl1 (Some (TC_Comp c1 [])) e
+      explore_term dbg dfs #a f x0 ge0 pl1 (Some (TC_Comp c1 [] 0)) e
     | _ ->
       (* Unknown *)
       x0, Continue
@@ -1140,15 +1235,15 @@ let comp_view_to_effect_info dbg cv =
     Some (mk_effect_info E_Total ret_type_info None None)
   | C_Lemma pre post patterns ->
     (* We use unit as the return type information *)
-    let pre = prettify_term pre in
-    let post = prettify_term post in
+    let pre = prettify_term dbg pre in
+    let post = prettify_term dbg post in
     Some (mk_effect_info E_Lemma unit_type_info (Some pre) (Some post))
   | C_Eff univs eff_name ret_ty eff_args ->
     print_dbg dbg ("comp_view_to_effect_info: C_Eff " ^ flatten_name eff_name);
     let ret_type_info = get_type_info_from_type ret_ty in
     let etype = effect_name_to_type eff_name in
     let mk_res = mk_effect_info etype ret_type_info in
-    let eff_args = map (fun (x,a) -> (prettify_term x, a)) eff_args in
+    let eff_args = map (fun (x,a) -> (prettify_term dbg x, a)) eff_args in
     begin match etype, eff_args with
     | E_PURE, [(pre, _)] -> Some (mk_res (Some pre) None)
     | E_Pure, [(pre, _); (post, _)]
@@ -1176,19 +1271,30 @@ let compute_effect_info dbg e tm =
   | Some c -> comp_to_effect_info dbg c
   | None -> None
 
-/// Converts a ``typ_or_comp`` to an ``effect_info`` by applying the instantiation
+/// Converts a ``typ_or_comp`` to an ``effect_info`` by flushing the instantiations
 /// stored in the ``typ_or_comp``.
 let typ_or_comp_to_effect_info (dbg : bool) (ge : genv) (c : typ_or_comp) :
   Tac effect_info =
-  match c with
-  | TC_Typ ty _ ->
+(*  match c with
+  | TC_Typ ty pl num_unflushed ->
     let tinfo = get_type_info_from_type ty in
     mk_effect_info E_Total tinfo None None
-  | TC_Comp cv _ ->
+  | TC_Comp cv pl num_unflushed ->
+    let opt_einfo = comp_to_effect_info dbg cv in
+    match opt_einfo with
+    | None -> mfail ("typ_or_comp_to_effect_info failed on: " ^ acomp_to_string cv)
+    | Some einfo -> einfo *)
+  let c = flush_typ_or_comp ge.env c in
+  match c with
+  | TC_Typ ty _ _ ->
+    let tinfo = get_type_info_from_type ty in
+    mk_effect_info E_Total tinfo None None
+  | TC_Comp cv _ _ ->
     let opt_einfo = comp_to_effect_info dbg cv in
     match opt_einfo with
     | None -> mfail ("typ_or_comp_to_effect_info failed on: " ^ acomp_to_string cv)
     | Some einfo -> einfo
+
 
 /// ``tcc`` often returns a lifted effect which is not what we want (ex.: a
 /// lemma called inside a Stack function may have been lifted to Stack, but
@@ -2829,7 +2935,7 @@ let unfold_in_assert_or_assume dbg ares =
   let find_in_whole_term () : Tac _ =
     match find_focused_in_term ares.res with
     | Some res ->
-      ares.res, res, (fun x -> prettify_term x), true
+      ares.res, res, (fun x -> x <: Tac term), true
     | None -> mfail "unfold_in_assert_or_assume: could not find a focused term in the assert"
   in
   (* - subterm: the subterm of the assertion in which we found the focused term
@@ -2851,7 +2957,7 @@ let unfold_in_assert_or_assume dbg ares =
                        "\n- left   : " ^ term_to_string l ^
                        "\n- right  : " ^ term_to_string r ^
                        "\n- focused: " ^ term_to_string res.res);
-        let rebuild t = mk_eq kd (prettify_term t) r in
+        let rebuild t : Tac term = mk_eq kd t r in
         l, res, rebuild, true
       | None ->
         begin match find_focused_in_term r with
@@ -2860,7 +2966,7 @@ let unfold_in_assert_or_assume dbg ares =
                  "\n- left   : " ^ term_to_string l ^
                  "\n- right  : " ^ term_to_string r ^
                  "\n- focused: " ^ term_to_string res.res);
-          let rebuild (t : term) : Tac term = mk_eq kd l (prettify_term t) in
+          let rebuild (t : term) : Tac term = mk_eq kd l t in
           r, res, rebuild, false
         | None ->
           mfail "unfold_in_assert_or_assume: could not find a focused term in the assert"
@@ -2946,6 +3052,7 @@ let unfold_in_assert_or_assume dbg ares =
   in
   (* Create the assertions to output *)
   let final_assert = rebuild unf_tm in
+  let final_assert = prettify_term dbg final_assert in
   print_dbg dbg ("-> Final assertion:\n" ^ term_to_string final_assert);
   let asserts =
     if insert_before then mk_assertions [final_assert] [] else mk_assertions [] [final_assert]
