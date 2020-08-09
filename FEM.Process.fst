@@ -2204,14 +2204,10 @@ let result_to_printout (prefix:string) (res:export_result) :
   in
   (* Error message *)
   let str = str ^ error_message_to_printout prefix err in
-//  printout_error_message prefix err;
   (* Assertions *)
-//  printout_propositions ge (prefix ^ ":pres") pres;
-//  printout_propositions ge (prefix ^ ":posts") posts;
-//  print (prefix ^ ":END")
   let str = str ^ propositions_to_printout ge (prefix ^ ":pres") pres in
   let str = str ^ propositions_to_printout ge (prefix ^ ":posts") posts in
-  str ^ prefix ^ ":END"
+  str ^ prefix ^ ":END\n" ^ "%FEM:FSTAR_META:END%"
 
 let printout_result (prefix:string) (res:export_result) :
   Tac unit =

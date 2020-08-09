@@ -31,6 +31,8 @@
 
 (defconst fem-message-prefix "[F*] ")
 (defconst fem-tactic-message-prefix "[F*] TAC>> ")
+(defconst fem-start-fstar-msg "%FEM:FSTAR_META:START%")
+(defconst fem-end-fstar-msg "[F*] %FEM:FSTAR_META:END%")
 
 (defconst fem-messages-buffer "*Messages*")
 
@@ -1506,17 +1508,32 @@ If F* succeeded, extract the information and add it to the proof."
   (unless (eq STATUS 'interrupted)
     ;; Delete the overlay
     (delete-overlay OVERLAY)
-    ;; Display the message and exit if error
-    ;; (if (eq STATUS 'success)
-    ;;     (progn
-    ;;       (fem-log-dbg "F* succeeded")
-    ;;       ;; The sent query "counts for nothing" so we need to pop it to reset
-    ;;       ;; F* to its previous state
-    ;;       (fstar-subp--pop))
-    ;;   (progn
-    ;;     (when (y-or-n-p "F* failed: do you want to see the F* query?")
-    ;;       (switch-to-buffer fem-process-buffer1))
-    ;;     (error "F* failed")))
+    ;; The F* query may have failed on purpose, because we may have aborted
+    ;; the proof during post-processing to save time (previously, we ended
+    ;; the post-processing with a call to `trefl()`, but this is actually
+    ;; super expensive).
+    ;; If F* succeeded, we need to pop the state. If it failed, we need to
+    ;; check for information in the output indicating an unexpected failure
+    ;; or a failure on purpose.
+    (if (eq STATUS 'success)
+        (progn
+          (fem-log-dbg "F* succeeded")
+          ;; The sent query "counts for nothing" so we need to pop it to reset
+          ;; F* to its previous state
+          (fstar-subp--pop))
+      (progn
+        ;; Check if it was on purpose
+        (let (($prev-buffer (current-buffer)) ($no-error nil))
+          (switch-to-buffer fem-messages-buffer)
+          (goto-char (point-max))
+          (when (search-backward fem-start-fstar-msg (point-min) t)
+            (setq $no-error (search-forward fem-end-fstar-msg (point-max) t)))
+          (switch-to-buffer $prev-buffer)
+          (when (not $no-error)
+            (when (y-or-n-p "F* failed: do you want to see the F* query?")
+              (switch-to-buffer fem-process-buffer1))
+            (error "F* failed"))
+          (fem-log-dbg "F* succeeded (the post-processing aborted on purpose))"))))
     ;; If we reach this point it means there was no error: we can extract
     ;; the generated information and add it to the code
     ;;
@@ -2285,6 +2302,8 @@ OVERLAY_END gives the position at which to stop the overlay."
     (fstar-subp-set-status $overlay 'busy)
     ;; Query F*
     (fem-log-dbg "sending query to F*:[\n%s\n]" PAYLOAD)
+    ;; Before querying F*, log a message signifying the beginning of the F* output
+    (message "%s" fem-start-fstar-msg)
     (fstar-subp--query (fstar-subp--push-query $beg `full PAYLOAD)
                        (apply-partially CONTINUATION $overlay))))
 
