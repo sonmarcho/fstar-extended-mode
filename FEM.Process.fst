@@ -14,8 +14,6 @@ open FStar.Mul
 
 #push-options "--z3rlimit 15 --fuel 0 --ifuel 1"
 
-let print_info = print
-
 (* TODO: move to FStar.Tactics.Util.fst *)
 #push-options "--ifuel 1"
 val iteri_aux: int -> (int -> 'a -> Tac unit) -> list 'a -> Tac unit
@@ -125,11 +123,7 @@ let rec filter_ascriptions t =
 /// before exporting, because we may have inserted ascriptions on purpose, which
 /// would then be filtered away.
 val prettify_term : term -> Tac term
-let prettify_term t =
-  print_info "start prettify";
-  let t' = filter_ascriptions t in
-  print_info "end prettify";
-  t'
+let prettify_term t = filter_ascriptions t
 
 (*** General utilities *)
 // TODO: use more
@@ -785,15 +779,10 @@ let _abs_update_typ (b:binder) (ty:typ) (pl:list binder) (e:env) :
   Tac typ_or_comp =
   (* Try to reveal an arrow *)
   try
-    print_info "starting unfold_until_arrow";
-//    print_info ("_abs_update_typ: " ^ term_to_string ty);
     let ty' = unfold_until_arrow e ty in
-    print_info "ended unfold_until_arrow";
     begin match inspect ty' with
     | Tv_Arrow b1 c1 ->
-      print_info "starting subst_binder_in_comp";
       let c1' = subst_binder_in_comp e b1 (pack (Tv_Var (bv_of_binder b))) c1 in
-      print_info "ended subst_binder_in_comp";
       TC_Comp c1' (b :: pl)
     | _ -> (* Inconsistent state *)
       mfail "_abs_update_typ: inconsistent state"
@@ -810,9 +799,7 @@ let abs_update_typ_or_comp (b:binder) (c : typ_or_comp) (e:env) : Tac typ_or_com
     (* Note that the computation is not necessarily pure, in which case we might
      * want to do something with the effect arguments (pre, post...) - for
      * now we just ignore them *)
-    print_info "starting get_comp_ret_type";
     let ty = get_comp_ret_type v in
-    print_info "starting _apt_update_typ";
     _abs_update_typ b ty pl e
 
 val abs_update_opt_typ_or_comp : binder -> option typ_or_comp -> env ->
@@ -885,7 +872,6 @@ val explore_pattern :
 
 (* TODO: carry around the list of encompassing terms *)
 let rec explore_term dbg dfs #a f x ge0 pl0 c0 t0 =
-  print_info ("explore_term: " ^ term_construct t0);
   print_dbg dbg ("[> explore_term: " ^ term_construct t0 ^ ":\n" ^ term_to_string t0);
   let tv0 = inspect t0 in
   let x0, flag = f x ge0 pl0 c0 tv0 in
@@ -903,11 +889,8 @@ let rec explore_term dbg dfs #a f x ge0 pl0 c0 t0 =
         explore_term dbg dfs f x1 ge0 pl1 None hd
       else x1, convert_ctrl_flag flag1
     | Tv_Abs br body ->
-      print_info ("starting genv_push_binder");
       let ge1 = genv_push_binder ge0 br false None in
-      print_info ("starting abs_update_opt_typ_or_comp");
       let c1 = abs_update_opt_typ_or_comp br c0 ge1.env in
-      print_info ("recursion");
       explore_term dbg dfs f x0 ge1 pl1 c1 body
     | Tv_Arrow br c0 -> x0, Continue (* TODO: we might want to explore that *)
     | Tv_Type () -> x0, Continue
@@ -2497,17 +2480,13 @@ let analyze_effectful_term dbg with_gpre with_gpost res =
   (* TODO: use bv rather than term for ret_arg *)
   let ret_arg = opt_tapply (fun x -> pack (Tv_Var x)) ret_bv in
   let parents = List.Tot.map snd res.parents in
-  print_info "starting eterm_info_to_assertions";
   let ge2, asserts =
     eterm_info_to_assertions dbg with_gpre with_gpost ge1 studied_term is_let
                              is_assert info ret_arg opt_c parents [] in
-  print_info "finished eterm_info_to_assertions";
   (* Simplify and filter *)
   let asserts = simp_filter_assertions ge2.env simpl_norm_steps asserts in
-  print_info "filtered assertions";
   (* Introduce fresh variables for the shadowed ones and substitute *)
   let ge3, asserts = subst_shadowed_with_abs_in_assertions dbg ge2 shadowed_bv asserts in
-  print_info "introduced fresh variables";
   (* If not a let, insert all the assertions before the term *)
   let asserts =
     if is_let then asserts
@@ -2520,9 +2499,7 @@ let analyze_effectful_term dbg with_gpre with_gpost res =
 val pp_analyze_effectful_term : bool -> bool -> bool -> unit -> Tac unit
 let pp_analyze_effectful_term dbg with_gpre with_gpost () =
   try
-    print_info "start";
     let res = find_focused_term_in_current_goal dbg in
-    print_info "found term";
     analyze_effectful_term dbg with_gpre with_gpost res;
     end_proof ()
   with | MetaAnalysis msg -> printout_failure msg; end_proof ()

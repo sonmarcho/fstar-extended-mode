@@ -1517,7 +1517,6 @@ If F* succeeded, extract the information and add it to the proof."
     ;;     (when (y-or-n-p "F* failed: do you want to see the F* query?")
     ;;       (switch-to-buffer fem-process-buffer1))
     ;;     (error "F* failed")))
-    (message "F* succeeded") ;; TODO: remove
     ;; If we reach this point it means there was no error: we can extract
     ;; the generated information and add it to the code
     ;;
