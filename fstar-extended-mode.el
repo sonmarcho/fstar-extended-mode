@@ -533,8 +533,6 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
       (exchange-point-and-mark)
       (exchange-point-and-mark))))
 
-(defun fem-replace-all-in (FROM TO &optional IGNORE_COMMENTS FULL_SEXP BEG END)
-
 (defun fem-switch-assert-assume-in-above-paragraph ()
   (interactive)
   "In the part of the current paragraph above the cursor and in the current line,
