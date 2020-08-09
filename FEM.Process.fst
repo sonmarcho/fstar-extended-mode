@@ -1652,12 +1652,17 @@ let is_let_st_get dbg (t : term_view) =
 
 /// Check if a term's computation is effectful. The return type is option
 /// because we may not be able to retrieve the term computation.
-val term_has_effectful_comp : env -> term -> Tac (option bool)
-let term_has_effectful_comp e tm =
-  let einfo_opt = compute_effect_info false e tm in
+val term_has_effectful_comp : bool -> env -> term -> Tac (option bool)
+let term_has_effectful_comp dbg e tm =
+  print_dbg dbg "[> term_has_effectful_comp";
+  let einfo_opt = compute_effect_info dbg e tm in
   match einfo_opt with
-  | Some einfo -> Some (effect_type_is_pure einfo.ei_type)
-  | None -> None
+  | Some einfo ->
+    print_dbg dbg ("Effect type: " ^ effect_type_to_string einfo.ei_type);
+    Some (not (effect_type_is_pure einfo.ei_type))
+  | None ->
+    print_dbg dbg "Could not compute effect info";
+    None
 
 /// Check if a related term is effectful. This is used to look for instances of
 /// ``HS.mem`` to instantiate pre/postconditions, which means that the term should
@@ -1669,7 +1674,7 @@ let term_has_effectful_comp e tm =
 /// consider.
 let related_term_is_effectul dbg ge tv : Tac bool =
   let is_effectful tm =
-    term_has_effectful_comp ge.env tm <> Some false
+    term_has_effectful_comp dbg ge.env tm <> Some false
   in
   match tv with
   | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> false
@@ -1744,7 +1749,7 @@ let rec find_mem_in_children dbg ge child =
   match inspect child with
   | Tv_Let recf attrs bv def body ->
     if is_st_get dbg def then ge, Some bv
-    else if term_has_effectful_comp ge.env def <> Some false then ge, None
+    else if term_has_effectful_comp dbg ge.env def <> Some false then ge, None
     else
       let ge1 = genv_push_bv ge bv false None in
       find_mem_in_children dbg ge1 body
