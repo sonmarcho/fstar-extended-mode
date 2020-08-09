@@ -2016,7 +2016,10 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
   else begin
     (* Generate propositions from the target computation (pre, post, type cast) *)
     let ge2, gparams_props, gpre_prop, gcast_props, gpost_prop =
-      let with_goal : bool = with_gpre || with_gpost in
+      (* Check if we do the computation (which can be expensive) - note that
+       * computing the global postcondition makes sense only if the focused
+       * term is the return value and thus not a let-binding *)
+      let with_goal : bool = with_gpre || ((not is_let) && with_gpost) in
       begin match opt_c, with_goal with
       | Some c, true ->
         let ei = typ_or_comp_to_effect_info dbg ge1 c in
@@ -2036,7 +2039,7 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
              * added first in the list and is thus last) *)
             let params =
               rev (List.Tot.map (fun x -> (x, type_of_binder x)) (params_of_typ_or_comp c)) in
-            iteri (fun i (b, _) -> print ("Global parameter " ^ string_of_int i ^
+            iteri (fun i (b, _) -> print_dbg dbg ("Global parameter " ^ string_of_int i ^
                                         ": " ^ binder_to_string b)) params;
             (* Filter the shadowed parameters *)
             let params = filter (fun (b, _)-> not (binder_is_shadowed ge1 b)) params in

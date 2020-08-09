@@ -31,8 +31,8 @@
 
 (defconst fem-message-prefix "[F*] ")
 (defconst fem-tactic-message-prefix "[F*] TAC>> ")
-(defconst fem-start-fstar-msg "%FEM:FSTAR_META:START%")
-(defconst fem-end-fstar-msg "[F*] %FEM:FSTAR_META:END%")
+(defconst fem-start-fstar-msg "\n%FEM:FSTAR_META:START%")
+(defconst fem-end-fstar-msg "\n[F*] %FEM:FSTAR_META:END%")
 
 (defconst fem-messages-buffer "*Messages*")
 
@@ -2288,12 +2288,13 @@ PP_INSTR is the post-processing instruction to insert for F*."
       (setf (fem-subexpr-bterm $res) (copy-fem-letb-term (fem-subexpr-bterm SUBEXPR))))
     (fem-shift-subexpr-pos $focus-shift $res)))
 
-(defun fem-query-fstar-on-buffer-content (OVERLAY_END PAYLOAD CONTINUATION)
+(defun fem-query-fstar-on-buffer-content (OVERLAY_END PAYLOAD FULL CONTINUATION)
   "Send PAYLOAD to F* and call CONTINUATION on the result.
 CONTINUATION must an overlay, a status and a response as arguments.
+If FULL is t, perform full type check, otherwise do lax.
 OVERLAY_END gives the position at which to stop the overlay."
   (let* (($beg (fstar-subp--untracked-beginning-position))
-         $overlay)
+         $typecheck-kind $overlay)
     ;; Create the overlay
     (setq $overlay (make-overlay (fstar-subp--untracked-beginning-position)
                                  OVERLAY_END (current-buffer) nil nil))
@@ -2304,7 +2305,8 @@ OVERLAY_END gives the position at which to stop the overlay."
     (fem-log-dbg "sending query to F*:[\n%s\n]" PAYLOAD)
     ;; Before querying F*, log a message signifying the beginning of the F* output
     (message "%s" fem-start-fstar-msg)
-    (fstar-subp--query (fstar-subp--push-query $beg `full PAYLOAD)
+    (setq $typecheck-kind (if FULL `full `lax))
+    (fstar-subp--query (fstar-subp--push-query $beg $typecheck-kind PAYLOAD)
                        (apply-partially CONTINUATION $overlay))))
 
 (defun fem-generate-fstar-check-conditions ()
@@ -2441,7 +2443,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
     ;; Deactivate the mark to prevent it from appearing on top of the overlay (it is ugly)
     (setq deactivate-mark t)
     ;; Query F*
-    (fem-query-fstar-on-buffer-content $insert-end $payload
+    (fem-query-fstar-on-buffer-content $insert-end $payload t
                                        (apply-partially #'fem-insert-assert-pre-post--continuation
                                                         $indent-str $insert-beg $insert-end))))
 
@@ -2535,7 +2537,7 @@ Return a pair of positions delimiting the beginning and end of the identifier."
     ;; Deactivate the mark to prevent it from appearing on top of the overlay (it is ugly)
     (setq deactivate-mark t)
     ;; Query F*
-    (fem-query-fstar-on-buffer-content $insert-end $payload
+    (fem-query-fstar-on-buffer-content $insert-end $payload t
                                        (apply-partially #'fem-insert-assert-pre-post--continuation
                                                         $indent-str $insert-beg $insert-end))))
 
@@ -2712,7 +2714,7 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
     ;; Deactivate the mark to prevent it from appearing on top of the overlay (it is ugly)
     (setq deactivate-mark t)
     ;; Query F*
-    (fem-query-fstar-on-buffer-content $insert-end $payload
+    (fem-query-fstar-on-buffer-content $insert-end $payload t
                                    (apply-partially #'fem-insert-assert-pre-post--continuation
                                                     $indent-str $insert-beg $insert-end))))
 
