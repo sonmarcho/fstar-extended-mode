@@ -1507,16 +1507,17 @@ If F* succeeded, extract the information and add it to the proof."
     ;; Delete the overlay
     (delete-overlay OVERLAY)
     ;; Display the message and exit if error
-    (if (eq STATUS 'success)
-        (progn
-          (fem-log-dbg "F* succeeded")
-          ;; The sent query "counts for nothing" so we need to pop it to reset
-          ;; F* to its previous state
-          (fstar-subp--pop))
-      (progn
-        (when (y-or-n-p "F* failed: do you want to see the F* query?")
-          (switch-to-buffer fem-process-buffer1))
-        (error "F* failed")))
+    ;; (if (eq STATUS 'success)
+    ;;     (progn
+    ;;       (fem-log-dbg "F* succeeded")
+    ;;       ;; The sent query "counts for nothing" so we need to pop it to reset
+    ;;       ;; F* to its previous state
+    ;;       (fstar-subp--pop))
+    ;;   (progn
+    ;;     (when (y-or-n-p "F* failed: do you want to see the F* query?")
+    ;;       (switch-to-buffer fem-process-buffer1))
+    ;;     (error "F* failed")))
+    (message "F* succeeded") ;; TODO: remove
     ;; If we reach this point it means there was no error: we can extract
     ;; the generated information and add it to the code
     ;;

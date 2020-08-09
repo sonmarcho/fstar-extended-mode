@@ -14,6 +14,8 @@ open FStar.Mul
 
 #push-options "--z3rlimit 15 --fuel 0 --ifuel 1"
 
+let print_info = print
+
 (* TODO: move to FStar.Tactics.Util.fst *)
 #push-options "--ifuel 1"
 val iteri_aux: int -> (int -> 'a -> Tac unit) -> list 'a -> Tac unit
@@ -123,7 +125,11 @@ let rec filter_ascriptions t =
 /// before exporting, because we may have inserted ascriptions on purpose, which
 /// would then be filtered away.
 val prettify_term : term -> Tac term
-let prettify_term t = filter_ascriptions t
+let prettify_term t =
+  print_info "start prettify";
+  let t' = filter_ascriptions t in
+  print_info "end prettify";
+  t'
 
 (*** General utilities *)
 // TODO: use more
@@ -357,14 +363,148 @@ let genv_push_fresh_bv (ge : genv) (basename : string) (ty : typ) : Tac (genv & 
   let ge', b = genv_push_fresh_binder ge basename ty in
   ge', bv_of_binder b
 
+// TODO: this function is super slow because normalization is very expensive
+// -> rewrite it
 /// Perform a variable substitution in a term
 val apply_subst : env -> term -> list (bv & term) -> Tac term
-let apply_subst e t subst =
+// Whenever we encounter a construction which introduces a binder, we need to apply
+// the substitution in the binder type. Note that this gives a new binder, with
+// which we need to replace the old one in what follows
+val apply_subst_in_bv : env -> bv -> list (bv & term) -> Tac (bv & list (bv & term))
+val apply_subst_in_binder : env -> binder -> list (bv & term) -> Tac (binder & list (bv & term))
+val apply_subst_in_comp : env -> comp -> list (bv & term) -> Tac comp
+val apply_subst_in_pattern : env -> pattern -> list (bv & term) -> Tac (pattern & list (bv & term))
+(*let apply_subst e t subst =
   let bl, vl = unzip subst in
   let bl = List.Tot.map mk_binder bl in
   let t1 = mk_abs t bl in
   let t2 = mk_e_app t1 vl in
-  norm_term_env e [] t2
+  norm_term_env e [] t2 *)
+
+let rec apply_subst e t subst =
+  match inspect t with
+  | Tv_Var b ->
+    begin match bind_map_get subst b with
+    | None -> t
+    | Some t' -> t'
+    end
+  | Tv_BVar b ->
+    (* Note: Tv_BVar shouldn't happen *)
+    begin match bind_map_get subst b with
+    | None -> t
+    | Some t' -> t'
+    end
+  | Tv_FVar _ -> t
+  | Tv_App hd (a,qual) ->
+    let hd = apply_subst e hd subst in
+    let a = apply_subst e a subst in
+    pack (Tv_App hd (a, qual))
+  | Tv_Abs br body ->
+    let body = apply_subst e body subst in
+    pack (Tv_Abs br body)
+  | Tv_Arrow br c ->
+    let br, subst = apply_subst_in_binder e br subst in
+    let c = apply_subst_in_comp e c subst in
+    pack (Tv_Arrow br c)
+  | Tv_Type () -> t
+  | Tv_Refine bv ref ->
+    let bv, subst = apply_subst_in_bv e bv subst in
+    let ref = apply_subst e ref subst in
+    pack (Tv_Refine bv ref)
+  | Tv_Const _ -> t
+  | Tv_Uvar _ _ -> t
+  | Tv_Let recf attrs bv def body ->
+    (* No need to substitute in the attributes - that we filter for safety *)
+    let bv, subst = apply_subst_in_bv e bv subst in
+    let def = apply_subst e def subst in
+    let body = apply_subst e body subst in
+    pack (Tv_Let recf [] bv def body)
+  | Tv_Match scrutinee branches -> (* TODO: type of pattern variables *)
+    let scrutinee = apply_subst e scrutinee subst in
+    (* For the branches: we don't need to explore the patterns *)
+    let apply_subst_in_branch branch =
+      let pat, tm = branch in
+      let pat, subst = apply_subst_in_pattern e pat subst in
+      let tm = apply_subst e tm subst in
+      pat, tm
+    in
+    let branches = map apply_subst_in_branch branches in
+    pack (Tv_Match scrutinee branches)
+  | Tv_AscribedT exp ty tac ->
+    let exp = apply_subst e exp subst in
+    let ty = apply_subst e ty subst in
+    (* no need to apply it on the tactic - that we filter for safety *)
+    pack (Tv_AscribedT exp ty None)
+  | Tv_AscribedC exp c tac ->
+    let exp = apply_subst e exp subst in
+    let c = apply_subst_in_comp e c subst in
+    (* no need to apply it on the tactic - that we filter for safety *)
+    pack (Tv_AscribedC exp c None)
+  | _ ->
+    (* Unknown *)
+    t
+
+and apply_subst_in_bv e bv subst =
+  let bvv = inspect_bv bv in
+  let ty = apply_subst e bvv.bv_sort subst in
+  let bv' = Tactics.fresh_bv_named bvv.bv_ppname ty in
+  bv', (bv, pack (Tv_Var bv'))::subst
+
+and apply_subst_in_binder e br subst =
+  let bv, qual = inspect_binder br in
+  let bv, subst = apply_subst_in_bv e bv subst in
+  pack_binder bv qual, subst 
+
+and apply_subst_in_comp e c subst =
+  let subst = (fun x -> apply_subst e x subst) in
+  let subst_in_aqualv a : Tac aqualv =
+    match a with
+    | Q_Implicit
+    | Q_Explicit -> a
+    | Q_Meta t -> Q_Meta (subst t)
+    | Q_Meta_attr t -> Q_Meta_attr (subst t)
+  in
+  match inspect_comp c with
+  | C_Total ret decr ->
+    let ret = subst ret in
+    let decr = opt_tapply subst decr in
+    pack_comp (C_Total ret decr)
+  | C_GTotal ret decr ->
+    let ret = subst ret in
+    let decr = opt_tapply subst decr in
+    pack_comp (C_GTotal ret decr)
+  | C_Lemma pre post patterns ->
+    let pre = subst pre in
+    let post = subst post in
+    let patterns = subst patterns in
+    pack_comp (C_Lemma pre post patterns)
+  | C_Eff us eff_name result eff_args ->
+    let result = subst result in
+    let eff_args = map (fun (x, a) -> (subst x, subst_in_aqualv a)) eff_args in
+    pack_comp (C_Eff us eff_name result eff_args)
+
+and apply_subst_in_pattern e pat subst =
+  match pat with
+  | Pat_Constant _ -> pat, subst
+  | Pat_Cons fv patterns ->
+    (* The types of the variables in the patterns should be independent of each
+     * other: we use fold_left only to incrementally update the substitution *)
+    let patterns, subst =
+      fold_right (fun (pat, b) (pats, subst) ->
+                      let pat, subst = apply_subst_in_pattern e pat subst in
+                      ((pat, b) :: pats, subst)) patterns ([], subst)
+    in
+    Pat_Cons fv patterns, subst
+  | Pat_Var bv ->
+    let bv, subst = apply_subst_in_bv e bv subst in
+    Pat_Var bv, subst
+  | Pat_Wild bv ->
+    let bv, subst = apply_subst_in_bv e bv subst in
+    Pat_Wild bv, subst
+  | Pat_Dot_Term bv t ->
+    let bv, subst = apply_subst_in_bv e bv subst in
+    let t = apply_subst e t subst in
+    Pat_Dot_Term bv t, subst
 
 val opt_apply_subst : env -> option term -> list (bv & term) -> Tac (option term)
 let opt_apply_subst e opt_t subst =
@@ -551,36 +691,9 @@ let safe_typ_or_comp dbg e t =
                    "\n-comp: " ^ acomp_to_string c);
     Some (TC_Comp c [])
 
-/// Substitute a binder by a term in a comp
 val subst_bv_in_comp : env -> bv -> term -> comp -> Tac comp
 let subst_bv_in_comp e b t c =
-  let subst = [(b,t)] in
-  let subst = (fun x -> apply_subst e x subst) in
-  let subst_in_aqualv a : Tac aqualv =
-    match a with
-    | Q_Implicit
-    | Q_Explicit -> a
-    | Q_Meta t -> Q_Meta (subst t)
-    | Q_Meta_attr t -> Q_Meta_attr (subst t)
-  in
-  match inspect_comp c with
-  | C_Total ret decr ->
-    let ret = subst ret in
-    let decr = opt_tapply subst decr in
-    pack_comp (C_Total ret decr)
-  | C_GTotal ret decr ->
-    let ret = subst ret in
-    let decr = opt_tapply subst decr in
-    pack_comp (C_GTotal ret decr)
-  | C_Lemma pre post patterns ->
-    let pre = subst pre in
-    let post = subst post in
-    let patterns = subst patterns in
-    pack_comp (C_Lemma pre post patterns)
-  | C_Eff us eff_name result eff_args ->
-    let result = subst result in
-    let eff_args = map (fun (x, a) -> (subst x, subst_in_aqualv a)) eff_args in
-    pack_comp (C_Eff us eff_name result eff_args)
+  apply_subst_in_comp e c [(b, t)]
 
 val subst_binder_in_comp : env -> binder -> term -> comp -> Tac comp
 let subst_binder_in_comp e b t c =
@@ -589,50 +702,54 @@ let subst_binder_in_comp e b t c =
 /// Utility for computations: unfold a type until it is of the form Tv_Arrow _ _,
 /// fail otherwise
 val unfold_until_arrow : env -> typ -> Tac typ
-let rec unfold_until_arrow e ty =
-  (* Start by normalizing the term *)
-  let ty = norm_term_env e [] ty in
-  (* Helper to unfold top-level identifiers *)
-  let unfold_fv (fv : fv) : Tac term =
-    let ty = pack (Tv_FVar fv) in
-    let fvn = flatten_name (inspect_fv fv) in
-    (* unfold the top level binding, check that it has changed, and recurse *)
-    let ty' = norm_term_env e [delta_only [fvn]] ty in
-    (* I'm not confident about using eq_term here *)
-    begin match inspect ty' with
-    | Tv_FVar fv' ->
-      if flatten_name (inspect_fv fv') = fvn
-      then mfail ("unfold_until_arrow: could not unfold: " ^ term_to_string ty) else ty'
-    | _ -> ty'
-    end
-  in
-  (* Inspect *)
-  match inspect ty with
-  | Tv_Arrow _ _ -> ty
-  | Tv_FVar fv ->
-    (* Try to unfold the top-level identifier and recurse *)
-    let ty' = unfold_fv fv in
-    unfold_until_arrow e ty'
-  | Tv_App _ _ ->
-    (* Strip all the parameters, try to unfold the head and recurse *)
-    let hd, args = collect_app ty in
-    begin match inspect hd with
+let rec unfold_until_arrow e ty0 =
+  if Tv_Arrow? (inspect ty0) then ty0
+  else
+    begin
+    (* Start by normalizing the term - note that this operation is expensive *)
+    let ty = norm_term_env e [] ty0 in
+    (* Helper to unfold top-level identifiers *)
+    let unfold_fv (fv : fv) : Tac term =
+      let ty = pack (Tv_FVar fv) in
+      let fvn = flatten_name (inspect_fv fv) in
+      (* unfold the top level binding, check that it has changed, and recurse *)
+      let ty' = norm_term_env e [delta_only [fvn]] ty in
+      (* I'm not confident about using eq_term here *)
+      begin match inspect ty' with
+      | Tv_FVar fv' ->
+        if flatten_name (inspect_fv fv') = fvn
+        then mfail ("unfold_until_arrow: could not unfold: " ^ term_to_string ty0) else ty'
+      | _ -> ty'
+      end
+    in
+    (* Inspect *)
+    match inspect ty with
+    | Tv_Arrow _ _ -> ty
     | Tv_FVar fv ->
-      let hd' = unfold_fv fv in
-      let ty' = mk_app hd' args in
+      (* Try to unfold the top-level identifier and recurse *)
+      let ty' = unfold_fv fv in
       unfold_until_arrow e ty'
-    | _ -> mfail ("unfold_until_arrow: could not unfold: " ^ term_to_string ty)
+    | Tv_App _ _ ->
+      (* Strip all the parameters, try to unfold the head and recurse *)
+      let hd, args = collect_app ty in
+      begin match inspect hd with
+      | Tv_FVar fv ->
+        let hd' = unfold_fv fv in
+        let ty' = mk_app hd' args in
+        unfold_until_arrow e ty'
+      | _ -> mfail ("unfold_until_arrow: could not unfold: " ^ term_to_string ty0)
+      end
+    | Tv_Refine bv ref ->
+      (* Continue with the type of bv *)
+      let ty' = type_of_bv bv in
+      unfold_until_arrow e ty'
+    | Tv_AscribedT body _ _
+    | Tv_AscribedC body _ _ ->
+      unfold_until_arrow e body
+    | _ ->
+      (* Other situations: don't know what to do *)
+      mfail ("unfold_until_arrow: could not unfold: " ^ term_to_string ty0)
     end
-  | Tv_Refine bv ref ->
-    (* Continue with the type of bv *)
-    let ty' = type_of_bv bv in
-    unfold_until_arrow e ty'
-  | Tv_AscribedT body _ _
-  | Tv_AscribedC body _ _ ->
-    unfold_until_arrow e body
-  | _ ->
-    (* Other situations: don't know what to do *)
-    mfail ("unfold_until_arrow: could not unfold: " ^ term_to_string ty)
 
 /// Instantiate a comp
 val inst_comp_once : env -> comp -> term -> Tac comp
@@ -668,10 +785,15 @@ let _abs_update_typ (b:binder) (ty:typ) (pl:list binder) (e:env) :
   Tac typ_or_comp =
   (* Try to reveal an arrow *)
   try
+    print_info "starting unfold_until_arrow";
+//    print_info ("_abs_update_typ: " ^ term_to_string ty);
     let ty' = unfold_until_arrow e ty in
+    print_info "ended unfold_until_arrow";
     begin match inspect ty' with
     | Tv_Arrow b1 c1 ->
+      print_info "starting subst_binder_in_comp";
       let c1' = subst_binder_in_comp e b1 (pack (Tv_Var (bv_of_binder b))) c1 in
+      print_info "ended subst_binder_in_comp";
       TC_Comp c1' (b :: pl)
     | _ -> (* Inconsistent state *)
       mfail "_abs_update_typ: inconsistent state"
@@ -688,7 +810,9 @@ let abs_update_typ_or_comp (b:binder) (c : typ_or_comp) (e:env) : Tac typ_or_com
     (* Note that the computation is not necessarily pure, in which case we might
      * want to do something with the effect arguments (pre, post...) - for
      * now we just ignore them *)
+    print_info "starting get_comp_ret_type";
     let ty = get_comp_ret_type v in
+    print_info "starting _apt_update_typ";
     _abs_update_typ b ty pl e
 
 val abs_update_opt_typ_or_comp : binder -> option typ_or_comp -> env ->
@@ -761,6 +885,7 @@ val explore_pattern :
 
 (* TODO: carry around the list of encompassing terms *)
 let rec explore_term dbg dfs #a f x ge0 pl0 c0 t0 =
+  print_info ("explore_term: " ^ term_construct t0);
   print_dbg dbg ("[> explore_term: " ^ term_construct t0 ^ ":\n" ^ term_to_string t0);
   let tv0 = inspect t0 in
   let x0, flag = f x ge0 pl0 c0 tv0 in
@@ -778,8 +903,11 @@ let rec explore_term dbg dfs #a f x ge0 pl0 c0 t0 =
         explore_term dbg dfs f x1 ge0 pl1 None hd
       else x1, convert_ctrl_flag flag1
     | Tv_Abs br body ->
+      print_info ("starting genv_push_binder");
       let ge1 = genv_push_binder ge0 br false None in
+      print_info ("starting abs_update_opt_typ_or_comp");
       let c1 = abs_update_opt_typ_or_comp br c0 ge1.env in
+      print_info ("recursion");
       explore_term dbg dfs f x0 ge1 pl1 c1 body
     | Tv_Arrow br c0 -> x0, Continue (* TODO: we might want to explore that *)
     | Tv_Type () -> x0, Continue
@@ -2153,6 +2281,9 @@ let pp_tac () : Tac unit =
 assume type meta_info
 assume val focus_on_term : meta_info
 
+let end_proof () =
+  tadmit_t (`())
+
 let unsquash_equality (t:term) : Tac (option (term & term)) =
   begin match term_as_formula t with
   | Comp (Eq _) l r -> Some (l, r)
@@ -2174,7 +2305,7 @@ let pp_explore (dbg dfs : bool)
     let ge = mk_genv e [] [] in
     print_dbg dbg ("[> About to explore term:\n" ^ term_to_string l);
     let x = explore_term dbg dfs #a f x ge [] c l in
-    trefl()
+    end_proof ()
   | _ -> mfail "pp_explore: not a squashed equality"
   end
 #pop-options
@@ -2366,17 +2497,21 @@ let analyze_effectful_term dbg with_gpre with_gpost res =
   (* TODO: use bv rather than term for ret_arg *)
   let ret_arg = opt_tapply (fun x -> pack (Tv_Var x)) ret_bv in
   let parents = List.Tot.map snd res.parents in
+  print_info "starting eterm_info_to_assertions";
   let ge2, asserts =
     eterm_info_to_assertions dbg with_gpre with_gpost ge1 studied_term is_let
                              is_assert info ret_arg opt_c parents [] in
+  print_info "finished eterm_info_to_assertions";
   (* Simplify and filter *)
   let asserts = simp_filter_assertions ge2.env simpl_norm_steps asserts in
+  print_info "filtered assertions";
   (* Introduce fresh variables for the shadowed ones and substitute *)
   let ge3, asserts = subst_shadowed_with_abs_in_assertions dbg ge2 shadowed_bv asserts in
+  print_info "introduced fresh variables";
   (* If not a let, insert all the assertions before the term *)
   let asserts =
     if is_let then asserts
-    else  mk_assertions (List.Tot.append asserts.pres asserts.posts) []
+    else mk_assertions (List.Tot.append asserts.pres asserts.posts) []
   in
   (* Print *)
   printout_success ge3 asserts
@@ -2385,10 +2520,12 @@ let analyze_effectful_term dbg with_gpre with_gpost res =
 val pp_analyze_effectful_term : bool -> bool -> bool -> unit -> Tac unit
 let pp_analyze_effectful_term dbg with_gpre with_gpost () =
   try
+    print_info "start";
     let res = find_focused_term_in_current_goal dbg in
+    print_info "found term";
     analyze_effectful_term dbg with_gpre with_gpost res;
-    trefl()
-  with | MetaAnalysis msg -> printout_failure msg; trefl()
+    end_proof ()
+  with | MetaAnalysis msg -> printout_failure msg; end_proof ()
        | err -> (* Shouldn't happen, so transmit the exception for debugging *) raise err
 
 (**** Split conjunctions in an assert *)
@@ -2454,8 +2591,8 @@ let pp_split_assert_conjs dbg () =
   try
     let res = find_focused_assert_in_current_goal dbg in
     split_assert_conjs dbg res;
-    trefl()
-  with | MetaAnalysis msg -> printout_failure msg; trefl()
+    end_proof ()
+  with | MetaAnalysis msg -> printout_failure msg; end_proof ()
        | err -> (* Shouldn't happen, so transmit the exception for debugging *) raise err
 
 (**** Term unfolding in assert *)
@@ -2846,7 +2983,7 @@ let pp_unfold_in_assert_or_assume dbg () =
   try
     let res = find_focused_assert_in_current_goal dbg in
     unfold_in_assert_or_assume dbg res;
-    trefl()
-  with | MetaAnalysis msg -> printout_failure msg; trefl()
+    end_proof ()
+  with | MetaAnalysis msg -> printout_failure msg; end_proof ()
        | err -> (* Shouldn't happen, so transmit the exception for debugging *) raise err
 
