@@ -8,10 +8,6 @@ open FStar.List
 open FStar.Tactics
 open FStar.Mul
 
-/// TODO: when an F* meta function fails for a known reason, it is better to fail
-/// silently but output a message which will be displayed by the user, so that he
-/// knows what's going on (for example: "can't unfold (x + y)")
-
 #push-options "--z3rlimit 15 --fuel 0 --ifuel 1"
 
 (* TODO: move to FStar.Tactics.Util.fst *)
