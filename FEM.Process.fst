@@ -387,20 +387,64 @@ let genv_push_fresh_bv (ge : genv) (basename : string) (ty : typ) : Tac (genv & 
   let ge', b = genv_push_fresh_binder ge basename ty in
   ge', bv_of_binder b
 
-// TODO: this function is super slow because normalization is very expensive
-// -> rewrite it
-/// Perform a variable substitution in a term
-val apply_subst : env -> term -> list (bv & term) -> Tac term
+/// Substitutions
+
+/// Custom substitutions using the normalizer. This is the easiest and safest
+/// way to perform a substitution: if you want to substitute [v] with [t] in [exp],
+/// just normalize [(fun v -> exp) t]. Note that this may be computationally expensive.
+val norm_apply_subst : env -> term -> list (bv & term) -> Tac term
+val norm_apply_subst_in_comp : env -> comp -> list (bv & term) -> Tac comp
+
+let norm_apply_subst e t subst =
+  let bl, vl = unzip subst in
+  let bl = List.Tot.map mk_binder bl in
+  let t1 = mk_abs t bl in
+  let t2 = mk_e_app t1 vl in
+  norm_term_env e [] t2
+
+let norm_apply_subst_in_comp e c subst =
+  let subst = (fun x -> norm_apply_subst e x subst) in
+  let subst_in_aqualv a : Tac aqualv =
+    match a with
+    | Q_Implicit
+    | Q_Explicit -> a
+    | Q_Meta t -> Q_Meta (subst t)
+    | Q_Meta_attr t -> Q_Meta_attr (subst t)
+  in
+  match inspect_comp c with
+  | C_Total ret decr ->
+    let ret = subst ret in
+    let decr = opt_tapply subst decr in
+    pack_comp (C_Total ret decr)
+  | C_GTotal ret decr ->
+    let ret = subst ret in
+    let decr = opt_tapply subst decr in
+    pack_comp (C_GTotal ret decr)
+  | C_Lemma pre post patterns ->
+    let pre = subst pre in
+    let post = subst post in
+    let patterns = subst patterns in
+    pack_comp (C_Lemma pre post patterns)
+  | C_Eff us eff_name result eff_args ->
+    let result = subst result in
+    let eff_args = map (fun (x, a) -> (subst x, subst_in_aqualv a)) eff_args in
+    pack_comp (C_Eff us eff_name result eff_args)
+
+/// As substitution with normalization is very expensive, we implemented another
+/// technique which works by exploring terms. This is super fast, but as some
+/// information not accessible to the meta F* tactics is dropped along the way,
+/// it has a big impact on pretty printing. For example, terms like [A /\ B] get
+/// printed as [Prims.l_and A B].
+val deep_apply_subst : env -> term -> list (bv & term) -> Tac term
 // Whenever we encounter a construction which introduces a binder, we need to apply
 // the substitution in the binder type. Note that this gives a new binder, with
 // which we need to replace the old one in what follows
+val deep_apply_subst_in_bv : env -> bv -> list (bv & term) -> Tac (bv & list (bv & term))
+val deep_apply_subst_in_binder : env -> binder -> list (bv & term) -> Tac (binder & list (bv & term))
+val deep_apply_subst_in_comp : env -> comp -> list (bv & term) -> Tac comp
+val deep_apply_subst_in_pattern : env -> pattern -> list (bv & term) -> Tac (pattern & list (bv & term))
 
-val apply_subst_in_bv : env -> bv -> list (bv & term) -> Tac (bv & list (bv & term))
-val apply_subst_in_binder : env -> binder -> list (bv & term) -> Tac (binder & list (bv & term))
-val apply_subst_in_comp : env -> comp -> list (bv & term) -> Tac comp
-val apply_subst_in_pattern : env -> pattern -> list (bv & term) -> Tac (pattern & list (bv & term))
-
-(*let rec apply_subst e t subst =
+let rec deep_apply_subst e t subst =
   match inspect t with
   | Tv_Var b ->
     begin match bind_map_get subst b with
@@ -415,67 +459,67 @@ val apply_subst_in_pattern : env -> pattern -> list (bv & term) -> Tac (pattern 
     end
   | Tv_FVar _ -> t
   | Tv_App hd (a,qual) ->
-    let hd = apply_subst e hd subst in
-    let a = apply_subst e a subst in
+    let hd = deep_apply_subst e hd subst in
+    let a = deep_apply_subst e a subst in
     pack (Tv_App hd (a, qual))
   | Tv_Abs br body ->
-    let body = apply_subst e body subst in
+    let body = deep_apply_subst e body subst in
     pack (Tv_Abs br body)
   | Tv_Arrow br c ->
-    let br, subst = apply_subst_in_binder e br subst in
-    let c = apply_subst_in_comp e c subst in
+    let br, subst = deep_apply_subst_in_binder e br subst in
+    let c = deep_apply_subst_in_comp e c subst in
     pack (Tv_Arrow br c)
   | Tv_Type () -> t
   | Tv_Refine bv ref ->
-    let bv, subst = apply_subst_in_bv e bv subst in
-    let ref = apply_subst e ref subst in
+    let bv, subst = deep_apply_subst_in_bv e bv subst in
+    let ref = deep_apply_subst e ref subst in
     pack (Tv_Refine bv ref)
   | Tv_Const _ -> t
   | Tv_Uvar _ _ -> t
   | Tv_Let recf attrs bv def body ->
     (* No need to substitute in the attributes - that we filter for safety *)
-    let bv, subst = apply_subst_in_bv e bv subst in
-    let def = apply_subst e def subst in
-    let body = apply_subst e body subst in
+    let bv, subst = deep_apply_subst_in_bv e bv subst in
+    let def = deep_apply_subst e def subst in
+    let body = deep_apply_subst e body subst in
     pack (Tv_Let recf [] bv def body)
   | Tv_Match scrutinee branches -> (* TODO: type of pattern variables *)
-    let scrutinee = apply_subst e scrutinee subst in
+    let scrutinee = deep_apply_subst e scrutinee subst in
     (* For the branches: we don't need to explore the patterns *)
-    let apply_subst_in_branch branch =
+    let deep_apply_subst_in_branch branch =
       let pat, tm = branch in
-      let pat, subst = apply_subst_in_pattern e pat subst in
-      let tm = apply_subst e tm subst in
+      let pat, subst = deep_apply_subst_in_pattern e pat subst in
+      let tm = deep_apply_subst e tm subst in
       pat, tm
     in
-    let branches = map apply_subst_in_branch branches in
+    let branches = map deep_apply_subst_in_branch branches in
     pack (Tv_Match scrutinee branches)
   | Tv_AscribedT exp ty tac ->
-    let exp = apply_subst e exp subst in
-    let ty = apply_subst e ty subst in
+    let exp = deep_apply_subst e exp subst in
+    let ty = deep_apply_subst e ty subst in
     (* no need to apply it on the tactic - that we filter for safety *)
     pack (Tv_AscribedT exp ty None)
   | Tv_AscribedC exp c tac ->
-    let exp = apply_subst e exp subst in
-    let c = apply_subst_in_comp e c subst in
+    let exp = deep_apply_subst e exp subst in
+    let c = deep_apply_subst_in_comp e c subst in
     (* no need to apply it on the tactic - that we filter for safety *)
     pack (Tv_AscribedC exp c None)
   | _ ->
     (* Unknown *)
     t
 
-and apply_subst_in_bv e bv subst =
+and deep_apply_subst_in_bv e bv subst =
   let bvv = inspect_bv bv in
-  let ty = apply_subst e bvv.bv_sort subst in
+  let ty = deep_apply_subst e bvv.bv_sort subst in
   let bv' = Tactics.fresh_bv_named bvv.bv_ppname ty in
   bv', (bv, pack (Tv_Var bv'))::subst
 
-and apply_subst_in_binder e br subst =
+and deep_apply_subst_in_binder e br subst =
   let bv, qual = inspect_binder br in
-  let bv, subst = apply_subst_in_bv e bv subst in
+  let bv, subst = deep_apply_subst_in_bv e bv subst in
   pack_binder bv qual, subst 
 
-and apply_subst_in_comp e c subst =
-  let subst = (fun x -> apply_subst e x subst) in
+and deep_apply_subst_in_comp e c subst =
+  let subst = (fun x -> deep_apply_subst e x subst) in
   let subst_in_aqualv a : Tac aqualv =
     match a with
     | Q_Implicit
@@ -502,7 +546,7 @@ and apply_subst_in_comp e c subst =
     let eff_args = map (fun (x, a) -> (subst x, subst_in_aqualv a)) eff_args in
     pack_comp (C_Eff us eff_name result eff_args)
 
-and apply_subst_in_pattern e pat subst =
+and deep_apply_subst_in_pattern e pat subst =
   match pat with
   | Pat_Constant _ -> pat, subst
   | Pat_Cons fv patterns ->
@@ -510,56 +554,29 @@ and apply_subst_in_pattern e pat subst =
      * other: we use fold_left only to incrementally update the substitution *)
     let patterns, subst =
       fold_right (fun (pat, b) (pats, subst) ->
-                      let pat, subst = apply_subst_in_pattern e pat subst in
+                      let pat, subst = deep_apply_subst_in_pattern e pat subst in
                       ((pat, b) :: pats, subst)) patterns ([], subst)
     in
     Pat_Cons fv patterns, subst
   | Pat_Var bv ->
-    let bv, subst = apply_subst_in_bv e bv subst in
+    let bv, subst = deep_apply_subst_in_bv e bv subst in
     Pat_Var bv, subst
   | Pat_Wild bv ->
-    let bv, subst = apply_subst_in_bv e bv subst in
+    let bv, subst = deep_apply_subst_in_bv e bv subst in
     Pat_Wild bv, subst
   | Pat_Dot_Term bv t ->
-    let bv, subst = apply_subst_in_bv e bv subst in
-    let t = apply_subst e t subst in
-    Pat_Dot_Term bv t, subst *)
+    let bv, subst = deep_apply_subst_in_bv e bv subst in
+    let t = deep_apply_subst e t subst in
+    Pat_Dot_Term bv t, subst
 
-let apply_subst e t subst =
-  let bl, vl = unzip subst in
-  let bl = List.Tot.map mk_binder bl in
-  let t1 = mk_abs t bl in
-  let t2 = mk_e_app t1 vl in
-  norm_term_env e [] t2
-
-let apply_subst_in_comp e c subst =
-  let subst = (fun x -> apply_subst e x subst) in
-  let subst_in_aqualv a : Tac aqualv =
-    match a with
-    | Q_Implicit
-    | Q_Explicit -> a
-    | Q_Meta t -> Q_Meta (subst t)
-    | Q_Meta_attr t -> Q_Meta_attr (subst t)
-  in
-  match inspect_comp c with
-  | C_Total ret decr ->
-    let ret = subst ret in
-    let decr = opt_tapply subst decr in
-    pack_comp (C_Total ret decr)
-  | C_GTotal ret decr ->
-    let ret = subst ret in
-    let decr = opt_tapply subst decr in
-    pack_comp (C_GTotal ret decr)
-  | C_Lemma pre post patterns ->
-    let pre = subst pre in
-    let post = subst post in
-    let patterns = subst patterns in
-    pack_comp (C_Lemma pre post patterns)
-  | C_Eff us eff_name result eff_args ->
-    let result = subst result in
-    let eff_args = map (fun (x, a) -> (subst x, subst_in_aqualv a)) eff_args in
-    pack_comp (C_Eff us eff_name result eff_args)
-
+/// The substitution functions actually used in the rest of the meta F* functions.
+/// For now, we use normalization because even though it is sometimes slow it
+/// gives prettier terms, and readability is the priority. In order to mitigate
+/// the performance issue, we try to minimize the number of calls to those functions,
+/// by doing lazy instantiations for example (rather than incrementally apply
+/// substitutions in a term, accumulate the substitutions and perform them all at once).
+let apply_subst = norm_apply_subst
+let apply_subst_in_comp = norm_apply_subst_in_comp
 
 val opt_apply_subst : env -> option term -> list (bv & term) -> Tac (option term)
 let opt_apply_subst e opt_t subst =
