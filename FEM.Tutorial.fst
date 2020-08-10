@@ -7,76 +7,31 @@ module B = LowStar.Buffer
 open FStar.List
 open FStar.Tactics
 open FStar.Mul
+open FEM.Tutorial.Definitions
 
+/// WARNING: if a command fails, it is very likely because of the below issue
 /// The extended mode requires the FEM.Process module to run meta-processing
 /// functions on the code the user is working on. F* needs to know which modules
 /// to load from the very start and won't load additional modules on-demand (you
 /// will need to restart the F* mode), which means that if you intend to use the
 /// extended mode while working on a file, you have to make sure F* will load
 /// FEM.Process:
-open FEM.Process
-/// alternatively if you want to prevent shadowing:
-/// module FEMProcess = open FEM.Process
+module FEM = FEM.Process
+/// alternatively if you're not afraid of shadowing:
+/// open FEM.Process
 
-#push-options "--z3rlimit 100 --fuel 0 --ifuel 0"
-
-/// Some dummy functions used for the below examples
-let f1 (n : int) (m : nat) : Pure nat (requires (n > 3)) (ensures (fun _ -> True)) =
-  m % (n - 3)
-
-let f2 (x y : nat) :
-  Pure (z:nat{z >= 8}) (requires True) (ensures (fun z -> z % 2 = 0)) =
-  2 * (x + y) + 8
-
-let f3 (x : nat) : nat =
-  2 * x
-
-let f4 (n : int{n % 2 = 0}) : Tot (n':int{n' % 2 = 0}) =
-  n + 2
-
-assume val sf1 (r : B.buffer int) :
-  ST.Stack int
-  (requires (fun _ -> True))
-  (ensures (fun h0 n h1 ->
-    B.live h0 r /\ B.as_seq h0 r == B.as_seq h1 r /\
-    n = List.Tot.fold_left (fun x y -> x + y) 0 (Seq.seq_to_list (B.as_seq h0 r))))
-
-assume val sf2 (l : list int) :
-  ST.ST (B.buffer int)
-  (requires (fun _ -> True))
-  (ensures (fun h0 r h1 ->
-    B.live h0 r /\
-    B.as_seq h1 r == Seq.seq_of_list l))
-
-let pred1 (x y z : nat) = True
-let pred2 (x y z : nat) = True
-let pred3 (x y z : nat) = True
-let pred4 (x y z : nat) = True
-let pred5 (x y z : nat) = True
-let pred6 (x y z : nat) = True
-
-let lpred1 (l1 l2 : Seq.seq int) = True
-let lpred2 (l1 l2 : Seq.seq int) = True
-let lpred3 (l1 l2 : Seq.seq int) = True
-
-let spred1 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
-let spred2 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
-let spred3 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
-let spred4 (h : HS.mem) (r1 r2 r3 : B.buffer int) = True
+#push-options "--z3rlimit 50 --fuel 0 --ifuel 0"
 
 (*** Basic commands *)
-(**** Rolling admit *)
+(**** Rolling admit (C-S-r) *)
 /// F* is not always very precise when generating errors to indicate which
 /// proof obligation failed to the user. The most common workaround is the
 /// "rolling-admit" technique, which consists in inserting an admit in the
 /// problematic function and moving it around until we identify the exact
 /// piece of code which makes verification fail. This technique is made
-/// simpler by the [fem-roll-admit command] (C-c C-e C-r).
+/// simpler by the [fem-roll-admit command] (C-S-r).
 
-/// Try typing C-c C-e C-r anywhere below to insert/move an admit. Note that if
-/// insert an admit inside the "if ... then ... else ...", you may have to
-/// add a ";" to ensure that F* can parse the function. fem-roll-admit tries
-/// to take that into account when you move the admit inside the if.
+/// Try typing C-S-r anywhere below to insert/move an admit:
 let simpl_ex1 (x : nat) =
   let y = 4 in
   let z = 3 in
@@ -99,7 +54,7 @@ let simpl_ex1 (x : nat) =
   let w' = 2 * w + z in
   w'
 
-(**** Switch between asserts/assumes *)
+(**** Switch between asserts/assumes (C-S-s) *)
 /// People often write functions and proofs incrementally, by keeping an admit
 /// at the very end and adding function calls or assertions one at a time,
 /// type-checking with F* at every changement to make sure that it is legal.
@@ -109,10 +64,10 @@ let simpl_ex1 (x : nat) =
 /// mitigating this problem is to convert the assertions to assumptions once we
 /// know they succeed.
 
-/// Try calling fem-switch-assert-assume-in-above-paragraph (C-c C-e C-a) in
+/// Try calling fem-switch-assert-assume (C-S-s) in
 /// the below function.
-/// Note that it operates either on the region above the pointer, or on the active
-/// selection.
+/// Note that it operates either on the assertion under the pointer, or on the
+/// current selection.
 let simpl_ex2 (x : nat) =
   let x1 = x + 1 in
   assert(x1 = x + 1);
@@ -130,24 +85,26 @@ let simpl_ex2 (x : nat) =
 
 (*** Advanced commands *)
 (**** Insert context/proof obligations information *)
-/// If often happens that we want to know what exactly the precondition which
-/// fails at some specific place is, or if, once instantiated, the postcondition of
-/// some lemma is indeed what we believe it is, because it fails to prove some
+(**** C-c C-e C-e *)
+/// If often happens that we want to know what the precondition which fails at
+/// some specific place is exactly, or if, once instantiated, what the postcondition
+/// of some lemma is indeed what we believe it is, because it fails to prove some
 /// obligation for example, etc. In other words: we sometimes feel blind when
 /// working in F*, and the workarounds (mostly copy-pasting and instantiating by hand
 /// the relevant pre/postconditions) are often painful.
-/// The fem-analyze-effectful-term command (C-c C-e C-e) addresses this issue.
+/// The effectful term analysis command (C-c C-e C-e) addresses this issue.
 
 /// Try testing the fem-insert-pre-post command on the let-bindings and the return result
 let ci_ex1 (x y : nat) : z:int{z % 3 = 0} =
   (* Preconditions:
    * Type C-c C-e C-e below to insert:
    * [> assert(x + 4 > 3); *)
-  let x1 = f1 (x + 4) y in (* <- Put your pointer on the left and type C-c C-e C-e *)
+  let x1 = f1 (x + 4) y in (* <- Put your pointer after the 'in' and type C-c C-e C-e *)
 
   (* Postconditions: *)
-  let x2 = f2 x1 y in (* <- Put your pointer on the left and type C-c C-e C-e *)
+  let x2 = f2 x1 y in (* <- Put your pointer after the 'in' and type C-c C-e C-e *)
   (* Type C-c C-e C-e above to insert:
+   * [> assert(has_type x2 nat);
    * [> assert(x2 >= 8);
    * [> assert(x2 % 2 = 0); *)
 
@@ -156,18 +113,19 @@ let ci_ex1 (x y : nat) : z:int{z % 3 = 0} =
    * [> assert(Prims.has_type (x2 <: Prims.nat) Prims.int);
    * [> assert(x2 % 2 = 0);
    * Note that the assertion gives indications about the parameter
-   * (it uses ``has_type`` rather than ``subtype_of``), the target
-   * type and the (potential) refinement, but also the known type
-   * for the parameter through the type refinement.
+   * known type, the target type and the (potential) refinement.
    * Also note that the type obligations are not introduced when
    * they are trivial (if the original type and the target type are
    * exactly the same, syntactically).
+   * WARNING: `has_type` is very low level and shouldn't be used in user proofs.
+   * In the future, we intend to remove the assertions containing `has_type`,
+   * and only introduce assertions for the refinements.
    *)
   let x3 = f4 x2 in (* <- Put your pointer on the left and type C-c C-e C-e *)
 
   (* Current goal:
    * Type C-c C-e C-e below to insert:
-   * [> assert(Prims.has_type (3 * (x1 + x2 + x3) <: Prims.int) Prims.nat);
+   * [> assert(Prims.has_type (3 * (x1 + x2 + x3)) Prims.int);
    * [> assert(3 * (x1 + x2 + x3) % 3 = 0); *)
   3 * (x1 + x2 + x3) (* <- Put your pointer on the left and type C-c C-e C-e *)
 
@@ -183,8 +141,8 @@ let ci_ex1_ (x : nat) : unit =
   ()  
 #pop-options
 
-/// fem-insert-pre-post also handles the "global" precondition (execute the command
-/// while anywhere inside the below function) and the "global" parameters.
+/// You may need to know the "global" assumptions. In order to get those,
+/// put the pointer close enough to the beginning of the function and type `C-c C-e C-g`
 let ci_ex2 (x : nat{x % 2 = 0}) (y : int{y % 3 = 0 /\ x + y % 5 = 0}) :
   Pure int
   (requires (x + y >= 0))
@@ -197,8 +155,8 @@ let ci_ex2 (x : nat{x % 2 = 0}) (y : int{y % 3 = 0 /\ x + y % 5 = 0}) :
   let z = x + y in
   z
 
-/// This command also works on effectful terms. It may happen that it needs to
-/// introduce variables in the context. For instance, when dealing with pre/posts
+/// Those commands also work on effectful terms. They may need to
+/// introduce variables in the context. For instance, when dealing with pres/posts
 /// of stateful terms, it will look for state variables with which to instantiate
 /// those pre/posts, but might not be able to find suitable variables.
 /// In this case, it introduces fresh variables (easy to recognize because they are
@@ -208,17 +166,15 @@ let ci_ex2 (x : nat{x % 2 = 0}) (y : int{y % 3 = 0 /\ x + y % 5 = 0}) :
 /// It leads to assertions of the form:
 /// [> assert((fun __x0 __x1 -> pred __x0 __x1) __x0 __x1)
 ///
-/// As C-c C-e C-e simple normalization (to remove abstractions, for instance) on
-/// the terms it manipulates, you can manually rewrite this assert to:
+/// As (C-c C-e C-e) performes simple normalization (to remove abstractions,
+/// for instance) on the terms it manipulates, you can manually rewrite this
+/// assert to:
 /// [> assert((fun __x0 __x1 -> pred __x0 __x1) x y)
 ///
-/// then apply C-c C-e C-e on the above assertion to get:
+/// then apply (C-c C-e C-e) on the above assertion to get:
 /// [> assert(pred x y)
 ///
-/// Try this on the stateful calls in the below function. When applying C-c C-e C-e on
-/// one of the resulting assertions, make sure you select the WHOLE assertion: as
-/// it will likely be written on several lines, the command will need some help for
-/// parsing.
+/// Try this on the stateful calls in the below function:
 
 let ci_ex3 (r1 r2 : B.buffer int) :
   ST.Stack int (requires (fun _ -> True)) (ensures (fun _ _ _ -> True)) =
@@ -252,15 +208,12 @@ let ci_ex4 (x : int{x % 2 = 0}) :
 
 (**** Split conjunctions *)
 /// Proof obligations are often written in the form of big conjunctions, and
-/// figuring out which of those conjuncts fails can be painful, and often requires
-/// to copy-paste the proof obligation in an assertion, then split this assertion
-/// by hand. The copying part is already taken care of above, and the splitting part
-/// can be easily achieved with the fem-split-assert-assume-conjuncts command
-/// (C-c C-e C-s):
+/// F* may not always be precise enough to indicate which part of the conjunction
+/// fails. The user then often has to "split" the conjunctions by hand, by
+/// introducing one assertion per conjunct.
+/// The fem-split-assert-assume-conjuncts command (C-c C-e C-s) automates the process.
 
 /// Move the pointer anywhere inside the below assert and use C-c C-e C-s.
-/// Note that you don't need to select the assert: the command expects to be inside
-/// an assert and can find its boundaries on its own.
 let split_ex1 (x y z : nat) : unit =
   assert( (* <- Try C-c C-e C-s anywhere inside the assert *)
     pred1 x y z /\
@@ -275,7 +228,7 @@ let split_ex1 (x y z : nat) : unit =
 /// - ``assert_norm``
 /// - ``assume``
 
-(**** Unfold terms *)
+(**** Terms unfoldign *)
 /// It sometimes happens that we need to unfold a term in an assertion, for example
 /// in order to check why some equality is not satisfied.
 /// fem-unfold-in-assert-assume (C-c C-s C-u) addresses this issue.
@@ -304,14 +257,14 @@ let ut_ex1 (x y : nat) : unit =
    *)
   assert(f3 (f3 (x + y)) = 4 * (x + y));
   assert(2 * z1 = z1 + z1);  
-  assert(f3 (f3 (x + y)) = 2 * z1) (* <- Try to rewrite any operand *)
+  assert(f3 (f3 (x + y)) = 2 * z1) (* <- SELECT an operand then call C-c C-e C-u *)
 
 /// Of course, it works with effectful functions too, and searches the context
 /// for state variables to use:
 let ut_ex2 () : ST.ST unit (requires (fun _ -> True)) (ensures (fun _ _ _ -> True)) =
   let l : list int = [1; 2; 3; 4; 5; 6] in
   let h0 = ST.get () in
-  let r = sf2 l in
+  let r = sf2 l in (* This dummy function introduces some equalities in the context *)
   let h1 = ST.get () in
   assert(B.as_seq h1 r == B.as_seq h1 r); (* <- Try here *)
   ()
@@ -323,7 +276,7 @@ let ut_ex2 () : ST.ST unit (requires (fun _ -> True)) (ensures (fun _ _ _ -> Tru
 
 /// Invariants are sometimes divided in several pieces, for example a
 /// functional part, to which we later add information about aliasing.
-/// Moreover they are often written in the form of big conjunctions.
+/// Moreover they are often written in the form of big conjunctions:
 let invariant1_s (l1 l2 l3 : Seq.seq int) =
   lpred1 l1 l2 /\
   lpred2 l2 l3 /\
@@ -336,8 +289,6 @@ let invariant1 (h : HS.mem) (r1 r2 r3 : B.buffer int) =
   invariant1_s l1 l2 l3 /\
   B.live h r1 /\ B.live h r2 /\ B.live h r3 /\
   B.disjoint r1 r2 /\ B.disjoint r2 r3 /\ B.disjoint r1 r3
-
-// TODO: use a dependent type for the function type
 
 /// The following function has to maintain the invariant. Now let's imagine
 /// that once the function is written, you fail to prove that the postcondition
@@ -358,17 +309,18 @@ let cc_ex1 (r1 r2 r3 : B.buffer int) :
   (**) let h1 = ST.get () in
   x (* <- Try studying the proof obligations here *)
 
-(**** Two-steps execution *)
+(**** For advanced users and hackers only *)
+(***** Two-steps execution - TODO: broken *)
 /// The commands implemented in the F* extended mode work by updating the function
 /// defined by the user, by inserting some annotations and instructions for F*
 /// (like post-processing instructions), query F* on the result and retrieve the
 /// data output by the meta-F* functions to insert appropriate assertions in the
 /// code.
-/// Updating the user code requires some parsing, but the parsing is pretty basic
-/// so far. It often happens that the commands can't fill the holes in a function
-/// the user is writing, and which thus has many missing parts. In this case, we
-/// need to provide a bit of help. This often happens when trying to call the
-/// commands on a subterm inside the branch of a match (or an 'if ... then .. else ...').
+/// Updating the user code requires some parsing, but it may happen that the commands
+/// can't fill the holes in a function the user is writing, and which thus has many
+/// missing parts. In this case, we need to provide a bit of help. For instance,
+/// this can happen when trying to call the commands on a subterm inside the branch
+/// of a match (or an 'if ... then .. else ...').
 /// With the fem-insert-pos-markers (C-c C-s C-i), the user can do a differed command
 /// execution, by first indicating the subterm which he wants to analyze, then by
 /// indicating to F* how to parse the whole function.
@@ -385,7 +337,7 @@ let ts_ex1 (x : int) =
     else -x
   in
   let z = f2 y 3 in
-  z (* <- Then use C-c C-e here to indicate where the end of the function is *)
+  z (* <- Then use C-c C-e C-e here to indicate where the end of the function is *)
 
 /// You probably noticed that C-c C-s C-i introduces a marker in the code. You
 /// can remove by calling C-c C-s C-i again (this will look for markers before
@@ -396,8 +348,7 @@ let ts_ex1 (x : int) =
 /// examples like the above one.
 
 (**** Debugging *)
-/// You may have bumped into the issue while playing with the above functions:
-/// if F* fails on the queries it receives, the interactive commands ask the user
+/// If F* fails on the queries it receives, the interactive commands ask the user
 /// if he wants to see the query which was sent, in which case emacs switches
 /// between buffers.
 /// By doing that, we provide a convenient way for debugging: you may have
@@ -419,9 +370,12 @@ let dbg_ex1 () : Tot nat =
   let y = 2 in
   f1 x y (* <- Use C-c C-e here *)
 
-[@(postprocess_with (pp_analyze_effectful_term false))]
+/// Note that the post-processing tactic will FAIL: it is NORMAL. It aborts early
+/// so as not to deal with any proof obligation. However, you should be able to
+/// retrieve useful information from the *Messages* buffer.
+[@(postprocess_with (FEM.pp_analyze_effectful_term false false true))]
 let dbg_ex2 () : Tot nat =
   let x = 4 in
   let y = 2 in
-  let _ = focus_on_term in (* indicates the term to analyze to the post-processing tactic *)
+  let _ = FEM.focus_on_term in (* indicates the term to analyze to the post-processing tactic *)
   f1 x y
