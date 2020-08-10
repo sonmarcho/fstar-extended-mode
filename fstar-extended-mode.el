@@ -21,6 +21,13 @@
 
 ;;; Code:
 
+;; TODO: fem-cfp-state-filter-stack often makes recursive calls with a big depth,
+;; which forces us to increase the recursion limits. This may not be safe.
+;; Rewrite this function so as to use a loop, and remove those two lines
+(setq max-specpdl-size 5000)
+(setq max-lisp-eval-depth 5000)
+
+
 ;;; Imports
 (use-package fstar-mode :demand)
 
