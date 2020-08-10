@@ -2718,6 +2718,11 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
                                    (apply-partially #'fem-insert-assert-pre-post--continuation
                                                     $indent-str $insert-beg $insert-end))))
 
+(defun fem-switch-assert-assume ()
+  "Switch between assertion and assumption under the pointer or in the current selection."
+  (interactive)
+  (fem-switch-assert-assume-p-or-selection))
+
 (defun fem-analyze-effectful-term-no-goal ()
   "Insert assertions with proof obligations and postconditions around a term."
   (interactive)
@@ -2743,8 +2748,8 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
 ;;(global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
 
 ;;(global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-in-above-paragraph)
-(global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-in-current-line)
-(global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-p-or-selection)
+;; (global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-in-current-line)
+(global-set-key (kbd "C-S-s") 'fem-switch-assert-assume)
 ;;(global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
 ;;(global-set-key (kbd "C-c C-e C-a") 'fem-switch-assert-assume-in-above-paragraph)
 
