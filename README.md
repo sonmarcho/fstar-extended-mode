@@ -29,7 +29,7 @@ make -C fstar-extended-mode
 make -C fstar-extended-mode clean && make -C fstar-extended-mode
 ```
 
-## 5. Configure emacs to load the package at launch time
+### 5. Configure emacs to load the package at launch time
 Insert this in your `.emacs` file:
 
 ```elisp
