@@ -11,7 +11,7 @@ If not done yet, go [here](https://github.com/FStarLang/fstar-mode.el).
 You can install it by using Melpa:
 
 * `M-x list-packages`
-* go to `use-package`
+* search the list of packages until you find `use-package`
 * click on "Install"
 
 ### 3. Clone the package
@@ -34,8 +34,10 @@ Insert this in your `.emacs` file:
 
 ```elisp
 ;; Replace PATH-TO-REPO by the path to the cloned F* extended mode repository
-;; Warning: if the path to the repo is "/home/johndoe/fstar-extended-mode", you must write:
+;; WARNING: if the path to the repo is "/home/johndoe/fstar-extended-mode", you must write:
 ;; "/home/johndoe/fstar-extended-mode/fstar-extended-mode"
+;; and not:
+;; "/home/johndoe/fstar-extended-mode"
 ;; (this path actually indicates where to find the .el file)
 (load "~/PATH-TO-REPO/fstar-extended-mode")
 ```
@@ -89,10 +91,10 @@ The F* extended mode introduces the following commands:
 ## Tutorial
 You can learn how to use the package by going through the [tutorial file](./FEM.Tutorial.fst).
 
-##Known limitations
-* the meta F\* functions which perform the analysis currently use the \*Messages\* buffer as output: this is not very safe nor convenient, and it would be good to have a dedicated output buffer in the future
+## Known limitations
 * the .fst files containing the meta F\* functions are not automatically loaded when we start the interactive mode, forcing the user to insert instructions like `module FEM = FEM.Process` in the code before starting F\*, which is cumbersome
-* when dealing with "global" pre and postconditions (i.e.: the current function's assumptions and goal), we don't control the way F\* "unfolds" the effect, often leading to unexploitable assertions
+* the meta F\* functions which perform the analysis currently use the \*Messages\* buffer as output: this is not very safe nor convenient, and it would be good to have a dedicated output buffer in the future
+* when dealing with "global" pre and postconditions (i.e.: the current function's assumptions and goal), we don't control the way F\* "unfolds" the effects, often leading to unexploitable assertions
 * there are many (pretty) printing issues:
 	* fully named identifiers like `FStar.Native.Some` clutter the output
 	* the output printed by F\* is not always valid F\* syntax, or can't be parsed because, for instance, it uses private identifiers like `Prims.logical`
