@@ -2288,10 +2288,10 @@ PP_INSTR is the post-processing instruction to insert for F*."
       (setf (fem-subexpr-bterm $res) (copy-fem-letb-term (fem-subexpr-bterm SUBEXPR))))
     (fem-shift-subexpr-pos $focus-shift $res)))
 
-(defun fem-query-fstar-on-buffer-content (OVERLAY_END PAYLOAD FULL CONTINUATION)
+(defun fem-query-fstar-on-buffer-content (OVERLAY_END PAYLOAD LAX CONTINUATION)
   "Send PAYLOAD to F* and call CONTINUATION on the result.
 CONTINUATION must an overlay, a status and a response as arguments.
-If FULL is t, perform full type check, otherwise do lax.
+If LAX is t, perform lax type checking.
 OVERLAY_END gives the position at which to stop the overlay."
   (let* (($beg (fstar-subp--untracked-beginning-position))
          $typecheck-kind $overlay)
@@ -2305,7 +2305,7 @@ OVERLAY_END gives the position at which to stop the overlay."
     (fem-log-dbg "sending query to F*:[\n%s\n]" PAYLOAD)
     ;; Before querying F*, log a message signifying the beginning of the F* output
     (message "%s" fem-start-fstar-msg)
-    (setq $typecheck-kind (if FULL `full `lax))
+    (setq $typecheck-kind (if LAX `lax `full))
     (fstar-subp--query (fstar-subp--push-query $beg $typecheck-kind PAYLOAD)
                        (apply-partially CONTINUATION $overlay))))
 
