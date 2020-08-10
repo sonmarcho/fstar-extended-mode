@@ -1,25 +1,25 @@
 # F* extended mode
-The F* extended mode contains files which extend the [F* emacs mode](https://github.com/FStarLang/fstar-mode.el). It provides simple code editing commands to help switching between assertions and assumptions in the code, to save time when progressing on a proof, or to help with techniques like the "rolling-admit". It also provides more advanced commands which perform term unfoldings or insert context information at specific points in the code.
+The F* extended mode contains files which extend the [F* emacs mode](https://github.com/FStarLang/fstar-mode.el). It provides simple code editing commands to help write proofs quicker, and more advanced commands to help retrieve informative feedback from F\*.
 
-# Setup
+## Setup
 We intend to merge the F\* extended mode with the F\* emacs mode and the F\* repositories in the future, which will make installation very easy. However, for now, there is a bit of setup to do.
 
-## Install the F\* emacs mode
-If not done yet, it's [here](https://github.com/FStarLang/fstar-mode.el).
+### 1. Install the F\* emacs mode
+If not done yet, go [here](https://github.com/FStarLang/fstar-mode.el).
 
-## Install the use-package emacs package
+### 2. Install the use-package emacs package
 You can install it by using Melpa:
 
 * `M-x list-packages`
 * go to `use-package`
 * click on "Install"
 
-## Clone the package
+### 3. Clone the package
 ```bash
 sudo git clone git@github.com:Kachoc/fstar-extended-mode.git
 ```
 
-## Build it
+### 4. Build it
 ```bash
 make -C fstar-extended-mode
 ```
@@ -29,7 +29,7 @@ make -C fstar-extended-mode
 make -C fstar-extended-mode clean && make -C fstar-extended-mode
 ```
 
-## Configure emacs to load the package at launch time
+## 5. Configure emacs to load the package at launch time
 Insert this in your `.emacs` file:
 
 ```elisp
@@ -40,7 +40,7 @@ Insert this in your `.emacs` file:
 (load "~/PATH-TO-REPO/fstar-extended-mode")
 ```
 
-## Configure the F\* options
+### 6. Configure the F\* options
 The simplest way is to insert the following code in your `.emacs` file. Look for the **TODOs**.
 
 ```elisp
@@ -75,27 +75,24 @@ The simplest way is to insert the following code in your `.emacs` file. Look for
 (setq fstar-subp-debug t)
 ```
 
-# Commands and bindings
+## Commands and bindings
 The F* extended mode introduces the following commands:
 | Command       | Key binding           | Description  |
 | :------------- |:-------------:| :-----|
-| `fem-roll-admit` | (C-c C-e C-r) | Helper for the "**r**olling admit" technique |
-| `fem-switch-assert-assume-in-above-paragraph` | (C-c C-e C-a) | Switch between **a**ssertions and **a**ssumptions in the paragraph above the pointer, or in the current selection |
-| `fem-analyze-effectful-term-with-goal` | (C-c C-e C-e) | **E**xpand an effectful term to insert context information (precondition, type obligations, postcondition) |
+| `fem-roll-admit` | (C-S-r) | Helper for the "**r**olling admit" technique |
+| `fem-switch-assert-assume` | (C-S-s) | Switch between **a**ssertion and **a**ssumption under the pointer or in the current selection |
+| `fem-analyze-effectful-term-no-pre` | (C-c C-e C-e) | Analyze an **e**ffectful term to insert context information (precondition, type obligations, postcondition...) |
+| `fem-analyze-effectful-term-with-goal` | (C-c C-e C-g) | Analyze an effectful term to insert context information (precondition, type obligations, postcondition...), including the **g**lobal precondition |
 | `fem-split-assert-assume-conjuncts` | (C-c C-e C-s) | **S**plit the conjuncts in an assertion/assumption |
 | `fem-unfold-in-assert-assume` | (C-c C-e C-u) | **U**nfold/substitute a term in an assertion/assumption |
-| `fem-insert-pos-markers` | (C-c C-e C-i) | **I**nsert a marker in the code for two-steps execution, in case of parsing issues |
 
-* Simple editing commands:
-	* `fem-roll-admit` (C-x C-a): helper for the "rolling admit" technique: introduces an admit at the next line. Before doing so, checks if there is another admit to move, and asks the user for removal.
-	* `fem-switch-assert-assume-in-above-paragraph` (C-c C-s C-a): switches between assertions (`assert`, `assert_norm`) and assumptions (`assume`) in a block of code. Performs it so that the block then only contains assertions or only contains assumptions - converts all the assertions to assumptions if it can find some assertions, otherwise converts all the assumptions to assertions. It works inside the active selection, or on the block of code above the pointer (including the current line) if there is no selection.
-	* `fem-switch-assert-assume-in-current-line` (C-S-a): same as `fem-switch-assert-assume-in-above-paragraph`but operates only on the current line.
-* Advanced commands relying on meta F*:
-	* `fem-insert-assert-pre-post` (C-c C-e): analyzes an effectful term and inserts assertions before and after corresponding to the proof obligations which must be satisfied for the term to be well-typed (preconditions, typing conditions including refinements), and the properties which are true afterwards (postcondition, refinement on the return type). Also introduces assertions corresponding to the "global" precondition (the precondition of the function being defined) and the goal, if those are relevant. This command operates on the term on the current line, or on the term in the active region, and can be used with saved positions (see below). The parsing algorithm being fairly basic, if the term to analyze is defined over several lines, the user must indicate it by selecting it entirely.
-	* `fem-split-assert-assume-conjuncts` (C-c C-s C-u): splits the conjunctions inside an assertion/assumption and introduces one `assert` per such conjunct. The pointer must be on the assertion to analyze. Also works with saved positions, see below.
-	* `fem-unfold-in-assert-assume` (C-c C-s C-f): unfolds an identifier inside an assertion/assumption. The term identifier can be understood in quite a large sense: you can unfold a top-level identifier (i.e.: a definition), but the command will analyze previous pure let-bindings and equalities in postconditions to find a term by which to replace a local variable the user may wish to "unfold". In the future, it will allow to rewrite arbitrary terms.
-	* `fem-insert-pos-markers` (C-c C-s C-i): it can be difficult for the above commands to generate correct queries to send to F* for analysis, because the user may be working on a function only partly written and whose holes can be difficult to fill. It especially happens when working inside `if .. then ... else ...` expressions or branches of a match.  In such cases, it can be necessary for the user to help a bit, by indicating which term he wants to analyze, then where to stop the parsing for the query to send to F*. If the user calls `fem-insert-pos-markers` then one of the above commands, those commands will use the positition saved by `fem-insert-pos-markers` to find out the term to analyze, and will parse to the current position.
-
-# Tutorial
+## Tutorial
 You can learn how to use the package by going through the [tutorial file](./FEM.Tutorial.fst).
-Note that this file also contains useful tips and tricks, for example workarounds in case the commands fail because of parsing issues.
+
+##Known limitations
+* the meta F\* functions which perform the analysis currently use the \*Messages\* buffer as output: this is not very safe nor convenient, and it would be good to have a dedicated output buffer in the future
+* the .fst files containing the meta F\* functions are not automatically loaded when we start the interactive mode, forcing the user to insert instructions like `module FEM = FEM.Process` in the code before starting F\*, which is cumbersome
+* when dealing with "global" pre and postconditions (i.e.: the current function's assumptions and goal), we don't control the way F\* "unfolds" the effect, often leading to unexploitable assertions
+* there are many (pretty) printing issues:
+	* fully named identifiers like `FStar.Native.Some` clutter the output
+	* the output printed by F\* is not always valid F\* syntax, or can't be parsed because, for instance, it uses private identifiers like `Prims.logical`
