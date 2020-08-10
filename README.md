@@ -2,9 +2,48 @@
 The F* extended mode contains files which extend the [F* emacs mode](https://github.com/FStarLang/fstar-mode.el). It provides simple code editing commands to help switching between assertions and assumptions in the code, to save time when progressing on a proof, or to help with techniques like the "rolling-admit". It also provides more advanced commands which perform term unfoldings or insert context information at specific points in the code.
 
 # Setup
-You first need to install the [F* emacs mode](https://github.com/FStarLang/fstar-mode.el). The F* extended mode is not on Melpa for now, so you need to clone the repository. Next, you need to configure the emacs mode so that it knows where to look for the .fst files used by the extended mode. The simplest way is to insert the following code in your `.emacs` file. This command tries to use any local Makefile to compute the F* dependencies whenever you start the F* mode.
+We intend to merge the F\* extended mode with the F\* emacs mode and the F\* repositories in the future, which will make installation very easy. However, for now, there is a bit of setup to do.
 
+## Install the F\* emacs mode
+If not done yet, it's [here](https://github.com/FStarLang/fstar-mode.el).
+
+## Install the use-package emacs package
+You can install it by using Melpa:
+
+* `M-x list-packages`
+* go to `use-package`
+* click on "Install"
+
+## Clone the package
+```bash
+sudo git clone git@github.com:Kachoc/fstar-extended-mode.git
 ```
+
+## Build it
+```bash
+make -C fstar-extended-mode
+```
+
+**Important:** whenever you update the directory, run:
+```bash
+make -C fstar-extended-mode clean && make -C fstar-extended-mode
+```
+
+## Configure emacs to load the package at launch time
+Insert this in your `.emacs` file:
+
+```elisp
+;; Replace PATH-TO-REPO by the path to the cloned F* extended mode repository
+;; Warning: if the path to the repo is "/home/johndoe/fstar-extended-mode", you must write:
+;; "/home/johndoe/fstar-extended-mode/fstar-extended-mode"
+;; (this path actually indicates where to find the .el file)
+(load "~/PATH-TO-REPO/fstar-extended-mode")
+```
+
+## Configure the F\* options
+The simplest way is to insert the following code in your `.emacs` file. Look for the **TODOs**.
+
+```elisp
 (defun my-fstar-compute-prover-args-using-make ()
   "Construct arguments to pass to F* by calling make."
   (interactive)
@@ -15,40 +54,26 @@ You first need to install the [F* emacs mode](https://github.com/FStarLang/fstar
                        ;; Compute the dependencies by using the local Makefile
                        (concat
                         (car (process-lines "make" "--quiet" target))
-                        ;; TODO: Put the path to the local copy of the F* extended mode here
+                        ;; TODO: Path to the F* extended mode folder
                         " --include " (getenv "HOME") "/fstar-extended-mode "
-                        "load FEM.Process" ;; Load the compiled tactics used by the extended mode
+                        ;; Load the compiled tactics used by the extended mode
+                        "load FEM.Process"
                         )
                      ;; If the above failed, use a default configuration
                      (error (concat
                      	     ;; TODO: Put the relevant F* directories here
                              "--include " (getenv "HOME") "/hacl-star/lib "
-                             ;; TODO: Put the path to the local copy of the F* extended mode here
+                       	     ;; TODO: Path to the F* extended mode folder
                              "--include " (getenv "HOME") "/fstar-extended-mode "
-                             "load FEM.Process" ;; Load the compiled tactics used by the extended mode
-                             ;; TODO: Optional
+                             ;; Load the compiled tactics used by the extended mode
+                             "load FEM.Process"
+                             ;; TODO: Optional debugging options (keep or remove)
                              "--debug yes --log_queries --use_hints --cache_checked_modules"
                              )))))
       (split-string argstr))))
 (setq fstar-subp-prover-args #'my-fstar-compute-prover-args-using-make)
 (setq fstar-subp-debug t)
 ```
-
-The F* extended mode needs the `use-package` package. You can install it by using Melpa (`M-x list-packages`, then go to `use-package` and click on "Install").
-
-Then, you need to load the extended mode. You can do it simply by inserting the following command in your `.emacs` file:
-
-```
-;; Replace PATH-TO-REPO by the path to the cloned extended mode repository
-;; Warning: if the path to the repo is "/home/johndoe/fstar-extended-mode", you must write:
-;; "/home/johndoe/fstar-extended-mode/fstar-extended-mode"
-;; (this path actually indicates where to find the .el file)
-(load "~/PATH-TO-REPO/fstar-extended-mode")
-```
-
-Finally, you need to build it. Just go inside the clone directory and run `make`.
-
-**Important:** whenever you update the directory, run `make clean && make`.
 
 # Commands and bindings
 The F* extended mode introduces the following commands:
