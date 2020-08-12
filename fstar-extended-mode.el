@@ -560,8 +560,9 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
     ;; Retrieve the original position
     (setq $p (point))
     ;; Look for an admit
-    (if FORWARD (setq $f (search-forward TERM END t))
-		(setq $f (search-backward TERM BEGIN t)))
+    (if FORWARD (setq $f (fem-search-forward-not-comment TERM nil END))
+		(setq $f (fem-search-backward-not-comment TERM nil BEGIN)))
+;;		(setq $f (search-backward TERM BEGIN t)))
     ;; If there is an occurrence of TERM, ask for removal
     (when $f
       (when (y-or-n-p (concat "Remove this '" (concat TERM "'?")))
@@ -616,9 +617,9 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
     (or (fstar-in-comment-p POS) (fstar-in-literate-comment-p))))
 
 (defun fem-search-forward-not-comment (STR &optional FULL_SEXP LIMIT)
-    "Looks for the first occurrence of STR not inside a comment, returns t and
-moves the pointer immediately after if it finds one, doesn't move the pointer
-and returns nil otherwise.
+    "Look for the first occurrence of STR not inside a comment, return t and
+move the pointer immediately after if found one, don't move the pointer
+and return nil otherwise.
 If FULL_SEXP, look for the first occurrence which is a full sexp."
     (let (($p (point))
           $exp)
@@ -644,13 +645,24 @@ If FULL_SEXP, look for the first occurrence which is a full sexp."
                              #'fstar--adjust-point-backward needle bound)
     (goto-char (match-beginning 0))))
 
-(defun fem-search-backward-not-comment (STR &optional LIMIT)
-    "Looks for the first occurrence of STR not inside a comment, returns t and
-moves the pointer immediately before if it finds one, doesn't move the pointer
-and returns nil otherwise."
-    (let (($p (point)))
+(defun fem-search-backward-not-comment (STR &optional FULL_SEXP LIMIT)
+    "Look for the first occurrence of STR not inside a comment, return t and
+move the pointer immediately before if found one, don't move the pointer
+and return nil otherwise."
+    (let (($p (point)) $exp)
       (fem-fstar--search-predicated-backward
-       (lambda () (not (fem-in-general-comment-p))) STR LIMIT)
+       (lambda ()
+         (if (fem-in-general-comment-p)
+             nil
+           (if (not FULL_SEXP)
+               t
+             (goto-char (match-beginning 0))
+             (setq $exp (fem-sexp-at-p-as-string))
+             (goto-char (match-end 0))
+             (if $exp
+                 (string-equal $exp STR)
+               nil))))
+       STR LIMIT)
       (not (= $p (point)))))
 
 ;; TODO: use forward-comment

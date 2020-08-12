@@ -44,6 +44,7 @@ let simpl_ex1 (x : nat) =
       let x'' = 2 * (y + x') in
       assert(x'' > 16);
       assert(x'' >= 10);
+      admit()
       2 * x'
       end
     else 12
