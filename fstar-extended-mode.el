@@ -1367,9 +1367,9 @@ extracts those assertions."
     (setq $posts (fem-extract-assertion-num-and-list-from-buffer PREFIX $id-posts NO_ERROR LIMIT))
     (make-fem-result :error $error :pres $pres :posts $posts)))
 
-(defun fem-copy-data-from-messages-to-buffer (beg-delimiter end-delimiter
-                                          include-delimiters dest-buffer
-                                          &optional no-error clear-dest-buffer)
+(defun fem-copy-data-from-messages-to-buffer (BEG_DELIMITER END_DELIMITER
+                                              INCLUDE_DELIMITERS DEST_BUFFER
+                                              &optional NO_ERROR CLEAR_DEST_BUFFER)
     "When extracting information from the *Messages* buffer, we start by locating
 it by finding its begin and end delimiters, then copy it to another buffer where
 we can parse/modify it. The reasons are that it is easier to modify the data in
@@ -1381,37 +1381,39 @@ the fem-pair of point coordinates delimiting the copied data in the destination
 buffer.
 include-delimiters controls whether to copy the delimiters or not"
     ;; This command MUST NOT send any message to the *Messages* buffer
-    (let ((prev-buffer (current-buffer))
-          (backward t)
-          (beg nil) (end nil) (p1 nil) (p2 nil))
+    (let (($prev-buffer (current-buffer))
+          ($backward t)
+          ($beg nil) ($end nil)
+          ($data nil)
+          ($p1 nil) ($p2 nil))
       ;; Switch to the *Messages* buffer
       (switch-to-buffer fem-messages-buffer)
       ;; Find the delimiters
       (goto-char (point-max))
-      (setq beg (fem-search-data-delimiter beg-delimiter t include-delimiters no-error))
-      (setq end (fem-search-data-delimiter end-delimiter nil include-delimiters no-error))
+      (setq $beg (fem-search-data-delimiter BEG_DELIMITER t INCLUDE_DELIMITERS NO_ERROR))
+      (setq $end (fem-search-data-delimiter END_DELIMITER nil INCLUDE_DELIMITERS NO_ERROR))
       ;; Check if successful
-      (if (or (not beg) (not end))
+      (if (or (not $beg) (not $end))
           ;; Failure
           (progn
-            (when (not no-error)
+            (when (not NO_ERROR)
               (error (concat "copy-data-from-messages-to-buffer: "
                              "could not find the delimiters: "
-                             beg-delimiter ", " end-delimiter)))
+                             BEG_DELIMITER ", " END_DELIMITER)))
             nil)
         ;; Success
         ;; Copy in the dest-buffer
-        (kill-ring-save beg end)
-        (switch-to-buffer dest-buffer)
+        (setq $data (buffer-substring-no-properties $beg $end))
+        (switch-to-buffer DEST_BUFFER)
         (goto-char (point-max))
-        (when clear-dest-buffer (erase-buffer))
-        (setq p1 (point))
-        (yank)
-        (setq p2 (point))
+        (when CLEAR_DEST_BUFFER (erase-buffer))
+        (setq $p1 (point))
+        (insert $data)
+        (setq $p2 (point))
         ;; Switch back to the original buffer
-        (switch-to-buffer prev-buffer)
+        (switch-to-buffer $prev-buffer)
         ;; Return
-        (make-fem-pair :fst p1 :snd p2))))
+        (make-fem-pair :fst $p1 :snd $p2))))
 
 (defun fem-clean-data-from-messages (&optional BEG END)
     "Once data has been copied from the messages buffer, it needs some processing

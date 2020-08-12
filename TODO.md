@@ -17,7 +17,6 @@
 * when a variable is unit (for the return value used in the postcondition for example), don't introduce a new variable, but use unit
 * take into accounts attributes like [@inline_let] for indentation
 * roll-admit: ignore admits in comments
-* stop using kill/yank in the commands
 * give the possibility to split assertions of the form:
   [> let x = ... in A x /\ B x
   into:
