@@ -989,14 +989,14 @@ Returns a fem-subexpr."
       (goto-char (point-min))      
       (setq $is-let-in
             ;; TODO: rewrite the regexp
-            (re-search-forward "\\`let[[:ascii:][:nonascii:]]+in\\'" (point-max) t 1))
+            (re-search-forward "\\=let[[:ascii:][:nonascii:]]+in\\'" (point-max) t 1))
       (when $is-let-in (setq $bterm (fem-parse-letb-term $beg $end)))
       ;; Check if the narrowed region matches: '_ ;'
       (goto-char (point-min))
       (setq $has-semicol
             ;; We could just check if the character before last is ';'
             ;; TODO: rewrite the regexp
-            (re-search-forward "\\`[[:ascii:][:nonascii:]]+;\\'" (point-max) t 1))
+            (re-search-forward "\\=[[:ascii:][:nonascii:]]+;\\'" (point-max) t 1))
       ;; Otherwise: it is a return value (end of function)
       ) ;; end of regexp matching
     ;; Return
@@ -1274,9 +1274,13 @@ If WITH_PARENTHESES is t, look for parenthesized terms."
 (defun fem-meta-info-pp-remove-namespace (NAME)
   "Remove a useless namespace"
   (save-match-data
-    (when (re-search-forward (concat "\\(\\`\\|[;,\\[({\t\n\t ]\\)" "\\(" NAME "\\.\\)") (point-max) t)
+    (when (re-search-forward (concat "\\(\\=\\|[;,\\[({\t\n\t ]\\)" "\\(" NAME "\\.\\)") (point-max) t)
       (delete-region (match-beginning 2) (match-end 0))
       (point))))
+
+(defun t1 ()
+  (interactive)
+  (fem-meta-info-pp-remove-namespace "Pervasives\\.Native"))
 
 (defun fem-meta-info-post-process ()
   "Post-process parsed data.
@@ -1291,6 +1295,7 @@ Replaces some identifiers (Prims.l_True -> True...)."
   (goto-char (point-min)) (while (fem-meta-info-pp-uint_to_t t) nil)
   (goto-char (point-min)) (while (fem-meta-info-pp-uint_to_t nil) nil)
   ;; Remove the occurrences of FStar., Prims.
+  (goto-char (point-min)) (while (fem-meta-info-pp-remove-namespace "FStar\\.Pervasives\\.Native") nil)
   (goto-char (point-min)) (while (fem-meta-info-pp-remove-namespace "Prims") nil)
   (goto-char (point-min)) (while (fem-meta-info-pp-remove-namespace "FStar") nil)
   nil)
@@ -1662,6 +1667,7 @@ TODO: use overlays."
 ;; - for numbers: use [:0-9:] ([:digit:] and [:alnum:] don't work)
 ;; - for spaces: use [\t\n\r ] (this includes line breaks) ([:space:] and [:blank:] don't work)
 ;; - to match the empty string at point: \\=
+;; - to match the empty string at beginning of buffer: \\` (pay attention: not the same as \\= !!)
 
 (defconst fem-spaces-re (concat "[" fstar--spaces "]+")) ;; [\t\n\r ]+
 (defconst fem-opt-spaces-re (concat "[" fstar--spaces "]*")) ;; [\t\n\r ]*
