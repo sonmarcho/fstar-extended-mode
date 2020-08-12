@@ -1183,7 +1183,7 @@ let term_has_shadowed_variables ge t =
 /// Whenever we generate assertions, we simplify them to make them cleaner,
 /// prettier and remove the trivial ones. The normalization steps we apply
 /// are listed below.
-let simpl_norm_steps = [primops; simplify]
+let simpl_norm_steps = [primops; simplify; iota]
 
 (*** Effectful term analysis *)
 /// Analyze a term to retrieve its effectful information
