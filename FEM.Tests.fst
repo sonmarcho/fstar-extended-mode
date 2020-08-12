@@ -39,3 +39,22 @@ let simpl_f1 () : Tot unit =
   let x = 3 in
   assert(let x, y = (x, 4) in x + y = 7)
 
+
+(*** Split assertions *)
+
+/// Split assertions under match
+let split_assert1 () : Tot unit =
+  let x = 3 in
+  let y = 5 in
+  let z = [x; y] in
+  (* Should generate:
+  assert(
+    let [x ; y] = z in
+    x + y = 8);
+  assert(
+    let [x ; y] = z in
+    (x + y) % 2 = 0); *)
+  assert(
+    let [x; y] = z in
+    x + y = 8 /\
+    (x + y) % 2 = 0)

@@ -2724,6 +2724,25 @@ let rec _split_conjunctions (ls : list term) (t : term) : Tac (list term) =
 let split_conjunctions t =
   _split_conjunctions [] t
 
+/// Split a term of the form:
+/// [> let Constuct x1 ... xn = x in A1 /\ ... /\ Am
+/// into m terms:
+/// [> let Constuct x1 ... xn = x in A1
+/// ...
+/// [> let Constuct x1 ... xn = x in Am
+val split_conjunctions_under_match : bool -> term -> Tac (list term)
+
+let split_conjunctions_under_match dbg t =
+  let t1 = remove_b2t t in
+  print_dbg dbg ("[> split_conjunctions_under_match: " ^ term_construct t1);
+  match inspect t1 with
+  | Tv_Match scrut [(pat, br)] ->
+    let tl = split_conjunctions br in
+    map (fun x -> pack (Tv_Match scrut [(pat, x)])) tl
+  | _ ->
+    (* Not of the proper shape: return the original term *)
+    [t]
+
 val split_assert_conjs : bool -> exploration_result term -> Tac unit
 let split_assert_conjs dbg res =
   let ge0 = res.ge in
@@ -2731,6 +2750,14 @@ let split_assert_conjs dbg res =
   let t = norm_term_env ge0.env simpl_norm_steps res.res in
   (* Split the conjunctions *)
   let conjs = split_conjunctions t in
+  (* If there is only one conjunction, check if it is of the following form
+   * and try to split:
+   * [> let Construct x1 .. xn = x in A1 /\ ... /\ Am
+   *)
+  let conjs =
+    if List.length conjs = 1 then split_conjunctions_under_match dbg t
+    else conjs
+  in
   let asserts = mk_assertions conjs [] in
   (* Print *)
   printout_success ge0 asserts
