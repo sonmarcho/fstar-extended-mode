@@ -214,9 +214,9 @@ let print_binders_info (full : bool) (e:env) : Tac unit =
 let acomp_to_string (c:comp) : Tot string =
   match inspect_comp c with
   | C_Total ret decr ->
-    "C_Total (" ^ term_to_string ret
+    "C_Total (" ^ term_to_string ret ^ ")"
   | C_GTotal ret decr ->
-    "C_GTotal (" ^ term_to_string ret
+    "C_GTotal (" ^ term_to_string ret ^ ")"
   | C_Lemma pre post patterns ->
     "C_Lemma (" ^ term_to_string pre ^ ") (" ^ term_to_string post ^ ")"
   | C_Eff us eff_name result eff_args ->
@@ -718,6 +718,15 @@ noeq type typ_or_comp =
 | TC_Typ : v:typ -> pl:list binder -> num_unflushed:nat -> typ_or_comp
 | TC_Comp : v:comp -> pl:list binder -> num_unflushed:nat -> typ_or_comp
 
+let typ_or_comp_to_string (tyc : typ_or_comp) : Tot string =
+  match tyc with
+  | TC_Typ v pl num_unflushed ->
+    "TC_Typ (" ^ term_to_string v ^ ") " ^ list_to_string name_of_binder pl ^
+    " " ^ string_of_int num_unflushed
+  | TC_Comp c pl num_unflushed ->
+    "TC_Comp (" ^ acomp_to_string c ^ ") " ^ list_to_string name_of_binder pl ^
+    " " ^ string_of_int num_unflushed
+
 /// Return the list of parameters stored in a ``typ_or_comp``
 let params_of_typ_or_comp (c : typ_or_comp) : list binder =
   match c with
@@ -878,7 +887,7 @@ let abs_update_opt_typ_or_comp b opt_c e =
          | err -> raise err
 
 /// Flush the instantiation stored in a ``typ_or_comp``
-val flush_typ_or_comp : env -> typ_or_comp ->
+val flush_typ_or_comp : bool -> env -> typ_or_comp ->
                         Tac (tyc:typ_or_comp{num_unflushed_of_typ_or_comp tyc = 0})
 
 /// Strip all the arrows we can without doing any instantiation. When we can't
@@ -887,7 +896,7 @@ val flush_typ_or_comp : env -> typ_or_comp ->
 /// - the remaining binders
 /// - the instantiation corresponding to the arrows we have stripped so far, and
 ///   which will be applied all at once
-let rec _flush_typ_or_comp_comp (e:env) (rem : list binder) (inst : list (bv & term))
+let rec _flush_typ_or_comp_comp (dbg : bool) (e:env) (rem : list binder) (inst : list (bv & term))
                                 (c:comp) : Tac comp =
   let flush c inst =
     let inst = List.rev inst in
@@ -906,21 +915,56 @@ let rec _flush_typ_or_comp_comp (e:env) (rem : list binder) (inst : list (bv & t
     in
     match inspect ty with
     | Tv_Arrow b' c' ->
-      _flush_typ_or_comp_comp e rem' ((bv_of_binder b', pack (Tv_Var (bv_of_binder b)))::inst) c'
-    | _ -> mfail "_flush_typ_or_comp: inconsistant state"
+      _flush_typ_or_comp_comp dbg e rem' ((bv_of_binder b', pack (Tv_Var (bv_of_binder b)))::inst) c'
+    | _ ->
+      mfail ("_flush_typ_or_comp: inconsistent state" ^
+             "\n-comp: " ^ acomp_to_string c ^
+             "\n-remaning binders: " ^ list_to_string name_of_binder rem)
 
-let flush_typ_or_comp e tyc =
+let flush_typ_or_comp dbg e tyc =
   let flush_comp pl n c : Tac (tyc:typ_or_comp{num_unflushed_of_typ_or_comp tyc = 0})  =
     let pl', _ = List.Tot.splitAt n pl in
     let pl' = List.rev pl' in
-    let c = _flush_typ_or_comp_comp e pl' [] c in
+    let c = _flush_typ_or_comp_comp dbg e pl' [] c in
     TC_Comp c pl 0
   in
-  match tyc with
+  try begin match tyc with
   | TC_Typ ty pl n ->
     let c = pack_comp (C_Total ty None) in
     flush_comp pl n c
   | TC_Comp c pl n -> flush_comp pl n c
+  end
+  with | MetaAnalysis msg ->
+         mfail ("flush_typ_or_comp failed on: " ^ typ_or_comp_to_string tyc ^ ":\n" ^ msg)
+       | err -> raise err
+
+/// Compute the target ``typ_or_comp`` for an argument by the type of the head:
+/// in `hd a`, if `hd` has type `t -> ...`, use `t`
+val safe_arg_typ_or_comp : bool -> env -> term ->
+                           Tac (opt:option typ_or_comp{Some? opt ==> TC_Typ? (Some?.v opt)})
+let safe_arg_typ_or_comp dbg e hd =
+  print_dbg dbg ("safe_arg_typ_or_comp: " ^ term_to_string hd);
+  match safe_tc e hd with
+  | None -> None
+  | Some ty ->
+    print_dbg dbg ("hd type: " ^ term_to_string ty);
+    let ty =
+      if Tv_Arrow? (inspect ty) then
+        begin
+        print_dbg dbg "no need to unfold the type";
+        ty
+        end
+      else
+        begin
+        print_dbg dbg "need to unfold the type";
+        let ty = unfold_until_arrow e ty in
+        print_dbg dbg ("result of unfolding : "^ term_to_string ty);
+        ty
+        end
+    in
+    match inspect ty with
+    | Tv_Arrow b c -> Some (TC_Typ (type_of_binder b) [] 0)
+    | _ -> None
 
 /// Exploring a term
 
@@ -988,8 +1032,12 @@ let rec explore_term dbg dfs #a f x ge0 pl0 c0 t0 =
     begin match tv0 with
     | Tv_Var _ | Tv_BVar _ | Tv_FVar _ -> x0, Continue
     | Tv_App hd (a,qual) ->
-      (* Explore the argument - we update the target typ_or_comp when doing so *)
-      let a_c = safe_typ_or_comp dbg ge0.env a in
+      (* Explore the argument - we update the target typ_or_comp when doing so.
+       * Note that the only way to get the correct target type is to deconstruct
+       * the type of the head *)
+      let a_c = safe_arg_typ_or_comp dbg ge0.env hd in
+      print_dbg dbg ("Tv_App: updated target typ_or_comp to:\n" ^
+                     option_to_string typ_or_comp_to_string a_c);
       let x1, flag1 = explore_term dbg dfs f x0 ge0 pl1 a_c a in
       (* Explore the head - no type information here: we can compute it,
        * but it seems useless (or maybe use it only if it is not Total) *)
@@ -1297,7 +1345,7 @@ let typ_or_comp_to_effect_info (dbg : bool) (ge : genv) (c : typ_or_comp) :
     match opt_einfo with
     | None -> mfail ("typ_or_comp_to_effect_info failed on: " ^ acomp_to_string cv)
     | Some einfo -> einfo *)
-  let c = flush_typ_or_comp ge.env c in
+  let c = flush_typ_or_comp dbg ge.env c in
   match c with
   | TC_Typ ty _ _ ->
     let tinfo = get_type_info_from_type ty in
