@@ -2020,11 +2020,13 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
                              einfo.ei_pre einfo.ei_post parents children in
   print_dbg dbg ("- pre prop: " ^ option_to_string term_to_string pre_prop);
   print_dbg dbg ("- post prop: " ^ option_to_string term_to_string post_prop);
-  (* If the term is an assert, only output the precondition *)
+  (* If the term is an assertion/asssumption, only output the postcondition -
+   * note that in the case of an assertion, the pre and the post are the same,
+   * but in the case of an assumption, only the post is interesting *)
   if is_assert then
     begin
-    print_dbg dbg "The term is an assert: only keep the precondition";
-    ge1, { pres = opt_cons pre_prop []; posts = [] }
+    print_dbg dbg "The term is an assert: only keep the postcondition";
+    ge1, { pres = opt_cons post_prop []; posts = [] }
     end
   else begin
     (* Generate propositions from the target computation (pre, post, type cast) *)

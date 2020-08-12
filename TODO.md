@@ -15,9 +15,15 @@
 * debug return type in functor init in Hacl.Streaming.SHA2
 * would be nice to be able to normalize projectors, tuples inlinings
 * when a variable is unit (for the return value used in the postcondition for example), don't introduce a new variable, but use unit
-* apply analysis on assume/assert_norm: do the same as for assert
 * take into accounts attributes like [@inline_let] for indentation
 * roll-admit: ignore admits in comments
+* stop using kill/yank in the commands
+* give the possibility to split assertions of the form:
+  [> let x = ... in A x /\ B x
+  into:
+  [> let x = ... in A x
+  [> let x = ... in B x
+        
 
 # Main limitations
 * the output is the *Messages* buffer (fragile AND not convenient)
