@@ -21,13 +21,6 @@
 
 ;;; Code:
 
-;; TODO: fem-cfp-state-filter-stack often makes recursive calls with a big depth,
-;; which forces us to increase the recursion limits. This may not be safe.
-;; Rewrite this function so as to use a loop, and remove those two lines
-(setq max-specpdl-size 5000)
-(setq max-lisp-eval-depth 5000)
-
-
 ;;; Imports
 (use-package fstar-mode :demand)
 
@@ -2128,20 +2121,27 @@ This function is mainly used for debugging the parser."
   "Filter a token STACK to remove the first 'let, which is  top-level, and the
 tokens which will be ignored for control-flow.
 Return a pair (filtered stack, filtered the top-level let)."
-  (let ($tk $symbol $stack $r $filtered-let)
-    (if (not STACK)
-        (make-fem-pair :fst nil :snd nil)
-      (setq $tk (car STACK) $r (fem-cfp-state-filter-stack (cdr STACK)))
+  (let ($rev-stack $new-stack $filtered-let $tk $symbol)
+    ;; The function was initially written in a recursive style, however the
+    ;; stack can be quite big, which lead to failures, forcing us to increase
+    ;; the elisp recursion depth. As doing this seems to be generally a bad
+    ;; idea, we rewrote the function to use a loop.
+    ;; First revert the stack
+    (setq $rev-stack (reverse STACK))
+    ;; Filter the stack and reconstruct it (in the proper order) while doing so
+    (while $rev-stack
+      (setq $tk (car $rev-stack) $rev-stack (cdr $rev-stack))
       (setq $symbol (fem-cfp-tk-symbol $tk))
-      (setq $stack (fem-pair-fst $r) $filtered-let (fem-pair-snd $r))
       ;; Case disjunction on the current symbol
       (cond
        ;; If it is a let, check if it is the first one (the top-level let): in this
        ;; case, filter it. Otherwise, keep it
        ((string= $symbol 'let)
         (if $filtered-let
-            (make-fem-pair :fst (cons $tk $stack) :snd t)
-          (make-fem-pair :fst $stack :snd t)))
+            ;; Stack
+            (setq $new-stack (cons $tk $new-stack))
+          ;; Filter
+          (setq $filtered-let t)))
        ;; If 'if, 'then, 'begin, 'match or open bracket: keep the token
        ((or (string= $symbol 'if)
             (string= $symbol 'then)
@@ -2151,15 +2151,16 @@ Return a pair (filtered stack, filtered the top-level let)."
             (string= $symbol 'open-bracket)
             (string= $symbol 'open-curly)
             (string= $symbol 'open-square))
-        (make-fem-pair :fst (cons $tk $stack) :snd $filtered-let))
+        (setq $new-stack (cons $tk $new-stack)))
        ;; Otherwise:filter
-       (t
-        (make-fem-pair :fst $stack :snd $filtered-let))))))               
+       (t nil)))
+    ;; Return
+    $new-stack))
 
 (defun fem-cfp-state-filter-state-stack (STACK)
   "Filter the STATE stack to remove the first 'let, which is  top-level, and the
 tokens which will be ignored for control-flow"
-  (fem-pair-fst (fem-cfp-state-filter-stack (fem-cfp-state-stack STACK))))
+  (fem-cfp-state-filter-stack (fem-cfp-state-stack STACK)))
 
 (defun fem-copy-def-for-meta-process (BEG END INSERT_ADMITS SUBEXPR PARSE_STATE
                                           DEST_BUFFER PP_INSTR)

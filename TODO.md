@@ -23,6 +23,7 @@
   into:
   [> let x = ... in A x
   [> let x = ... in B x
+* fix global pre/post for functors
         
 
 # Main limitations
