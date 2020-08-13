@@ -14,7 +14,6 @@
   -> don't use tcc on the whole term, but strip its arguments and use tcc on its head in order to retrieve the "purest" effect
 * debug return type in functor init in Hacl.Streaming.SHA2
 * would be nice to be able to normalize projectors, tuples inlinings
-* when a variable is unit (for the return value used in the postcondition for example), don't introduce a new variable, but use unit
 * take into accounts attributes like [@inline_let] for indentation
         
 

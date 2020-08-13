@@ -39,6 +39,9 @@ assume val sf2 (l : list int) :
     B.live h0 r /\
     B.as_seq h1 r == Seq.seq_of_list l))
 
+assume val sf3 : b:B.buffer nat ->
+                    ST.Stack unit (requires (fun h0 -> B.live h0 b))
+                                  (ensures (fun h0 r h1 -> B.live h1 b))
 
 let pred1 (x y z : nat) = True
 let pred2 (x y z : nat) = True

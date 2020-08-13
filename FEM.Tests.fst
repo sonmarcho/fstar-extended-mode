@@ -33,11 +33,20 @@ let inst1 =
 
 (*** Simplification *)
 
-let x = let x, y = 3, 4 in x + y = 7
-
 let simpl_f1 () : Tot unit =
   let x = 3 in
+  (* [> assert(x + 4 = 7); *)
   assert(let x, y = (x, 4) in x + y = 7)
+
+(*** Effectful term analysis *)
+
+/// Unit return type
+let eta_f1 (b:B.buffer nat) :
+  ST.Stack unit
+  (requires (fun h0 -> B.live h0 b))
+  (ensures (fun h0 _ h1 -> True)) =
+  let h0 = ST.get () in
+  sf3 b
 
 
 (*** Split assertions *)

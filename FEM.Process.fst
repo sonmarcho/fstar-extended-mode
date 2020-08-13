@@ -698,6 +698,12 @@ val is_total_or_gtotal : comp -> Tot bool
 let is_total_or_gtotal c =
   Some? (get_total_or_gtotal_ret_type c)
 
+val is_unit_type : typ -> Tac bool
+let is_unit_type ty =
+  match inspect ty with
+  | Tv_FVar fv -> fv_eq_name fv Reflection.Const.unit_lid
+  | _ -> false
+
 
 /// This type is used to store typing information.
 /// We use it mostly to track what the target type/computation is for a term,
@@ -2051,14 +2057,18 @@ let eterm_info_to_assertions dbg with_gpre with_gpost ge t is_let is_assert info
     | Some v -> ge, v, None
     | None ->
       (* If the studied term is stateless, we can use it directly in the
-       * propositions, otherwise we need to introduce a variable for the return
-       * type. Remember that the studied term might be a return value: it is
-       * not necessarily binded in a let. *)
+       * propositions. If the return value is of type unit, we can just use ().
+       * Otherwise we need to introduce a variable.
+       * For the reason why we do this: remember that the studied term might be
+       * a return value: it is not necessarily binded in a let. *)
       if effect_type_is_stateful einfo.ei_type then
-        let b = fresh_binder ge.env "__ret" einfo.ei_ret_type.ty in
-        let bv = bv_of_binder b in
-        let tm = pack (Tv_Var bv) in
-        genv_push_binder ge b true None, tm, Some b
+        if is_unit_type einfo.ei_ret_type.ty then
+          ge, `(), None
+        else
+          let b = fresh_binder ge.env "__ret" einfo.ei_ret_type.ty in
+          let bv = bv_of_binder b in
+          let tm = pack (Tv_Var bv) in
+          genv_push_binder ge b true None, tm, Some b
       else ge, t, None
   in
   (* Generate propositions from the pre and the post-conditions *)
