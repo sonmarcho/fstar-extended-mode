@@ -3090,7 +3090,7 @@ let unfold_in_assert_or_assume dbg ares =
       print_dbg dbg ("The focused term is a top identifier: " ^ fv_to_string fv);
       (* The easy case: just use the normalizer *)
       let fname = flatten_name (inspect_fv fv) in
-      let subterm' = norm_term_env ares.ge.env [delta_only [fname]] subterm in
+      let subterm' = norm_term_env ares.ge.env [delta_only [fname]; zeta] subterm in
       print_dbg dbg ("Normalized subterm: " ^ term_to_string subterm');
       ares.ge, Some subterm'
     | _ ->
@@ -3144,7 +3144,7 @@ let unfold_in_assert_or_assume dbg ares =
                        ^ fv_to_string fv);
         (* The easy case: just use the normalizer *)
         let fname = flatten_name (inspect_fv fv) in
-        let subterm' = norm_term_env ge1.env [delta_only [fname]] subterm in
+        let subterm' = norm_term_env ge1.env [delta_only [fname]; zeta] subterm in
         print_dbg dbg ("Normalized subterm: " ^ term_to_string subterm');
         ge1, subterm'
       | _ ->        
