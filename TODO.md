@@ -15,7 +15,7 @@
 * debug return type in functor init in Hacl.Streaming.SHA2
 * would be nice to be able to normalize projectors, tuples inlinings
 * take into accounts attributes like [@inline_let] for indentation
-* problem when parsing #(...)
+* split assertions of the form: A ==> (B1 /\ ... /\ Bn)
 
 # Main limitations
 * the output is the *Messages* buffer (fragile AND not convenient)

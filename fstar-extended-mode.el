@@ -789,10 +789,6 @@ Don't move if there isn't such an instruction."
   (fem-skip-forward-open-module)
   (fem-skip-forward-open-rename-module))
 
-(defun fem-parse-number-p ()
-  "Parse a number, in a very broad sense (might be hexadecimal, etc.)."
-  (fem-parse-re-p "[0-9][a-zA-Z0-9]*"))
-
 (defun fem-skip-forward-square-brackets (&optional LIMIT)
   "If look at '[', go after the closing ']'.
 LIMIT delimits the end of the search."
@@ -1283,10 +1279,6 @@ If WITH_PARENTHESES is t, look for parenthesized terms."
       (delete-region (match-beginning 2) (match-end 0))
       (point))))
 
-(defun t1 ()
-  (interactive)
-  (fem-meta-info-pp-remove-namespace "Pervasives\\.Native"))
-
 (defun fem-meta-info-post-process ()
   "Post-process parsed data.
 Replaces some identifiers (Prims.l_True -> True...)."
@@ -1715,6 +1707,7 @@ Also, we check back ticks in a very lax manner."
 (defun fem-looking-at-open-bracket-p ()
   "Return a bracket type if looking at an open bracket (in a wide sense: '(', '[' or '{')."
   (cond
+   ((looking-at "#(") 'open-bracket) ;; TODO: use a different symbol name
    ((looking-at "(") 'open-bracket)
    ((looking-at "{") 'open-curly)
    ((looking-at "\\[") 'open-square)
@@ -1725,6 +1718,7 @@ Also, we check back ticks in a very lax manner."
   (save-excursion
     (save-match-data
       (ignore-errors ;; the call to forward-sexp may fail
+        (if (looking-at "#(") (forward-char))
         (if (fem-looking-at-open-bracket-p)
             (let (($p0 (point)))
               (forward-sexp) ;; This may fail
@@ -2075,7 +2069,7 @@ If DEBUG_INSERT is t, insert comments in the code for debugging."
                               nil DEBUG_INSERT)
           (when DEBUG_INSERT (insert " (* '(' *) "))
           (fem-cfp-state-move-p STATE)
-          'open-bracket))
+          'open-bracket))       
 
        ;; STRINGS
        ((setq $tk (fem-parse-string-p))
