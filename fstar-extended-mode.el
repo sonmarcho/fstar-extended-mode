@@ -57,22 +57,21 @@
   fst snd thd)
 
 ;; TODO: this is not useful anymore
-(cl-defstruct fem-letb-term
-  "A parsed let binded term of the form: 'let b = exp in'"
-  beg end ;; delimiters for the whole expression
-  bind ;; the binding
-  b-beg b-end ;; delimiters
-  exp ;; the expression
-  e-beg e-end ;; delimiters
-  is-var ;; nil if tuple
-  )
+;; (cl-defstruct fem-letb-term
+;;   "A parsed let binded term of the form: 'let b = exp in'"
+;;   beg end ;; delimiters for the whole expression
+;;   bind ;; the binding
+;;   b-beg b-end ;; delimiters
+;;   exp ;; the expression
+;;   e-beg e-end ;; delimiters
+;;   is-var ;; nil if tuple
+;;   )
 
 (cl-defstruct fem-subexpr
   "A parsed expression of the form 'let _ = _ in', '_;' or '_' (return value)"
   beg end ;; point delimiters
   is-let-in ;; is of the form: 'let _ = _ in'
   has-semicol ;; is of the form: '_;'
-  bterm ;; the term binded by the 'let' if of the form 'let _ = _ in'
   )
 
 (cl-defstruct fem-result
@@ -90,15 +89,15 @@
   "Switch between debugging/non-debugging mode."
   (setq fem-debug (not fem-debug)))
 
-(defun fem-log-msg (format-string &rest format-params)
+(defun fem-log-msg (FORMAT-STRING &rest FORMAT-PARAMS)
   "Log a message in the log buffer.
 Format FORMAT-PARAMS according to FORMAT-STRING."
-  (apply #'message format-string format-params))
+  (apply #'message FORMAT-STRING FORMAT-PARAMS))
 
-(defun fem-log-dbg (format-string &rest format-params)
+(defun fem-log-dbg (FORMAT-STRING &rest FORMAT-PARAMS)
   "Log a message in the log buffer if fem-debug is t.
 Format FORMAT-PARAMS according to FORMAT-STRING."
-  (when fem-debug (apply #'message format-string format-params)))
+  (when fem-debug (apply #'message FORMAT-STRING FORMAT-PARAMS)))
 
 ;;; Utilities
 
@@ -153,16 +152,18 @@ returns nil or raises an error depending on NO_ERROR."
     (insert TERM)))
 
 (defun fem-previous-char-is-semicol-p (&optional POS)
-  "Return t if the point before POS is ';'"
+  "Return t if the point before POS is ';'."
   (ignore-errors
     (= (char-before) ?;)))
 
 (defun fem-next-char-is-semicol-p (&optional POS)
-  "Return t if the point before POS is ';'"
+  "Return t if the point before POS is ';'."
   (ignore-errors
     (= (char-after) ?;)))
 
 (defun fem-parse-next-sexp-p (&optional POS LIMIT)
+  "Skip comments and spaces and parse the next sexp as a pair of positions.
+Return nil if no sexp was found."
   (let (($limit (or LIMIT (point-max)))
         $p0)
     (goto-char (or POS (point)))
@@ -174,6 +175,8 @@ returns nil or raises an error depending on NO_ERROR."
       (make-fem-pair :fst $p0 :snd (point)))))
 
 (defun fem-parse-next-sexp-as-string-p (&optional POS LIMIT)
+  "Skip comments and spaces and parse the next sexp as a string.
+Return nil if no sexp was found."
   (let ($sexp)
     (setq $sexp (fem-parse-next-sexp-p POS LIMIT))
     (if $sexp
@@ -181,6 +184,8 @@ returns nil or raises an error depending on NO_ERROR."
       nil)))
 
 (defun fem-parse-previous-sexp-p (&optional POS LIMIT)
+  "Skip comments and spaces and parse the previous sexp as a pair of positions.
+Return nil if no sexp was found."
   (let (($limit (or LIMIT (point-min)))
         $p0)
     (goto-char (or POS (point)))
@@ -192,6 +197,8 @@ returns nil or raises an error depending on NO_ERROR."
       (make-fem-pair :fst (point) :snd $p0))))
 
 (defun fem-parse-previous-sexp-as-string-p (&optional POS LIMIT)
+  "Skip comments and spaces and parse the previous sexp as a string.
+Return nil if no sexp was found."
   (let ($sexp)
     (setq $sexp (fem-parse-previous-sexp-p POS LIMIT))
     (if $sexp
@@ -302,7 +309,7 @@ The expression can also of the form: '...;', which is syntactic sugar for 'let _
     (insert TERM)))
 
 (defun fem-newline-keep-indent ()
-  "Insert a newline where the indentation is equal to the current column."
+  "Insert a newline with an indentation equal to the current column position."
   (interactive)
   (let ($p $i)
     (setq $p (point))
@@ -326,20 +333,21 @@ Return the number of deleted characters."
   "Remove all the characters on the line if not empty, delete the line otherwise."
   (interactive)
   (if (equal (line-beginning-position) (line-end-position))
-      (progn (delete-backward-char 1) 1) (fem-empty-line)))
+      (progn (move-backward) (delete-char 1) 1) (fem-empty-line)))
 
 (defun fem-delete-always-line ()
-  "Remove all the characters on the line if not empty, delete the line otherwise."
+  "Delete the current line."
   (interactive)
   (let ($c)
     (if (equal (line-beginning-position) (line-end-position))
-	(progn (delete-backward-char 1) 1)
+	(progn (move-backward) (delete-char 1) 1)
 	(progn (setq $c (fem-empty-line))
-	       (delete-backward-char 1) (+ $c 1)))))
+	       (move-backward) (delete-char 1) (+ $c 1)))))
 
 (defun fem-find-region-delimiters (ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                    ABOVE_PARAGRAPH BELOW_PARAGRAPH &optional POS)
-  ""
+  "Find the delimiters for the region around the pointer.
+Mostly works by moving forward/backward by a paragraph, remembering the positions we reached."
   (save-excursion
     (let ($p $p1 $p2)
       ;; Save the current point
@@ -364,10 +372,8 @@ Return the number of deleted characters."
 
 (defun fem-apply-in-current-region (ACTION ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                 ABOVE_PARAGRAPH BELOW_PARAGRAPH)
-  "Applies the action given as argument to the current line and/or the current
-   paragraph above the pointer.
-   It is the responsability of the ACTION function to move the pointer back to its
-   (equivalent) original position."
+  "Apply the action given as argument to the region around the pointer.
+The ACTION function should move the pointer back to its (equivalent) original position."
   (let ($delimiters $p1 $p2 $r)
     ;; Find the region delimiters
     (setq $delimiters (fem-find-region-delimiters ALLOW_SELECTION INCLUDE_CURRENT_LINE
@@ -381,17 +387,16 @@ Return the number of deleted characters."
     $r))
 
 (defun fem-apply-in-current-line (ACTION)
-  "Applies the action given as argument to the current line.
-   It is the responsability of the ACTION function to move the pointer back to its
-   (equivalent) original position."
+  "Apply the ACTION given as argument to the current line.
+The ACTION function should move the pointer back to its (equivalent) original position."
   (fem-apply-in-current-region ACTION nil t nil nil))
 
 (defun fem-replace-all-in (FROM TO &optional IGNORE_COMMENTS FULL_SEXP BEG END)
-  "Replace all the occurrences of FROM by TO and return the number of characters
-by which to shift the pointer, leaving the pointer at the shifted position.
-Takes optional region delimiters BEG and END as arguments.
-Doesn't replace inside comments if IGNORE_COMMENTS is t.
-If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
+  "Replace all the occurrences of FROM by TO.
+Return the number of characters by which the pointer was shifted.
+BEG and END delimit the region where to perform the replacement.
+If IGNORE_COMMENTS is t, don't replace inside comments.
+If FULL_SEXP, check if the term to replace is a sexpression before replacing it."
   (let (($p0 (point)) ;; original position
         ($p (point)) ;; current position
         ($shift 0) ;; number of characters by which we shift the original position
@@ -435,7 +440,7 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
 (defun fem-replace-in-current-region (FROM TO IGNORE_COMMENTS FULL_SEXP
                                       ALLOW_SELECTION INCLUDE_CURRENT_LINE
                                       ABOVE_PARAGRAPH BELOW_PARAGRAPH)
-  ""
+  "Replace FROM by TO in the current region."
   (let (($r (apply-partially 'fem-replace-all-in FROM TO IGNORE_COMMENTS FULL_SEXP)))
     ;; Apply the replace function
     (fem-apply-in-current-region $r ALLOW_SELECTION INCLUDE_CURRENT_LINE
@@ -444,10 +449,12 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
 ;;; General F* code management commands
 
 (defun fem-switch-assert-assume-in-current-region (ALLOW_SELECTION INCLUDE_CURRENT_LINE
-                                               ABOVE_PARAGRAPH BELOW_PARAGRAPH)
+                                                   ABOVE_PARAGRAPH BELOW_PARAGRAPH)
   (interactive)
-  "Check if there are occurrences of 'assert' or 'assert_norm in the current region.
-   If so, replace them with 'assume'. Ohterwise, replace all the 'assume' with 'assert'."
+  "Switch between assertions and assumptions in the current region.
+First check if there are assertions in the current region.
+If so, replace them with assumptions.
+Ohterwise, replace the assumptions with assumptions."
   (let ($p $p1 $p2 $keep-selection $has-asserts $replace $delimiters)
     ;; Find the region delimiters and restrain the region
     (setq $delimiters (fem-find-region-delimiters ALLOW_SELECTION INCLUDE_CURRENT_LINE
@@ -479,7 +486,7 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
 
 (defun fem-switch-assert-assume-p-or-selection ()
   (interactive)
-  "Switch the assertion/assumption under the pointer, or in the active selection."
+  "Switch the assertions/assumptiosn under the pointer, or in the active selection."
   (let ($p $passert $p1 $p2 $keep-selection $has-asserts $replace $delimiters)
     (setq $p (point))
     ;; Find the region delimiters and restrain the region
@@ -537,24 +544,23 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
 
 (defun fem-switch-assert-assume-in-above-paragraph ()
   (interactive)
-  "In the part of the current paragraph above the cursor and in the current line,
-   check if there are occurrences of 'assert' or 'assert_norm'. If so, replace them
-   with 'assume'. Otherwise, replace all the 'assume' with 'assert'."
+  "Switch between assertions/assumptions in the current paragraph."
   (fem-switch-assert-assume-in-current-region t t t nil))
 
 (defun fem-switch-assert-assume-in-current-line ()
   (interactive)
-  "In the current line, check if there are occurrences of 'assert' or 'assert_norm'.
-   If so, replace them with 'assume'. Otherwise, replace all the 'assume' with 'assert'."
+  "Switch between assertions/assumptions in the current line."
   (fem-switch-assert-assume-in-current-region t t nil nil))
 
 (defun fem-roll-delete-term (TERM FORWARD BEGIN END)
   (interactive)
-  "Looks for the last/first occurence of TERM in the region and asks the user
-   if he wants to delete it, if there is any, deletes the following semicolon if
-   there is any. Leaves the pointer at its original position (before the command was
-   called). Returns a tuple: 
-   (found term, optional shift if term was deleted, deleted a semicolon)"
+  "Roll TERM around.
+Used for the rolling admit technique.
+Look for the last/first occurence of TERM in the region and ask the user
+if he wants to delete it, if there is any. Delete the following semicolon if
+there is any. Leave the pointer at its original position (before the command was
+called).
+Return a tuple: (found term, optional shift if term was deleted, deleted a semicolon)"
   (let ($p $s $f $r $semicol $opt_shift)
     (setq $s 0)
     ;; Retrieve the original position
@@ -562,7 +568,6 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
     ;; Look for an admit
     (if FORWARD (setq $f (fem-search-forward-not-comment TERM nil END))
 		(setq $f (fem-search-backward-not-comment TERM nil BEGIN)))
-;;		(setq $f (search-backward TERM BEGIN t)))
     ;; If there is an occurrence of TERM, ask for removal
     (when $f
       (when (y-or-n-p (concat "Remove this '" (concat TERM "'?")))
@@ -572,7 +577,7 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
           ;; Look for a semicolon to delete
           (when (char-equal ?\; (following-char))
             (progn
-              (delete-forward-char 1)
+              (delete-char 1)
               (setq $semicol t)
               (when (not FORWARD) (setq $s 1))))
           ;; Delete the whole line if it is empty
@@ -589,10 +594,8 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
 
 (defun fem-roll-admit ()
   (interactive)
-  "Facility function to ease the rolling admit technique: inserts an admit
-   after the current line and check if there is another admit to move (and ask
-   for deletion if so). We start by looking for an admit after the cursor
-   position, then look before if there isn't."
+  "Roll an admit.
+We start by looking for an admit after the cursor position, then before."
   (let ($p $p1 $p2 $s)
     ;; Save the current point
     (setq $p (point))
@@ -613,14 +616,15 @@ If FULL_SEXP, checks if the term to replace is a full sexp before replacing it."
 ;;; Parsing commands
 
 (defun fem-in-general-comment-p (&optional POS)
+  "Return t is POS is in an F* comment."
   (save-restriction
     (or (fstar-in-comment-p POS) (fstar-in-literate-comment-p))))
 
 (defun fem-search-forward-not-comment (STR &optional FULL_SEXP LIMIT)
-    "Look for the first occurrence of STR not inside a comment, return t and
-move the pointer immediately after if found one, don't move the pointer
-and return nil otherwise.
-If FULL_SEXP, look for the first occurrence which is a full sexp."
+    "Look for the first occurrence of STR not inside a comment.
+Return t and move the pointer immediately after if found one.
+Don't move the pointer and return nil otherwise.
+If FULL_SEXP, look for the first occurrence which is a sexpression."
     (let (($p (point))
           $exp)
       (fstar--search-predicated-forward
@@ -646,9 +650,7 @@ If FULL_SEXP, look for the first occurrence which is a full sexp."
     (goto-char (match-beginning 0))))
 
 (defun fem-search-backward-not-comment (STR &optional FULL_SEXP LIMIT)
-    "Look for the first occurrence of STR not inside a comment, return t and
-move the pointer immediately before if found one, don't move the pointer
-and return nil otherwise."
+    "Look backward for the first occurrence of STR not inside a comment."
     (let (($p (point)) $exp)
       (fem-fstar--search-predicated-backward
        (lambda ()
@@ -667,8 +669,8 @@ and return nil otherwise."
 
 ;; TODO: use forward-comment
 (defun fem-skip-comment (FORWARD &optional LIMIT)
-  "Move the cursor forward or backward until we are out of a comment or we
-reach the end of the buffer"
+  "Move the cursor forward or backward until out of a comment.
+Stop and don't fail if we reach the end of the buffer."
   (let ($stop)
     ;; Set the limit to the move
     (if FORWARD (setq $stop (or LIMIT (point-max)))
@@ -688,6 +690,7 @@ reach the end of the buffer"
      (t (point)))))
 
 (defun fem-is-at-comment-limit (FORWARD &optional LIMIT)
+  "Check if the pointer is just before/after a comment symbol."
   (if FORWARD
       ;; If forward: the comments delimiters are always made of two characters
       ;; and we can't know if we are inside a comment unless we process those
@@ -702,14 +705,14 @@ reach the end of the buffer"
 
 (defun fem-skip-chars (FORWARD CHARS &optional LIMIT)
   "Move until the current character is not in CHARS.
-FORWARD controls the direction, LIMIT controls where to stop."
+FORWARD controls the direction, LIMIT delimits where to stop."
   (if FORWARD
       (skip-chars-forward CHARS LIMIT)
       (skip-chars-backward CHARS LIMIT)))
 
 (defun fem-skip-spaces (FORWARD &optional LIMIT)
   "Move the cursor until there are no spaces.
-FORWARD controls the direction, LIMIT delimits the region."
+FORWARD controls the direction, LIMIT delimits where to stop."
   (let ($continue $p1 $p2 $limit $reached-limit)
     (if FORWARD (setq $p1 (point) $p2 (or LIMIT (point-max)))
                 (setq $p2 (point) $p1 (or LIMIT (point-min))))
@@ -748,16 +751,16 @@ Returns the position where the pointer is left."
   (save-restriction
     (narrow-to-region (point) (if LIMIT LIMIT (point-max)))
     (let (($continue t) $go)
-      (defun go (STR)
+      (defun go (STR CONTINUE)
         (if (looking-at-p (regexp-quote STR))
-            (progn (forward-char (length STR)) (setq $continue t) t)
+            (progn (forward-char (length STR)) (setq $continue CONTINUE) t)
           nil))
-      (cond ((go "#set-options") ())
-            ((go "#reset-options") ())
-            ((go "#push-options") ())
-            ((go "#pop-options") ())
-            ((go "#restart-solver") ())
-            ((go "#light") ())
+      (cond ((go "#set-options" t) ())
+            ((go "#reset-options" t) ())
+            ((go "#push-options" t) ())
+            ((go "#pop-options" nil) ())
+            ((go "#restart-solver" nil) ())
+            ((go "#light" nil) ())
             (t (setq $continue nil)))
       ;; Skip the parameters (the string) - note that there may be comments
       ;; between the pragma and the paramters
@@ -860,7 +863,7 @@ POS defaults to the pointer's position."
   "Find the sexp at POS.
 POS defaults to the pointer's position.
 Returns a fem-pair of positions if succeeds, nil otherwise.
-If ACCEPT_COMMENTS is nil, return nil if we are inside a comment."
+If ACCEPT_COMMENTS is nil, return nil if the sexp is inside a comment."
   (save-excursion
     (let (($p0 (or POS (point))) ($not-ok nil) $beg $end)
       ;; Must not be in a comment (unless the user wants it) or surrounded by spaces
@@ -886,88 +889,89 @@ If ACCEPT_COMMENTS is nil, return nil if we are inside a comment."
     (if $r (buffer-substring-no-properties (fem-pair-fst $r) (fem-pair-snd $r))
       nil)))
 
-(defun fem-parse-letb-term (BEG END &optional NO_ERROR)
-  "Parse the let binded term in a 'let x = y in' expression.
-Note that the region delimited by BEG and END should start exactly with 'let'
-and end with 'in', put aside potential whitespaces and comments.
-Returns nil if fails and NO_ERROR is t, raises an error otherwise."
-  ;; We do things simple: we just look forward for the next '=' (this character
-  ;; shouldn't appear in the 'x' term).
-  ;; Then, in order to check whether the term is a variable or not, we just
-  ;; look for the presence of ',' in it (in which case it is a tuple).
-  (save-excursion
-    (let ($beg $end $eq-end $b $b-beg $b-end $exp $e-beg $e-end $is-var $success $error-msg)
-      (setq $success nil)
-      ;; Restraigning
-      (goto-char BEG)
-      (fem-skip-comments-and-spaces t END)
-      (setq $beg (point))
-      (goto-char END)
-      (fem-skip-comments-and-spaces nil $beg)
-      (setq $end (point))
-      (save-restriction
-        (narrow-to-region $beg $end)
-        (goto-char (point-min))
-        ;; Ignore the 'let'
-        (if (not (fem-consume-string-forward "let" NO_ERROR))
-            (when (not NO_ERROR) (setq $error-msg "could not find the 'let'"))
-          ;; Success
-          (fem-skip-comments-and-spaces t (point-max))
-          ;; Beginning of b
-          (setq $b-beg (point))
-          ;; Look for '='
-          (if (not (fem-search-forward-not-comment "="))
-              (when (not NO_ERROR) (setq $error-msg "could not find the '='"))
-            (setq $eq-end (point))
-            ;; End of b
-            (backward-char)
-            (fem-skip-comments-and-spaces nil $b-beg)
-            (setq $b-end (point))
-            ;; Beginning of exp
-            (goto-char $eq-end)
-            (fem-skip-comments-and-spaces t (point-max))
-            (setq $e-beg (point))
-            ;; End of exp
-            (goto-char (point-max))
-            (backward-char (length "in")) ;; TODO: no check
-            (fem-skip-comments-and-spaces nil $e-beg)
-            (setq $e-end (point))
-            (setq $success t)
-            ;; Check if b is a tuple
-            (setq $is-var (not (fem-region-is-tuple $b-beg $b-end)))
-            )))
-      ;; Process errors and return
-      (if (not $success)
-          ;; Failure
-          (if NO_ERROR nil
-            (error (format "fem-parse-letb-term on '%s' failed: %s"
-                           (buffer-substring-no-properties BEG END)
-                           $error-msg)))
-        ;; Success
-        (let* ((bind (buffer-substring-no-properties $b-beg $b-end))
-               (exp (buffer-substring-no-properties $e-beg $e-end)))
-          (make-fem-letb-term :beg $beg :end $end
-                          :bind bind
-                          :b-beg $b-beg :b-end $b-end
-                          :exp exp
-                          :e-beg $e-beg :e-end $e-end
-                          :is-var $is-var))
-        ))))
+;; (defun fem-parse-letb-term (BEG END &optional NO_ERROR)
+;;   "Parse the let binded term in a 'let x = y in' expression.
+;; Note that the region delimited by BEG and END should start exactly with 'let'
+;; and end with 'in', put aside potential whitespaces and comments.
+;; Returns nil if fails and NO_ERROR is t, raises an error otherwise."
+;;   ;; We do things simple: we just look forward for the next '=' (this character
+;;   ;; shouldn't appear in the 'x' term).
+;;   ;; Then, in order to check whether the term is a variable or not, we just
+;;   ;; look for the presence of ',' in it (in which case it is a tuple).
+;;   (save-excursion
+;;     (let ($beg $end $eq-end $b $b-beg $b-end $exp $e-beg $e-end $is-var $success $error-msg)
+;;       (setq $success nil)
+;;       ;; Restraigning
+;;       (goto-char BEG)
+;;       (fem-skip-comments-and-spaces t END)
+;;       (setq $beg (point))
+;;       (goto-char END)
+;;       (fem-skip-comments-and-spaces nil $beg)
+;;       (setq $end (point))
+;;       (save-restriction
+;;         (narrow-to-region $beg $end)
+;;         (goto-char (point-min))
+;;         ;; Ignore the 'let'
+;;         (if (not (fem-consume-string-forward "let" NO_ERROR))
+;;             (when (not NO_ERROR) (setq $error-msg "could not find the 'let'"))
+;;           ;; Success
+;;           (fem-skip-comments-and-spaces t (point-max))
+;;           ;; Beginning of b
+;;           (setq $b-beg (point))
+;;           ;; Look for '='
+;;           (if (not (fem-search-forward-not-comment "="))
+;;               (when (not NO_ERROR) (setq $error-msg "could not find the '='"))
+;;             (setq $eq-end (point))
+;;             ;; End of b
+;;             (backward-char)
+;;             (fem-skip-comments-and-spaces nil $b-beg)
+;;             (setq $b-end (point))
+;;             ;; Beginning of exp
+;;             (goto-char $eq-end)
+;;             (fem-skip-comments-and-spaces t (point-max))
+;;             (setq $e-beg (point))
+;;             ;; End of exp
+;;             (goto-char (point-max))
+;;             (backward-char (length "in")) ;; TODO: no check
+;;             (fem-skip-comments-and-spaces nil $e-beg)
+;;             (setq $e-end (point))
+;;             (setq $success t)
+;;             ;; Check if b is a tuple
+;;             (setq $is-var (not (fem-region-is-tuple $b-beg $b-end)))
+;;             )))
+;;       ;; Process errors and return
+;;       (if (not $success)
+;;           ;; Failure
+;;           (if NO_ERROR nil
+;;             (error (format "fem-parse-letb-term on '%s' failed: %s"
+;;                            (buffer-substring-no-properties BEG END)
+;;                            $error-msg)))
+;;         ;; Success
+;;         (let* ((bind (buffer-substring-no-properties $b-beg $b-end))
+;;                (exp (buffer-substring-no-properties $e-beg $e-end)))
+;;           (make-fem-letb-term :beg $beg :end $end
+;;                           :bind bind
+;;                           :b-beg $b-beg :b-end $b-end
+;;                           :exp exp
+;;                           :e-beg $e-beg :e-end $e-end
+;;                           :is-var $is-var))
+;;         ))))
 
-(defun fem-shift-letb-term-pos (SHIFT TERM)
-  "Shift hy SHIFT the positions in the fem-letb-term TERM.
-Return the updated fem-letb-term"
-  (setf (fem-letb-term-beg TERM) (+ SHIFT (fem-letb-term-beg TERM)))
-  (setf (fem-letb-term-end TERM) (+ SHIFT (fem-letb-term-end TERM)))
-  (setf (fem-letb-term-e-beg TERM) (+ SHIFT (fem-letb-term-e-beg TERM)))
-  (setf (fem-letb-term-e-end TERM) (+ SHIFT (fem-letb-term-e-end TERM)))
-  TERM)
+;; (defun fem-shift-letb-term-pos (SHIFT TERM)
+;;   "Shift hy SHIFT the positions in the fem-letb-term TERM.
+;; Return the updated fem-letb-term"
+;;   (setf (fem-letb-term-beg TERM) (+ SHIFT (fem-letb-term-beg TERM)))
+;;   (setf (fem-letb-term-end TERM) (+ SHIFT (fem-letb-term-end TERM)))
+;;   (setf (fem-letb-term-e-beg TERM) (+ SHIFT (fem-letb-term-e-beg TERM)))
+;;   (setf (fem-letb-term-e-end TERM) (+ SHIFT (fem-letb-term-e-end TERM)))
+;;   TERM)
 
+;; TODO: could be dramatically improved by using proper regexps
 (defun fem-parse-subexpr (BEG END)
   "Parse a sub-expression of the form 'let _ = _ in', '_;' or '_'.
 Parses in the region delimited by BEG and END.
 Returns a fem-subexpr."
-  (let ($delimiters $beg $end $is-let-in $has-semicol $bterm)
+  (let ($delimiters $beg $end $is-let-in $has-semicol)
     ;; Parse: 3 cases:
     ;; - let _ = _ in
     ;; - _;
@@ -991,7 +995,7 @@ Returns a fem-subexpr."
       (setq $is-let-in
             ;; TODO: rewrite the regexp
             (re-search-forward "\\=let[[:ascii:][:nonascii:]]+in\\'" (point-max) t 1))
-      (when $is-let-in (setq $bterm (fem-parse-letb-term $beg $end)))
+;;      (when $is-let-in (setq $bterm (fem-parse-letb-term $beg $end)))
       ;; Check if the narrowed region matches: '_ ;'
       (goto-char (point-min))
       (setq $has-semicol
@@ -1001,15 +1005,14 @@ Returns a fem-subexpr."
       ;; Otherwise: it is a return value (end of function)
       ) ;; end of regexp matching
     ;; Return
-    (make-fem-subexpr :beg $beg :end $end :is-let-in $is-let-in :has-semicol $has-semicol
-                  :bterm $bterm)))
+    (make-fem-subexpr :beg $beg :end $end :is-let-in $is-let-in :has-semicol $has-semicol)))
+;;                  :bterm $bterm)))
 
 (defun fem-shift-subexpr-pos (SHIFT SUBEXPR)
   "Shift by SHIFT the positions in the fem-subexpr SUBEXPR.
 Return the updated fem-subexpr."
   (setf (fem-subexpr-beg SUBEXPR) (+ SHIFT (fem-subexpr-beg SUBEXPR)))
   (setf (fem-subexpr-end SUBEXPR) (+ SHIFT (fem-subexpr-end SUBEXPR)))
-  (when (fem-subexpr-bterm SUBEXPR) (fem-shift-letb-term-pos SHIFT (fem-subexpr-bterm SUBEXPR)))
   SUBEXPR)
 
 (defun fem-find-encompassing-assert-assume-p (&optional POS BEG END)
@@ -1166,29 +1169,29 @@ Returns an optional fem-subexpr."
 
 ;;; Extraction of information for the *Messages* buffer
 
-(defun fem-search-data-delimiter (delimiter backward consume-delimiter no-error
+(defun fem-search-data-delimiter (DELIMITER BACKWARD CONSUME-DELIMITER NO-ERROR
                               &optional BEG END)
   "Search for DELIMITER in the buffer.
 BEG and END are optional region delimiters.
 BACKWARD gives the search direction, CONSUME-DELIMITER controls whether to leave
-the pointer where it is or backtrack to put it just before (after) the delimiter
+the pointer where it is or backtrack to put it just before (after) the DELIMITER
  (depending on the search direction).
-If the delimiter could not be found, raises an error if NO-ERROR is nil, returns
+If the DELIMITER could not be found, raises an error if NO-ERROR is nil, returns
 nil otherwise."
   (let ((beg (or BEG (point-min)))
         (end (or END (point-max)))
         p)
-    (if backward
-        (setq p (search-backward delimiter beg t))
-      (setq p (search-forward delimiter end t)))
-    (unless (or no-error p)
-      (error (concat "Could not find the delimiter: " delimiter)))
-    (when (and p (not consume-delimiter))
-      (if backward (goto-char (+ p (length delimiter)))
-        (goto-char (- p (length delimiter)))))
+    (if BACKWARD
+        (setq p (search-backward DELIMITER beg t))
+      (setq p (search-forward DELIMITER end t)))
+    (unless (or NO-ERROR p)
+      (error (concat "Could not find the delimiter: " DELIMITER)))
+    (when (and p (not CONSUME-DELIMITER))
+      (if BACKWARD (goto-char (+ p (length DELIMITER)))
+        (goto-char (- p (length DELIMITER)))))
     (if p (point) nil)))
 
-(defun fem-extract-info-from-buffer (prefix id &optional no-error post-process LIMIT)
+(defun fem-extract-info-from-buffer (prefix id &optional NO-ERROR post-process LIMIT)
   "Extracts meta data from the current buffer and optionally post-processes it.
 Returns a string (or nil if we we couldn't find the information)
 Leaves the pointer at the end of the parsed data (just before the next data)."
@@ -1199,7 +1202,7 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
          (full-id-length (length full-id))
          p p1 p2 (res nil) (pp-res nil))
     ;; Find the delimiters
-    (setq p (fem-search-data-delimiter full-id nil t no-error beg end))
+    (setq p (fem-search-data-delimiter full-id nil t NO-ERROR beg end))
     ;; If we found the full-id, extract the data
     (when p
       ;; Retrieve the boundaries of the information sub-buffer
@@ -1207,7 +1210,7 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
       (setq p1 (point))
       ;; - end: we look for the next occurence of 'prefix' followed by a '\n'
       (backward-char 1)
-      (setq p2 (fem-search-data-delimiter (concat "\n" prefix ":") nil nil no-error (point) end))
+      (setq p2 (fem-search-data-delimiter (concat "\n" prefix ":") nil nil NO-ERROR (point) end))
       ;; From now onwards, the pointer is at the position where it should be
       ;; left in the original buffer
       (setq p2 (point))
@@ -1297,29 +1300,29 @@ Replaces some identifiers (Prims.l_True -> True...)."
   (goto-char (point-min)) (while (fem-meta-info-pp-remove-namespace "FStar") nil)
   nil)
 
-(defun fem-extract-string-from-buffer (prefix id &optional no-error LIMIT)
+(defun fem-extract-string-from-buffer (prefix id &optional NO-ERROR LIMIT)
   "Extract a string for the current buffer."
   (fem-log-dbg "extract-string-from-buffer:\n- prefix: %s\n- id: %s" prefix id)
-  (fem-extract-info-from-buffer prefix id no-error nil LIMIT))
+  (fem-extract-info-from-buffer prefix id NO-ERROR nil LIMIT))
 
-(defun fem-extract-term-from-buffer (prefix id &optional no-error LIMIT)
+(defun fem-extract-term-from-buffer (prefix id &optional NO-ERROR LIMIT)
   "Extract a term from the current buffer.
 Contrary to a string, a term is post-processed."
   (fem-log-dbg "extract-term-from-buffer:\n- prefix: %s\n- id: %s" prefix id)
-  (fem-extract-info-from-buffer prefix id no-error
+  (fem-extract-info-from-buffer prefix id NO-ERROR
                             (apply-partially 'fem-meta-info-post-process)
                             LIMIT))
 
-(defun fem-extract-assertion-from-buffer (prefix id index &optional no-error LIMIT)
+(defun fem-extract-assertion-from-buffer (prefix id index &optional NO-ERROR LIMIT)
   "Extract an assertion from the current buffer.
 Returns a fem-meta-info structure."
   (fem-log-dbg "extract-assertion-from-buffer:\n- prefix: %s\n- id: %s\n- index: %s"
            prefix id (number-to-string index))
   (let* ((full-id (concat id (number-to-string index))))
-    (fem-extract-term-from-buffer prefix full-id no-error LIMIT)))
+    (fem-extract-term-from-buffer prefix full-id NO-ERROR LIMIT)))
 
 (defun fem-extract-assertion-list-from-buffer (prefix id index num
-                                           &optional no-error LIMIT)
+                                           &optional NO-ERROR LIMIT)
   "Extract a given number of assertions as a list of strings."
   (fem-log-dbg "extract-assertion-list-from-buffer:\n\
 - prefix: %s\n- id: %s\n- index: %s\n- num: "
@@ -1328,15 +1331,15 @@ Returns a fem-meta-info structure."
     (let ((param nil) (params nil))
       ;; Extract (forward) the assertion given by 'index'
       (setq param
-            (fem-extract-assertion-from-buffer prefix id index no-error LIMIT))
+            (fem-extract-assertion-from-buffer prefix id index NO-ERROR LIMIT))
       ;; Recursive call
       (setq params
             (fem-extract-assertion-list-from-buffer prefix id (+ index 1) num
-                                                no-error LIMIT))
+                                                NO-ERROR LIMIT))
       (cons param params))))
 
 (defun fem-extract-assertion-num-and-list-from-buffer (prefix id
-                                                   &optional no-error LIMIT)
+                                                   &optional NO-ERROR LIMIT)
   "Reads how many assertions to extract from the current buffer, then
 extracts those assertions."
   (fem-log-dbg "extract-assertion-num-and-list-from-buffer:\n\
@@ -1345,11 +1348,11 @@ extracts those assertions."
   (let ((id-num (concat id ":num"))
         (id-prop (concat id ":prop"))
         num num-data)
-    (setq num-data (fem-extract-string-from-buffer prefix id-num no-error LIMIT))
+    (setq num-data (fem-extract-string-from-buffer prefix id-num NO-ERROR LIMIT))
     (setq num (string-to-number num-data))
     (fem-log-dbg "> extracting %s terms" num)
     ;; Extract the proper number of parameters
-    (fem-extract-assertion-list-from-buffer prefix id-prop 0 num no-error
+    (fem-extract-assertion-list-from-buffer prefix id-prop 0 num NO-ERROR
                                         LIMIT)))
 
 (defun fem-extract-error-from-buffer (PREFIX id &optional NO_ERROR lIMIT)
@@ -1446,7 +1449,7 @@ buffer."
       ;; Return the new end of the region
       (+ (point) new-end)))
 
-(defun fem-extract-result-from-messages (prefix id &optional process-buffer no-error
+(defun fem-extract-result-from-messages (prefix id &optional process-buffer NO-ERROR
                                          clear-process-buffer)
   "Extracts a meta analysis result from the *Messages* buffer. Returns an fem-result structure.
 process-buffer is the buffer to use to copy and process the raw data
@@ -1461,11 +1464,11 @@ process-buffer is the buffer to use to copy and process the raw data
         (end-delimiter (concat "[F*] " prefix id ":END")))
     ;; Copy the data
     (setq region (fem-copy-data-from-messages-to-buffer beg-delimiter end-delimiter
-                                                    t process-buffer no-error
+                                                    t process-buffer NO-ERROR
                                                     clear-process-buffer))
     (if (not region)
         (progn
-          (when (not no-error)
+          (when (not NO-ERROR)
             (error (concat "extract-eterm-info-from-messages (prefix: "
                            prefix ") (id: " id "): "
                            "could not find the region to copy from *Messages*")))
@@ -1479,7 +1482,7 @@ process-buffer is the buffer to use to copy and process the raw data
         ;; Clean
         (fem-clean-data-from-messages)
         ;; Extract the eterm-info
-        (setq result (fem-extract-result-from-buffer prefix id no-error)))
+        (setq result (fem-extract-result-from-buffer prefix id NO-ERROR)))
       ;; Switch back to the original buffer
       (switch-to-buffer prev-buffer)
       ;; Return
@@ -1534,13 +1537,13 @@ If F* succeeded, extract the information and add it to the proof."
           (fstar-subp--pop))
       (progn
         ;; Check if it was on purpose
-        (let (($prev-buffer (current-buffer)) ($no-error nil))
+        (let (($prev-buffer (current-buffer)) ($NO-ERROR nil))
           (switch-to-buffer fem-messages-buffer)
           (goto-char (point-max))
           (when (search-backward fem-start-fstar-msg (point-min) t)
-            (setq $no-error (search-forward fem-end-fstar-msg (point-max) t)))
+            (setq $NO-ERROR (search-forward fem-end-fstar-msg (point-max) t)))
           (switch-to-buffer $prev-buffer)
-          (when (not $no-error)
+          (when (not $NO-ERROR)
             (when (y-or-n-p "F* failed: do you want to see the F* query?")
               (switch-to-buffer fem-process-buffer1))
             (error "F* failed"))
@@ -2696,7 +2699,6 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
     ;; beginning of the term and try to reach the beginning of the line,
     ;; go at the end of the term and try to reach the end of the line)
     (goto-char $term-beg)
-;;    (fem-skip-comments-and-spaces nil (point-at-bol))
     (setq $insert-beg (point))
     (goto-char $term-end)
     (fem-skip-comments-and-spaces t (point-at-eol))
@@ -2762,23 +2764,8 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
 
 ;; Key bindings
 (global-set-key (kbd "C-S-a") 'fem-roll-admit)
-
-;; not convenient at all, moreover sometimes type C-r which triggers another F* command
-;;(global-set-key (kbd "C-c C-e C-r") 'fem-roll-admit)
-
-;;(global-set-key (kbd "C-x C-a") 'fem-roll-admit)
-;;(global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
-
-;;(global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-in-above-paragraph)
-;; (global-set-key (kbd "C-S-s") 'fem-switch-assert-assume-in-current-line)
 (global-set-key (kbd "C-S-s") 'fem-switch-assert-assume)
-;;(global-set-key (kbd "C-c C-s C-a") 'fem-switch-assert-assume-in-above-paragraph)
-;;(global-set-key (kbd "C-c C-e C-a") 'fem-switch-assert-assume-in-above-paragraph)
-
-;;(global-set-key (kbd "C-S-a") 'fem-switch-assert-assume-in-current-line)
-
 (global-set-key (kbd "C-c C-e C-i") 'fem-insert-pos-markers)
-;;(global-set-key (kbd "C-c C-e C-e") 'fem-insert-assert-pre-post)
 (global-set-key (kbd "C-c C-e C-e") 'fem-analyze-effectful-term-no-pre)
 (global-set-key (kbd "C-c C-e C-g") 'fem-analyze-effectful-term-with-goal)
 (global-set-key (kbd "C-c C-e C-s") 'fem-split-assert-assume-conjuncts)

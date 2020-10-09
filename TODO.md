@@ -16,6 +16,7 @@
 * would be nice to be able to normalize projectors, tuples inlinings
 * take into accounts attributes like [@inline_let] for indentation
 * split assertions of the form: A ==> (B1 /\ ... /\ Bn)
+* problem parsing #restart-solver when inserting the new options and the post-processing instructions
 
 # Main limitations
 * the output is the *Messages* buffer (fragile AND not convenient)
