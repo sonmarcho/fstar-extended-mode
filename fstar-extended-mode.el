@@ -1125,7 +1125,7 @@ Returns an optional fem-subexpr."
             ;; If found a semicol
             (progn
               (setq $end (+ (point) 1))
-              (make-fem-subexpr :beg TERM_BEG :end $end :is-let-in nil :has-semicol t :bterm nil))
+              (make-fem-subexpr :beg TERM_BEG :end $end :is-let-in nil :has-semicol t))
           ;; Otherwise: look for a 'let _ = _ in' construct
           ;; First look for the '=' (note that it doesn't work with sexpressions)
           (goto-char TERM_BEG)
@@ -1136,14 +1136,14 @@ Returns an optional fem-subexpr."
           (if (not (and (char-equal (char-after) ?=)
                         (not (char-equal (char-before) ?=))))
               ;; Failed
-              (make-fem-subexpr :beg TERM_BEG :end TERM_END :is-let-in nil :has-semicol nil :bterm nil)
+              (make-fem-subexpr :beg TERM_BEG :end TERM_END :is-let-in nil :has-semicol nil)
             ;; Save position
             (fem-skip-comments-and-spaces nil)
             (setq $b-end (point))
             ;; Look for the closest previous let which is not in a comment
             (if (not (fem-search-backward-not-comment "let"))
                 ;; Failed
-                (make-fem-subexpr :beg TERM_BEG :end TERM_END :is-let-in nil :has-semicol nil :bterm nil)
+                (make-fem-subexpr :beg TERM_BEG :end TERM_END :is-let-in nil :has-semicol nil)
               ;; Return
               (setq $beg (point))
               (forward-sexp)
@@ -1155,16 +1155,10 @@ Returns an optional fem-subexpr."
               (setq $tmp (fem-sexp-at-p))
               (if (not (string-equal "in" (fem-sexp-at-p-as-string)))
                   ;; Failed
-                  (make-fem-subexpr :beg TERM_BEG :end TERM_END :is-let-in nil :has-semicol nil :bterm nil)
+                  (make-fem-subexpr :beg TERM_BEG :end TERM_END :is-let-in nil :has-semicol nil)
                 (forward-sexp)
                 (setq $end (point))                
-                (setq $bterm (make-fem-letb-term :beg $beg :end $end :bind
-                                             (buffer-substring-no-properties $b-beg $b-end)
-                                             :b-beg $b-beg :b-end $b-end
-                                             :exp
-                                             (buffer-substring-no-properties TERM_BEG TERM_END)
-                                             :e-beg TERM_BEG :e-end TERM_END))
-                (make-fem-subexpr :beg $beg :end $end :is-let-in t :has-semicol nil :bterm $bterm))
+                (make-fem-subexpr :beg $beg :end $end :is-let-in t :has-semicol nil))
                 )))))))
 
 ;;; Extraction of information for the *Messages* buffer
@@ -2309,8 +2303,6 @@ PP_INSTR is the post-processing instruction to insert for F*."
              (t nil)))))) ;; end of (when INSERT_ADMITS ...)
     ;; Shift and return the parsing information
     (setq $res (copy-fem-subexpr SUBEXPR))
-    (when (fem-subexpr-bterm SUBEXPR)
-      (setf (fem-subexpr-bterm $res) (copy-fem-letb-term (fem-subexpr-bterm SUBEXPR))))
     (fem-shift-subexpr-pos $focus-shift $res)))
 
 (defun fem-query-fstar-on-buffer-content (OVERLAY_END PAYLOAD LAX CONTINUATION)
@@ -2646,7 +2638,7 @@ Return a fem-subexpr."
 
      ;; Return
      (make-fem-subexpr :beg $tk-beg :end $tk-end :is-let-in $is-let-in
-                       :has-semicol $has-semicol :bterm nil)))
+                       :has-semicol $has-semicol)))
 
 (defun fem-analyze-effectful-term (WITH_GPRE WITH_GPOST)
   "Insert assertions with proof obligations and postconditions around a term.
