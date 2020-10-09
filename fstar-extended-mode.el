@@ -56,17 +56,6 @@
 (cl-defstruct fem-triple
   fst snd thd)
 
-;; TODO: this is not useful anymore
-;; (cl-defstruct fem-letb-term
-;;   "A parsed let binded term of the form: 'let b = exp in'"
-;;   beg end ;; delimiters for the whole expression
-;;   bind ;; the binding
-;;   b-beg b-end ;; delimiters
-;;   exp ;; the expression
-;;   e-beg e-end ;; delimiters
-;;   is-var ;; nil if tuple
-;;   )
-
 (cl-defstruct fem-subexpr
   "A parsed expression of the form 'let _ = _ in', '_;' or '_' (return value)"
   beg end ;; point delimiters
@@ -888,83 +877,6 @@ If ACCEPT_COMMENTS is nil, return nil if the sexp is inside a comment."
   (let (($r (fem-sexp-at-p)))
     (if $r (buffer-substring-no-properties (fem-pair-fst $r) (fem-pair-snd $r))
       nil)))
-
-;; (defun fem-parse-letb-term (BEG END &optional NO_ERROR)
-;;   "Parse the let binded term in a 'let x = y in' expression.
-;; Note that the region delimited by BEG and END should start exactly with 'let'
-;; and end with 'in', put aside potential whitespaces and comments.
-;; Returns nil if fails and NO_ERROR is t, raises an error otherwise."
-;;   ;; We do things simple: we just look forward for the next '=' (this character
-;;   ;; shouldn't appear in the 'x' term).
-;;   ;; Then, in order to check whether the term is a variable or not, we just
-;;   ;; look for the presence of ',' in it (in which case it is a tuple).
-;;   (save-excursion
-;;     (let ($beg $end $eq-end $b $b-beg $b-end $exp $e-beg $e-end $is-var $success $error-msg)
-;;       (setq $success nil)
-;;       ;; Restraigning
-;;       (goto-char BEG)
-;;       (fem-skip-comments-and-spaces t END)
-;;       (setq $beg (point))
-;;       (goto-char END)
-;;       (fem-skip-comments-and-spaces nil $beg)
-;;       (setq $end (point))
-;;       (save-restriction
-;;         (narrow-to-region $beg $end)
-;;         (goto-char (point-min))
-;;         ;; Ignore the 'let'
-;;         (if (not (fem-consume-string-forward "let" NO_ERROR))
-;;             (when (not NO_ERROR) (setq $error-msg "could not find the 'let'"))
-;;           ;; Success
-;;           (fem-skip-comments-and-spaces t (point-max))
-;;           ;; Beginning of b
-;;           (setq $b-beg (point))
-;;           ;; Look for '='
-;;           (if (not (fem-search-forward-not-comment "="))
-;;               (when (not NO_ERROR) (setq $error-msg "could not find the '='"))
-;;             (setq $eq-end (point))
-;;             ;; End of b
-;;             (backward-char)
-;;             (fem-skip-comments-and-spaces nil $b-beg)
-;;             (setq $b-end (point))
-;;             ;; Beginning of exp
-;;             (goto-char $eq-end)
-;;             (fem-skip-comments-and-spaces t (point-max))
-;;             (setq $e-beg (point))
-;;             ;; End of exp
-;;             (goto-char (point-max))
-;;             (backward-char (length "in")) ;; TODO: no check
-;;             (fem-skip-comments-and-spaces nil $e-beg)
-;;             (setq $e-end (point))
-;;             (setq $success t)
-;;             ;; Check if b is a tuple
-;;             (setq $is-var (not (fem-region-is-tuple $b-beg $b-end)))
-;;             )))
-;;       ;; Process errors and return
-;;       (if (not $success)
-;;           ;; Failure
-;;           (if NO_ERROR nil
-;;             (error (format "fem-parse-letb-term on '%s' failed: %s"
-;;                            (buffer-substring-no-properties BEG END)
-;;                            $error-msg)))
-;;         ;; Success
-;;         (let* ((bind (buffer-substring-no-properties $b-beg $b-end))
-;;                (exp (buffer-substring-no-properties $e-beg $e-end)))
-;;           (make-fem-letb-term :beg $beg :end $end
-;;                           :bind bind
-;;                           :b-beg $b-beg :b-end $b-end
-;;                           :exp exp
-;;                           :e-beg $e-beg :e-end $e-end
-;;                           :is-var $is-var))
-;;         ))))
-
-;; (defun fem-shift-letb-term-pos (SHIFT TERM)
-;;   "Shift hy SHIFT the positions in the fem-letb-term TERM.
-;; Return the updated fem-letb-term"
-;;   (setf (fem-letb-term-beg TERM) (+ SHIFT (fem-letb-term-beg TERM)))
-;;   (setf (fem-letb-term-end TERM) (+ SHIFT (fem-letb-term-end TERM)))
-;;   (setf (fem-letb-term-e-beg TERM) (+ SHIFT (fem-letb-term-e-beg TERM)))
-;;   (setf (fem-letb-term-e-end TERM) (+ SHIFT (fem-letb-term-e-end TERM)))
-;;   TERM)
 
 ;; TODO: could be dramatically improved by using proper regexps
 (defun fem-parse-subexpr (BEG END)
