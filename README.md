@@ -43,7 +43,7 @@ Insert this in your `.emacs` file:
 ```
 
 ### 6. Configure the F\* options
-The simplest way is to insert the following code in your `.emacs` file (this code was adapted from [here](https://github.com/project-everest/mitls-fstar#configuring-emacs-mode). Look for the **TODOs**.
+The simplest way is to insert the following code in your `.emacs` file (this code was adapted from [here](https://github.com/project-everest/mitls-fstar#configuring-emacs-mode)). Look for the **TODOs**.
 
 ```elisp
 (defun my-fstar-compute-prover-args-using-make ()
