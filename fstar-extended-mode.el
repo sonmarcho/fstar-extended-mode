@@ -1073,7 +1073,7 @@ Returns an optional fem-subexpr."
 ;;; Extraction of information for the *Messages* buffer
 
 (defun fem-search-data-delimiter (DELIMITER BACKWARD CONSUME-DELIMITER NO-ERROR
-                              &optional BEG END)
+                                  &optional BEG END)
   "Search for DELIMITER in the buffer.
 BEG and END are optional region delimiters.
 BACKWARD gives the search direction, CONSUME-DELIMITER controls whether to leave
@@ -1094,14 +1094,14 @@ nil otherwise."
         (goto-char (- $p (length DELIMITER)))))
     (if $p (point) nil)))
 
-(defun fem-extract-info-from-buffer (prefix id &optional NO-ERROR post-process LIMIT)
+(defun fem-extract-info-from-buffer (PREFIX ID &optional NO-ERROR POST-PROCESS LIMIT)
   "Extracts meta data from the current buffer and optionally post-processes it.
 Returns a string (or nil if we we couldn't find the information)
 Leaves the pointer at the end of the parsed data (just before the next data)."
   ;; Find where the data is
   (let* (($beg (point))
          ($end (or LIMIT (point-max)))
-         ($full-id (concat prefix id ":\n"))
+         ($full-id (concat PREFIX ID ":\n"))
          ($full-id-length (length $full-id))
          $p $p1 $p2 (res nil) (pp-res nil))
     ;; Find the delimiters
@@ -1113,7 +1113,7 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
       (setq $p1 (point))
       ;; - end: we look for the next occurence of 'prefix' followed by a '\n'
       (backward-char 1)
-      (setq $p2 (fem-search-data-delimiter (concat "\n" prefix ":") nil nil NO-ERROR (point) $end))
+      (setq $p2 (fem-search-data-delimiter (concat "\n" PREFIX ":") nil nil NO-ERROR (point) $end))
       ;; From now onwards, the pointer is at the position where it should be
       ;; left in the original buffer
       (setq $p2 (point))
@@ -1124,7 +1124,7 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
         (save-restriction
           (narrow-to-region $p1 $p2)
           ;; Post-process the data
-          (when post-process (setq pp-res (funcall post-process)))
+          (when POST-PROCESS (setq pp-res (funcall POST-PROCESS)))
           ;; Save the content of the whole narrowed region
           (setq res (buffer-substring-no-properties (point-min) (point-max)))
           ;; The size of the region might have changed: go to the end, save
@@ -1136,7 +1136,7 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
     (when fem-debug
       (let ((res-str (if res (concat "[" res "]") "nil")))
         (fem-log-dbg "extract-info-from-messages:\n- prefix: %s\n- id: %s\n- res: %s "
-                     prefix id res-str)))
+                     PREFIX ID res-str)))
     res)) ;; end of function
 
 (defun fem-meta-info-pp-buffer-as-seq (&optional WITH_PARENTHESES)
@@ -1350,32 +1350,32 @@ buffer."
       ;; Return the new end of the region
       (+ (point) $new-end)))
 
-(defun fem-extract-result-from-messages (prefix id &optional process-buffer NO-ERROR
-                                         clear-process-buffer)
+(defun fem-extract-result-from-messages (PREFIX ID &optional PROCESS-BUFFER NO-ERROR
+                                         CLEAR-PROCESS-BUFFER)
   "Extracts a meta analysis result from the *Messages* buffer. Returns an fem-result structure.
 process-buffer is the buffer to use to copy and process the raw data
 (*fstar-data1* by default)."
-  (setq-default process-buffer fem-process-buffer2)
+  (setq-default PROCESS-BUFFER fem-process-buffer2)
   (fem-log-dbg "extract-result-from-messages:\n\
-- prefix: %s\n- id: %s\n- process buffer: '%s'\n" prefix id process-buffer)
+- prefix: %s\n- id: %s\n- process buffer: '%s'\n" PREFIX ID PROCESS-BUFFER)
   (let (($prev-buffer (current-buffer))
         ($region nil)
         ($result nil)
-        ($beg-delimiter (concat "[F*] TAC>> " prefix id ":BEGIN"))
-        ($end-delimiter (concat "[F*] " prefix id ":END")))
+        ($beg-delimiter (concat "[F*] TAC>> " PREFIX ID ":BEGIN"))
+        ($end-delimiter (concat "[F*] " PREFIX ID ":END")))
     ;; Copy the data
     (setq $region (fem-copy-data-from-messages-to-buffer $beg-delimiter $end-delimiter
-                                                    t process-buffer NO-ERROR
-                                                    clear-process-buffer))
+                                                    t PROCESS-BUFFER NO-ERROR
+                                                    CLEAR-PROCESS-BUFFER))
     (if (not $region)
         (progn
           (when (not NO-ERROR)
             (error (concat "extract-eterm-info-from-messages (prefix: "
-                           prefix ") (id: " id "): "
+                           PREFIX ") (id: " ID "): "
                            "could not find the region to copy from *Messages*")))
           nil)
       ;; Switch to the process buffer
-      (switch-to-buffer process-buffer)
+      (switch-to-buffer PROCESS-BUFFER)
       (goto-char (fem-pair-fst $region))
       ;; Restrain the region and process it
       (save-restriction
@@ -1383,7 +1383,7 @@ process-buffer is the buffer to use to copy and process the raw data
         ;; Clean
         (fem-clean-data-from-messages)
         ;; Extract the eterm-info
-        (setq $result (fem-extract-result-from-buffer prefix id NO-ERROR)))
+        (setq $result (fem-extract-result-from-buffer PREFIX ID NO-ERROR)))
       ;; Switch back to the original buffer
       (switch-to-buffer $prev-buffer)
       ;; Return
@@ -1391,30 +1391,30 @@ process-buffer is the buffer to use to copy and process the raw data
 
 ;;; Commands to generate F* code
 
-(defun fem-insert-with-indent (indent-str txt &optional indent-first-line)
-  (when indent-first-line (insert indent-str))
-  (insert (fem-replace-in-string "\n" (concat "\n" indent-str) txt)))
+(defun fem-insert-with-indent (INDENT-STR txt &optional INDENT-FIRST-LINE)
+  (when INDENT-FIRST-LINE (insert INDENT-STR))
+  (insert (fem-replace-in-string "\n" (concat "\n" INDENT-STR) txt)))
 
-(defun fem-generate-assert-from-term (indent-str after-term data &optional comment)
+(defun fem-generate-assert-from-term (INDENT-STR AFTER-TERM DATA &optional COMMENT)
   "Inserts an assertion in the code. after-term must be t if the assert is
 after the focused term, nil otherwise. comment is an optional comment"
-  (when data
+  (when DATA
     ;; If we are after the studied term: insert a newline
-    (when after-term (insert "\n"))
-    (when comment
-      (insert indent-str)
-      (insert comment)
+    (when AFTER-TERM (insert "\n"))
+    (when COMMENT
+      (insert INDENT-STR)
+      (insert COMMENT)
       (insert "\n"))
-    (when after-term (insert indent-str))
+    (when AFTER-TERM (insert INDENT-STR))
     (insert "assert(")
-    (when (> (fem-count-lines-in-string data) 1)
+    (when (> (fem-count-lines-in-string DATA) 1)
       (insert "\n")
-      (insert indent-str)
+      (insert INDENT-STR)
       (insert "  "))
-    (fem-insert-with-indent (concat indent-str "  ") data)
+    (fem-insert-with-indent (concat INDENT-STR "  ") DATA)
     (insert ");")
     ;; If we are before the studied term: insert a newline
-    (when (not after-term) (insert "\n") (insert indent-str))))
+    (when (not AFTER-TERM) (insert "\n") (insert INDENT-STR))))
 
 (defun fem-insert-assert-pre-post--continuation (INDENT_STR TERM_BEG TERM_END
                                                  OVERLAY STATUS RESPONSE)
@@ -2068,7 +2068,7 @@ tokens which will be ignored for control-flow"
   (fem-cfp-state-filter-stack (fem-cfp-state-stack STACK)))
 
 (defun fem-copy-def-for-meta-process (BEG END INSERT_ADMITS SUBEXPR PARSE_STATE
-                                          DEST_BUFFER PP_INSTR)
+                                      DEST_BUFFER PP_INSTR)
   "Copy code for meta-processing and update the parsed result positions.
 Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
 PP_INSTR is the post-processing instruction to insert for F*."
