@@ -30,7 +30,6 @@ let inst1 =
     let h0 = ST.get () in
     n1)
 
-
 (*** Simplification *)
 
 let simpl_f1 () : Tot unit =
