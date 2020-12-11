@@ -1594,7 +1594,7 @@ TODO: use overlays."
 ;; TODO: we might need to put "'"
 (defun fem-parse-special-symbols-p ()
   "Try to parse special symbols and return a pair of positions if successful."
-  (fem-parse-re-p "[\\^*\+-/=\|=\$:><!&]+"))
+  (fem-parse-re-p "[\\^*\+-/=\|=\$:><!&%]+"))
 
 (defconst fem-identifier-regexp
   "[`]*[#]?[']?[_[:alpha:]][[:alpha:]0-9_']*[\\?]?\\(\\.[[:alpha:]0-9_']*[\\?]?\\)*[`]*")
