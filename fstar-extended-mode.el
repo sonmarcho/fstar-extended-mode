@@ -904,7 +904,6 @@ Returns a fem-subexpr."
       (setq $is-let-in
             ;; TODO: rewrite the regexp
             (re-search-forward "\\=let[[:ascii:][:nonascii:]]+in\\'" (point-max) t 1))
-;;      (when $is-let-in (setq $bterm (fem-parse-letb-term $beg $end)))
       ;; Check if the narrowed region matches: '_ ;'
       (goto-char (point-min))
       (setq $has-semicol
@@ -915,7 +914,6 @@ Returns a fem-subexpr."
       ) ;; end of regexp matching
     ;; Return
     (make-fem-subexpr :beg $beg :end $end :is-let-in $is-let-in :has-semicol $has-semicol)))
-;;                  :bterm $bterm)))
 
 (defun fem-shift-subexpr-pos (SHIFT SUBEXPR)
   "Shift by SHIFT the positions in the fem-subexpr SUBEXPR.
