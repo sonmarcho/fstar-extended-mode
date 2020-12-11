@@ -140,12 +140,12 @@ returns nil or raises an error depending on NO_ERROR."
 (defun fem-previous-char-is-semicol-p (&optional POS)
   "Return t if the point before POS is ';'."
   (ignore-errors
-    (= (char-before) ?;)))
+    (= (char-before POS) ?;)))
 
 (defun fem-next-char-is-semicol-p (&optional POS)
   "Return t if the point before POS is ';'."
   (ignore-errors
-    (= (char-after) ?;)))
+    (= (char-after POS) ?;)))
 
 (defun fem-parse-next-sexp-p (&optional POS LIMIT)
   "Skip comments and spaces and parse the next sexp as a pair of positions.
@@ -363,7 +363,7 @@ The ACTION function should move the pointer back to its (equivalent) original po
   (let ($delimiters $p1 $p2 $r)
     ;; Find the region delimiters
     (setq $delimiters (fem-find-region-delimiters ALLOW_SELECTION INCLUDE_CURRENT_LINE
-                                              ABOVE_PARAGRAPH BELOW_PARAGRAPH))
+                                                  ABOVE_PARAGRAPH BELOW_PARAGRAPH))
     (setq $p1 (fem-pair-fst $delimiters) $p2 (fem-pair-snd $delimiters))
     ;; Apply the action in the delimited region
     (save-restriction
