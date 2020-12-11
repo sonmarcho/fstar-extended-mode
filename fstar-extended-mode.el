@@ -2,20 +2,6 @@
 ;; Custom commands and bindings for the F* mode
 ;;
 
-;; TODO: make the naming conventions coherent:
-;; - capital letters for function parameters
-;; - use $ for local variables
-;; - 'fem-' prefix for all functions
-
-;; I encountered some problems with undo (for instance, insert-assert-pre-post
-;; works properly when executed as a command, but undo performs weird things
-;; if it is linked to a key binding). Some very good explanations are provided
-;; in the link below:
-;; https://stackoverflow.com/questions/15097012/how-to-prevent-emacs-from-setting-an-undo-boundary
-;; My current fix is to use temporary buffers which names start with a space.
-;; Note that for now I don't want to use functions like to-switch-buffer because
-;; I want to keep a trace of the data processing for debugging
-
 ;;; Code:
 
 ;;; Imports
