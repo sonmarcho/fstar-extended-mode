@@ -2,9 +2,6 @@
 ;; Custom commands and bindings for the F* mode
 ;;
 
-;; TODO: many manipulations in the below functions can be simplified by using:
-;; - save-current-buffer, with-current-buffer (to switch buffer), with-temp-buffer
-
 ;; TODO: make the naming conventions coherent:
 ;; - capital letters for function parameters
 ;; - use $ for local variables
@@ -360,7 +357,7 @@ Mostly works by moving forward/backward by a paragraph, remembering the position
       (make-fem-pair :fst $p1 :snd $p2))))
 
 (defun fem-apply-in-current-region (ACTION ALLOW_SELECTION INCLUDE_CURRENT_LINE
-                                ABOVE_PARAGRAPH BELOW_PARAGRAPH)
+                                    ABOVE_PARAGRAPH BELOW_PARAGRAPH)
   "Apply the action given as argument to the region around the pointer.
 The ACTION function should move the pointer back to its (equivalent) original position."
   (let ($delimiters $p1 $p2 $r)
@@ -1084,48 +1081,48 @@ the pointer where it is or backtrack to put it just before (after) the DELIMITER
  (depending on the search direction).
 If the DELIMITER could not be found, raises an error if NO-ERROR is nil, returns
 nil otherwise."
-  (let ((beg (or BEG (point-min)))
-        (end (or END (point-max)))
-        p)
+  (let (($beg (or BEG (point-min)))
+        ($end (or END (point-max)))
+        $p)
     (if BACKWARD
-        (setq p (search-backward DELIMITER beg t))
-      (setq p (search-forward DELIMITER end t)))
-    (unless (or NO-ERROR p)
+        (setq $p (search-backward DELIMITER $beg t))
+      (setq $p (search-forward DELIMITER $end t)))
+    (unless (or NO-ERROR $p)
       (error (concat "Could not find the delimiter: " DELIMITER)))
-    (when (and p (not CONSUME-DELIMITER))
-      (if BACKWARD (goto-char (+ p (length DELIMITER)))
-        (goto-char (- p (length DELIMITER)))))
-    (if p (point) nil)))
+    (when (and $p (not CONSUME-DELIMITER))
+      (if BACKWARD (goto-char (+ $p (length DELIMITER)))
+        (goto-char (- $p (length DELIMITER)))))
+    (if $p (point) nil)))
 
 (defun fem-extract-info-from-buffer (prefix id &optional NO-ERROR post-process LIMIT)
   "Extracts meta data from the current buffer and optionally post-processes it.
 Returns a string (or nil if we we couldn't find the information)
 Leaves the pointer at the end of the parsed data (just before the next data)."
   ;; Find where the data is
-  (let* ((beg (point))
-         (end (or LIMIT (point-max)))
-         (full-id (concat prefix id ":\n"))
-         (full-id-length (length full-id))
-         p p1 p2 (res nil) (pp-res nil))
+  (let* (($beg (point))
+         ($end (or LIMIT (point-max)))
+         ($full-id (concat prefix id ":\n"))
+         ($full-id-length (length $full-id))
+         $p $p1 $p2 (res nil) (pp-res nil))
     ;; Find the delimiters
-    (setq p (fem-search-data-delimiter full-id nil t NO-ERROR beg end))
+    (setq $p (fem-search-data-delimiter $full-id nil t NO-ERROR $beg $end))
     ;; If we found the full-id, extract the data
-    (when p
+    (when $p
       ;; Retrieve the boundaries of the information sub-buffer
       ;; - beginning:
-      (setq p1 (point))
+      (setq $p1 (point))
       ;; - end: we look for the next occurence of 'prefix' followed by a '\n'
       (backward-char 1)
-      (setq p2 (fem-search-data-delimiter (concat "\n" prefix ":") nil nil NO-ERROR (point) end))
+      (setq $p2 (fem-search-data-delimiter (concat "\n" prefix ":") nil nil NO-ERROR (point) $end))
       ;; From now onwards, the pointer is at the position where it should be
       ;; left in the original buffer
-      (setq p2 (point))
-      (when (< p2 (- p1 1)) (error "extract-info-from-messages bug")) ;; should not happen
+      (setq $p2 (point))
+      (when (< $p2 (- $p1 1)) (error "extract-info-from-messages bug")) ;; should not happen
       ;; If the data is not null, post-process it in place
-      (when (>= p2 p1)
+      (when (>= $p2 $p1)
         ;; Start by restreigning the region
         (save-restriction
-          (narrow-to-region p1 p2)
+          (narrow-to-region $p1 $p2)
           ;; Post-process the data
           (when post-process (setq pp-res (funcall post-process)))
           ;; Save the content of the whole narrowed region
@@ -1134,7 +1131,7 @@ Leaves the pointer at the end of the parsed data (just before the next data)."
           ;; save the new point to p2
           (goto-char (point-max)))
         ;; Update the end of the region
-        (setq p2 (point))))
+        (setq $p2 (point))))
     ;; Return
     (when fem-debug
       (let ((res-str (if res (concat "[" res "]") "nil")))
@@ -1206,76 +1203,74 @@ Replaces some identifiers (Prims.l_True -> True...)."
   (goto-char (point-min)) (while (fem-meta-info-pp-remove-namespace "FStar") nil)
   nil)
 
-(defun fem-extract-string-from-buffer (prefix id &optional NO-ERROR LIMIT)
+(defun fem-extract-string-from-buffer (PREFIX ID &optional NO-ERROR LIMIT)
   "Extract a string for the current buffer."
-  (fem-log-dbg "extract-string-from-buffer:\n- prefix: %s\n- id: %s" prefix id)
-  (fem-extract-info-from-buffer prefix id NO-ERROR nil LIMIT))
+  (fem-log-dbg "extract-string-from-buffer:\n- prefix: %s\n- id: %s" PREFIX ID)
+  (fem-extract-info-from-buffer PREFIX ID NO-ERROR nil LIMIT))
 
-(defun fem-extract-term-from-buffer (prefix id &optional NO-ERROR LIMIT)
+(defun fem-extract-term-from-buffer (PREFIX ID &optional NO-ERROR LIMIT)
   "Extract a term from the current buffer.
 Contrary to a string, a term is post-processed."
-  (fem-log-dbg "extract-term-from-buffer:\n- prefix: %s\n- id: %s" prefix id)
-  (fem-extract-info-from-buffer prefix id NO-ERROR
+  (fem-log-dbg "extract-term-from-buffer:\n- prefix: %s\n- id: %s" PREFIX ID)
+  (fem-extract-info-from-buffer PREFIX ID NO-ERROR
                             (apply-partially 'fem-meta-info-post-process)
                             LIMIT))
 
-(defun fem-extract-assertion-from-buffer (prefix id index &optional NO-ERROR LIMIT)
+(defun fem-extract-assertion-from-buffer (PREFIX ID INDEX &optional NO-ERROR LIMIT)
   "Extract an assertion from the current buffer.
 Returns a fem-meta-info structure."
   (fem-log-dbg "extract-assertion-from-buffer:\n- prefix: %s\n- id: %s\n- index: %s"
-           prefix id (number-to-string index))
-  (let* ((full-id (concat id (number-to-string index))))
-    (fem-extract-term-from-buffer prefix full-id NO-ERROR LIMIT)))
+           PREFIX ID (number-to-string INDEX))
+  (let* (($full-id (concat ID (number-to-string INDEX))))
+    (fem-extract-term-from-buffer PREFIX $full-id NO-ERROR LIMIT)))
 
-(defun fem-extract-assertion-list-from-buffer (prefix id index num
-                                           &optional NO-ERROR LIMIT)
+(defun fem-extract-assertion-list-from-buffer (PREFIX ID INDEX NUM &optional NO-ERROR LIMIT)
   "Extract a given number of assertions as a list of strings."
   (fem-log-dbg "extract-assertion-list-from-buffer:\n\
 - prefix: %s\n- id: %s\n- index: %s\n- num: "
-           prefix id (number-to-string index) (number-to-string num))
-  (if (>= index num) nil
-    (let ((param nil) (params nil))
+           PREFIX ID (number-to-string INDEX) (number-to-string NUM))
+  (if (>= INDEX NUM) nil
+    (let (($param nil) ($params nil))
       ;; Extract (forward) the assertion given by 'index'
-      (setq param
-            (fem-extract-assertion-from-buffer prefix id index NO-ERROR LIMIT))
+      (setq $param
+            (fem-extract-assertion-from-buffer PREFIX ID INDEX NO-ERROR LIMIT))
       ;; Recursive call
-      (setq params
-            (fem-extract-assertion-list-from-buffer prefix id (+ index 1) num
-                                                NO-ERROR LIMIT))
-      (cons param params))))
+      (setq $params
+            (fem-extract-assertion-list-from-buffer PREFIX ID (+ INDEX 1) NUM
+                                                    NO-ERROR LIMIT))
+      (cons $param $params))))
 
-(defun fem-extract-assertion-num-and-list-from-buffer (prefix id
-                                                   &optional NO-ERROR LIMIT)
+(defun fem-extract-assertion-num-and-list-from-buffer (PREFIX ID &optional NO-ERROR LIMIT)
   "Reads how many assertions to extract from the current buffer, then
 extracts those assertions."
   (fem-log-dbg "extract-assertion-num-and-list-from-buffer:\n\
-- prefix: %s\n- id: %s" prefix id)
+- prefix: %s\n- id: %s" PREFIX ID)
   ;; Extract the number of assertions
-  (let ((id-num (concat id ":num"))
-        (id-prop (concat id ":prop"))
-        num num-data)
-    (setq num-data (fem-extract-string-from-buffer prefix id-num NO-ERROR LIMIT))
-    (setq num (string-to-number num-data))
-    (fem-log-dbg "> extracting %s terms" num)
+  (let (($id-num (concat ID ":num"))
+        ($id-prop (concat ID ":prop"))
+        $num $num-data)
+    (setq $num-data (fem-extract-string-from-buffer PREFIX $id-num NO-ERROR LIMIT))
+    (setq $num (string-to-number $num-data))
+    (fem-log-dbg "> extracting %s terms" $num)
     ;; Extract the proper number of parameters
-    (fem-extract-assertion-list-from-buffer prefix id-prop 0 num NO-ERROR
+    (fem-extract-assertion-list-from-buffer PREFIX $id-prop 0 $num NO-ERROR
                                         LIMIT)))
 
-(defun fem-extract-error-from-buffer (PREFIX id &optional NO_ERROR lIMIT)
+(defun fem-extract-error-from-buffer (PREFIX ID &optional NO_ERROR lIMIT)
   "Extracts a (potentially nil) error from the current buffer"
-  (fem-log-dbg "extract-error-from-buffer:\n\- prefix: %s\n- id: %s" PREFIX id)
-  (let (($error (fem-extract-string-from-buffer PREFIX (concat id ":error"))))
+  (fem-log-dbg "extract-error-from-buffer:\n\- prefix: %s\n- id: %s" PREFIX ID)
+  (let (($error (fem-extract-string-from-buffer PREFIX (concat ID ":error"))))
     (if (string-equal $error "") nil $error)))
   
 
-(defun fem-extract-result-from-buffer (PREFIX id &optional NO_ERROR LIMIT)
+(defun fem-extract-result-from-buffer (PREFIX ID &optional NO_ERROR LIMIT)
   "Extracts an assertion structure from the current buffer"
-  (fem-log-dbg "extract-result-from-buffer:\n\- prefix: %s\n- id: %s" PREFIX id)
+  (fem-log-dbg "extract-result-from-buffer:\n\- prefix: %s\n- id: %s" PREFIX ID)
   (let ($error
-        ($id-pres (concat id ":pres"))
-        ($id-posts (concat id ":posts"))
+        ($id-pres (concat ID ":pres"))
+        ($id-posts (concat ID ":posts"))
         $pres $posts)
-    (setq $error (fem-extract-error-from-buffer PREFIX id NO_ERROR LIMIT))
+    (setq $error (fem-extract-error-from-buffer PREFIX ID NO_ERROR LIMIT))
     (setq $pres (fem-extract-assertion-num-and-list-from-buffer PREFIX $id-pres NO_ERROR LIMIT))
     (setq $posts (fem-extract-assertion-num-and-list-from-buffer PREFIX $id-posts NO_ERROR LIMIT))
     (make-fem-result :error $error :pres $pres :posts $posts)))
@@ -1332,7 +1327,7 @@ include-delimiters controls whether to copy the delimiters or not"
     "Once data has been copied from the messages buffer, it needs some processing
 to be cleaned before being parsed: this function cleans the data in the current
 buffer."
-    (let (new-end)
+    (let ($new-end)
       (setq-default BEG (point))
       (setq-default END (point-max))
       (save-restriction
@@ -1350,10 +1345,10 @@ buffer."
         (delete-char 1)
         ;; Save the new region end
         (goto-char (point-max))
-        (setq new-end (point))
+        (setq $new-end (point))
         (goto-char (point-min)))
       ;; Return the new end of the region
-      (+ (point) new-end)))
+      (+ (point) $new-end)))
 
 (defun fem-extract-result-from-messages (prefix id &optional process-buffer NO-ERROR
                                          clear-process-buffer)
@@ -1363,16 +1358,16 @@ process-buffer is the buffer to use to copy and process the raw data
   (setq-default process-buffer fem-process-buffer2)
   (fem-log-dbg "extract-result-from-messages:\n\
 - prefix: %s\n- id: %s\n- process buffer: '%s'\n" prefix id process-buffer)
-  (let ((prev-buffer (current-buffer))
-        (region nil)
-        (result nil)
-        (beg-delimiter (concat "[F*] TAC>> " prefix id ":BEGIN"))
-        (end-delimiter (concat "[F*] " prefix id ":END")))
+  (let (($prev-buffer (current-buffer))
+        ($region nil)
+        ($result nil)
+        ($beg-delimiter (concat "[F*] TAC>> " prefix id ":BEGIN"))
+        ($end-delimiter (concat "[F*] " prefix id ":END")))
     ;; Copy the data
-    (setq region (fem-copy-data-from-messages-to-buffer beg-delimiter end-delimiter
+    (setq $region (fem-copy-data-from-messages-to-buffer $beg-delimiter $end-delimiter
                                                     t process-buffer NO-ERROR
                                                     clear-process-buffer))
-    (if (not region)
+    (if (not $region)
         (progn
           (when (not NO-ERROR)
             (error (concat "extract-eterm-info-from-messages (prefix: "
@@ -1381,18 +1376,18 @@ process-buffer is the buffer to use to copy and process the raw data
           nil)
       ;; Switch to the process buffer
       (switch-to-buffer process-buffer)
-      (goto-char (fem-pair-fst region))
+      (goto-char (fem-pair-fst $region))
       ;; Restrain the region and process it
       (save-restriction
-        (narrow-to-region (fem-pair-fst region) (fem-pair-snd region))
+        (narrow-to-region (fem-pair-fst $region) (fem-pair-snd $region))
         ;; Clean
         (fem-clean-data-from-messages)
         ;; Extract the eterm-info
-        (setq result (fem-extract-result-from-buffer prefix id NO-ERROR)))
+        (setq $result (fem-extract-result-from-buffer prefix id NO-ERROR)))
       ;; Switch back to the original buffer
-      (switch-to-buffer prev-buffer)
+      (switch-to-buffer $prev-buffer)
       ;; Return
-      result)))
+      $result)))
 
 ;;; Commands to generate F* code
 
@@ -1459,22 +1454,22 @@ If F* succeeded, extract the information and add it to the proof."
     ;;
     ;; Extract the data. Note that we add two spaces to the indentation, because
     ;; if we need to indent the data, it is because it will be in an assertion.
-    (let ((result (fem-extract-result-from-messages "ainfo" ""
-                                                        fem-process-buffer2 t t)))
+    (let (($result (fem-extract-result-from-messages "ainfo" ""
+                                                     fem-process-buffer2 t t)))
       ;; Check if error
-      (when (fem-result-error result)
-        (when (y-or-n-p (concat "F* failed: " (fem-result-error result)
+      (when (fem-result-error $result)
+        (when (y-or-n-p (concat "F* failed: " (fem-result-error $result)
                                 "\n-> Do you want to see the F* query?"))
           (switch-to-buffer fem-process-buffer1))
         (error "F* failed"))
       ;; Print the information
       ;; - before the focused term
       (goto-char TERM_BEG)
-      (dolist (a (fem-result-pres result))
+      (dolist (a (fem-result-pres $result))
         (fem-generate-assert-from-term INDENT_STR nil a))
       ;; - after the focused term
       (forward-char (- TERM_END TERM_BEG))
-      (dolist (a (fem-result-posts result))
+      (dolist (a (fem-result-posts $result))
         (fem-generate-assert-from-term INDENT_STR t a))
       )))
 
@@ -1566,16 +1561,9 @@ TODO: use overlays."
 ;; Parse an F* expression up to some point in order to retrieve the list
 ;; of the parent expressions, in terms of control flow.
 ;; We call it "control-flow" parsing intead of simply "parsing" because it
-;; is a simplified version of parsing: what we are interested in here is to
-;; be able to understand the control-flow, so that we know if the pointer is
+;; is a simplified version of parsing: whe only want to understand the
+;; control-flow, so that we know if the pointer is
 ;; inside the branch of a match, a let expression, a 'begin ... end', etc.
-
-;; The result of a few tests on regexps:
-;; - for letters: use [:alpha:] or [a-zA-Z]
-;; - for numbers: use [:0-9:] ([:digit:] and [:alnum:] don't work)
-;; - for spaces: use [\t\n\r ] (this includes line breaks) ([:space:] and [:blank:] don't work)
-;; - to match the empty string at point: \\=
-;; - to match the empty string at beginning of buffer: \\` (pay attention: not the same as \\= !!)
 
 (defconst fem-spaces-re (concat "[" fstar--spaces "]+")) ;; [\t\n\r ]+
 (defconst fem-opt-spaces-re (concat "[" fstar--spaces "]*")) ;; [\t\n\r ]*
@@ -2084,7 +2072,6 @@ tokens which will be ignored for control-flow"
   "Copy code for meta-processing and update the parsed result positions.
 Leaves the pointer at the end of the DEST_BUFFER where the code has been copied.
 PP_INSTR is the post-processing instruction to insert for F*."
-;;  (let ($beg $p0 $str1 $str2 $str3 $attr-beg $original-length $new-length $shift $res)
   (let ($p0 $str1 $str2 $str3 $shift $new-length $original-length $focus-shift
              $prev-buffer $stack $symbol $res)
     (goto-char BEG)
@@ -2125,7 +2112,7 @@ PP_INSTR is the post-processing instruction to insert for F*."
       ;; Define utility functions, to insert text and update the shift at the same time
       (let*
           ;; Insert text and update the focused term shift at the same time
-          ((insert-shift
+          (($insert-shift
             (lambda (TEXT)
               ;; If before the term under focus: update the shift
               (when (<= (point) (+ $focus-shift (fem-subexpr-beg SUBEXPR)))
@@ -2133,7 +2120,7 @@ PP_INSTR is the post-processing instruction to insert for F*."
               ;; Insert the text
               (insert TEXT)))
            ;; Compute the indentation for a token in the original buffer
-           (compute-token-indent
+           ($compute-token-indent
             (lambda (TK)
               (let ($indent)
                 (switch-to-buffer $prev-buffer)
@@ -2141,7 +2128,7 @@ PP_INSTR is the post-processing instruction to insert for F*."
                 (switch-to-buffer DEST_BUFFER)
                 $indent)))
            ;; Compute the indentation for a specific position in the ORIGINAL buffer
-           (compute-indent
+           ($compute-indent
             (lambda (POS)
               (let ($indent)
                 (switch-to-buffer $prev-buffer)
@@ -2157,18 +2144,18 @@ PP_INSTR is the post-processing instruction to insert for F*."
            (insert-same-indent
             (lambda (TK TEXT_BEFORE TEXT_AFTER &optional USE_PARENT)
               (let* (($tk (if USE_PARENT (fem-cfp-tk-parent TK) TK))
-                     ($indent (funcall compute-token-indent $tk)))
+                     ($indent (funcall $compute-token-indent $tk)))
                 ;; Insert at the end
                 (when TEXT_AFTER
                   (goto-char (point-max))
-                  (funcall insert-shift "\n")
-                  (funcall insert-shift $indent)
-                  (funcall insert-shift
+                  (funcall $insert-shift "\n")
+                  (funcall $insert-shift $indent)
+                  (funcall $insert-shift
                            (fem-replace-in-string "\n" (concat "\n" $indent) TEXT_AFTER)))
                 ;; Insert before the token
                 (when TEXT_BEFORE
                   (funcall target-goto-token $tk)
-                  (funcall insert-shift TEXT_BEFORE)))))
+                  (funcall $insert-shift TEXT_BEFORE)))))
            )
         ;; Start filling the holes
         ;; First: if the focused expression ends with 'in or 'semicol we need to insert
@@ -2176,7 +2163,7 @@ PP_INSTR is the post-processing instruction to insert for F*."
         (when (or (fem-subexpr-is-let-in SUBEXPR)
                   (fem-subexpr-has-semicol SUBEXPR))
           (goto-char (point-max))
-          (funcall insert-shift " admit()"))
+          (funcall $insert-shift " admit()"))
         ;; Then, we need to use the stack to determine where to insert admit
         ;; First, filter the stack in order to remove the first 'let (which is
         ;; at the top level declaring the current definition)
@@ -2315,13 +2302,12 @@ Otherwise, the string is made of a number of spaces equal to the column position
   "Split the conjunctions in an assertion/assumption."
   (interactive)
   (let ($markers $p0
-                 $parse-beg $parse-end
-                 $subexpr $state
-                 $parse-result
-                 $indent-str $insert-beg $insert-end
-                 $cbuffer $insert-admits $pp-instr $subexpr1
-                 $prefix $prefix-length $payload
-                 )
+        $parse-beg $parse-end
+        $subexpr $state
+        $parse-result
+        $indent-str $insert-beg $insert-end
+        $cbuffer $insert-admits $pp-instr $subexpr1
+        $prefix $prefix-length $payload)
     (fem-log-dbg "split-assert-conjuncts")
     ;; Sanity check
     (fem-generate-fstar-check-conditions)
@@ -2347,7 +2333,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
     (setq $cbuffer (current-buffer))
     ;; Copy and start processing the content
     (setq $insert-admits (not $markers))
-    (setq $pp-instr (concat "FEM.Process.pp_split_assert_conjs " (bool-to-string fem-debug)))
+    (setq $pp-instr (concat "FStar.InteractiveHelpers.pp_split_assert_conjs " (bool-to-string fem-debug)))
     (setq $subexpr1 (fem-copy-def-for-meta-process $parse-beg $parse-end $insert-admits
                                                    $subexpr $state fem-process-buffer1
                                                    $pp-instr))
@@ -2358,7 +2344,7 @@ Otherwise, the string is made of a number of spaces equal to the column position
     ;; we will send the whole buffer to F*.
     ;; Prefix
     (goto-char (fem-subexpr-beg $subexpr1))
-    (setq $prefix (concat "let _ = FEM.Process.focus_on_term in\n" $indent-str))
+    (setq $prefix (concat "let _ = FStar.InteractiveHelpers.focus_on_term in\n" $indent-str))
     (setq $prefix-length (length $prefix))
     (insert $prefix)
     ;; Suffix
@@ -2393,10 +2379,9 @@ Return a pair of positions delimiting the beginning and end of the identifier."
   "Unfold an identifier in an assertion/assumption."
   (interactive)
   (let ($markers $p0 $id
-                 $parse-result $parse-beg $parse-end $subexpr $state
-                 $indent-str $insert-beg $insert-end $cbuffer $insert-admits
-                 $subexpr1 $pp-instr $insert-shift $shift $payload
-                 )
+        $parse-result $parse-beg $parse-end $subexpr $state
+        $indent-str $insert-beg $insert-end $cbuffer $insert-admits
+        $subexpr1 $pp-instr $insert-shift $shift $payload)
     (fem-log-dbg "unfold-in-assert-assume")
     ;; Sanity check
     (fem-generate-fstar-check-conditions)
@@ -2434,7 +2419,7 @@ Return a pair of positions delimiting the beginning and end of the identifier."
     (setq $cbuffer (current-buffer))
     ;; Copy and start processing the content
     (setq $insert-admits (not $markers))
-    (setq $pp-instr (concat "FEM.Process.pp_unfold_in_assert_or_assume " (bool-to-string fem-debug)))
+    (setq $pp-instr (concat "FStar.InteractiveHelpers.pp_unfold_in_assert_or_assume " (bool-to-string fem-debug)))
     (setq $subexpr1 (fem-copy-def-for-meta-process $parse-beg $parse-end $insert-admits
                                                    $subexpr $state fem-process-buffer1
                                                    $pp-instr))
@@ -2452,11 +2437,11 @@ Return a pair of positions delimiting the beginning and end of the identifier."
     (goto-char (+ (fem-pair-snd $id) $shift))
     ($insert-and-shift "))")
     (goto-char (+ (fem-pair-fst $id) $shift))
-    ($insert-and-shift "(let _ = FEM.Process.focus_on_term in (")
+    ($insert-and-shift "(let _ = FStar.InteractiveHelpers.focus_on_term in (")
     ;; - for the assert/assume - note that the above insertion should have been made
     ;;   below the point where we now insert
     (goto-char (fem-subexpr-beg $subexpr1))
-    ($insert-and-shift "let _ = FEM.Process.focus_on_term in\n")
+    ($insert-and-shift "let _ = FStar.InteractiveHelpers.focus_on_term in\n")
     ;; Copy the buffer content
     (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
     ;; We need to switch back to the original buffer to query the F* process
@@ -2561,7 +2546,7 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
   (fem-generate-fstar-check-conditions)
   (let (
         $p0 $markers $state $parse-beg $parse-end $term $term-beg $term-end $indent-str
-            $insert-beg $insert-end $insert-admits $cbuffer $pp-instr $term1 $payload)
+        $insert-beg $insert-end $insert-admits $cbuffer $pp-instr $term1 $payload)
     (setq $parse-beg (fstar-subp--untracked-beginning-position))
     (setq $state (fem-create-cfp-state $parse-beg))
     ;; Find markers
@@ -2615,7 +2600,7 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
     ;; Remember the current buffer in order to be able to switch back
     (setq $cbuffer (current-buffer))
     ;; Copy and start processing the content
-    (setq $pp-instr (concat "FEM.Process.pp_analyze_effectful_term "
+    (setq $pp-instr (concat "FStar.InteractiveHelpers.pp_analyze_effectful_term "
                             (bool-to-string fem-debug) " "
                             (bool-to-string WITH_GPRE) " "
                             (bool-to-string WITH_GPOST)))
@@ -2631,7 +2616,7 @@ If WITH_GPRE/WITH_GPOST is t, try to insert the goal precondition/postcondition.
     ;; Note that we don't need to keep track of the positions modifications:
     ;; we will send the whole buffer to F*.
     (goto-char (fem-subexpr-beg $term1))
-    (insert "let _ = FEM.Process.focus_on_term in\n")
+    (insert "let _ = FStar.InteractiveHelpers.focus_on_term in\n")
     (insert $indent-str)
     ;; Copy the buffer content
     (setq $payload (buffer-substring-no-properties (point-min) (point-max)))
