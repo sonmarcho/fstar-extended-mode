@@ -8,6 +8,7 @@ open FStar.List
 open FStar.Tactics
 open FStar.Mul
 open FEM.Tutorial.Definitions
+open FStar.InteractiveHelpers
 
 /// WARNING: if a command fails, it is very likely because of the below issue
 /// The extended mode requires the FEM.Process module to run meta-processing
@@ -44,7 +45,6 @@ let simpl_ex1 (x : nat) =
       let x'' = 2 * (y + x') in
       assert(x'' > 16);
       assert(x'' >= 10);
-      admit()
       2 * x'
       end
     else 12
